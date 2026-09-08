@@ -1,0 +1,260 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&family=Syne:wght@400;500;600;700;800&display=swap");
+@import "tailwindcss";
+@import "tw-animate-css";
+@plugin "@tailwindcss/typography";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans:
+    "Space Grotesk", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --font-mono:
+    "Space Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  --font-serif:
+    "Syne", ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+/* Dark data-space theme — single appearance (no light/dark toggle) */
+:root {
+  --radius: 0.5rem;
+  /* Deep navy-black background */
+  --background: oklch(0.1 0.015 260);
+  --foreground: oklch(0.93 0.01 220);
+  /* Slightly elevated surfaces */
+  --card: oklch(0.14 0.018 255);
+  --card-foreground: oklch(0.93 0.01 220);
+  --popover: oklch(0.13 0.018 258);
+  --popover-foreground: oklch(0.93 0.01 220);
+  /* Vibrant cyan-blue primary */
+  --primary: oklch(0.72 0.18 210);
+  --primary-foreground: oklch(0.08 0.015 260);
+  /* Subtle purple secondary */
+  --secondary: oklch(0.18 0.025 270);
+  --secondary-foreground: oklch(0.85 0.02 220);
+  --muted: oklch(0.16 0.02 265);
+  --muted-foreground: oklch(0.55 0.04 230);
+  /* Teal accent */
+  --accent: oklch(0.65 0.15 185);
+  --accent-foreground: oklch(0.08 0.015 260);
+  --destructive: oklch(0.65 0.22 25);
+  --border: oklch(0.25 0.03 260);
+  --input: oklch(0.18 0.025 260);
+  --ring: oklch(0.72 0.18 210);
+  /* Entity type colors as chart colors */
+  --chart-1: oklch(0.72 0.18 210);   /* person — cyan */
+  --chart-2: oklch(0.68 0.17 145);   /* place — green */
+  --chart-3: oklch(0.68 0.2 300);    /* org — violet */
+  --chart-4: oklch(0.75 0.19 60);    /* concept — amber */
+  --chart-5: oklch(0.68 0.2 25);     /* event — coral */
+  --sidebar: oklch(0.12 0.018 260);
+  --sidebar-foreground: oklch(0.85 0.01 220);
+  --sidebar-primary: oklch(0.72 0.18 210);
+  --sidebar-primary-foreground: oklch(0.08 0.015 260);
+  --sidebar-accent: oklch(0.18 0.025 270);
+  --sidebar-accent-foreground: oklch(0.85 0.02 220);
+  --sidebar-border: oklch(0.22 0.025 260);
+  --sidebar-ring: oklch(0.72 0.18 210);
+}
+
+/* Force dark class so shadcn dark variants are always applied */
+.dark {
+  --background: oklch(0.1 0.015 260);
+  --foreground: oklch(0.93 0.01 220);
+  --card: oklch(0.14 0.018 255);
+  --card-foreground: oklch(0.93 0.01 220);
+  --popover: oklch(0.13 0.018 258);
+  --popover-foreground: oklch(0.93 0.01 220);
+  --primary: oklch(0.72 0.18 210);
+  --primary-foreground: oklch(0.08 0.015 260);
+  --secondary: oklch(0.18 0.025 270);
+  --secondary-foreground: oklch(0.85 0.02 220);
+  --muted: oklch(0.16 0.02 265);
+  --muted-foreground: oklch(0.55 0.04 230);
+  --accent: oklch(0.65 0.15 185);
+  --accent-foreground: oklch(0.08 0.015 260);
+  --destructive: oklch(0.65 0.22 25);
+  --border: oklch(0.25 0.03 260);
+  --input: oklch(0.18 0.025 260);
+  --ring: oklch(0.72 0.18 210);
+  --chart-1: oklch(0.72 0.18 210);
+  --chart-2: oklch(0.68 0.17 145);
+  --chart-3: oklch(0.68 0.2 300);
+  --chart-4: oklch(0.75 0.19 60);
+  --chart-5: oklch(0.68 0.2 25);
+  --sidebar: oklch(0.12 0.018 260);
+  --sidebar-foreground: oklch(0.85 0.01 220);
+  --sidebar-primary: oklch(0.72 0.18 210);
+  --sidebar-primary-foreground: oklch(0.08 0.015 260);
+  --sidebar-accent: oklch(0.18 0.025 270);
+  --sidebar-accent-foreground: oklch(0.85 0.02 220);
+  --sidebar-border: oklch(0.22 0.025 260);
+  --sidebar-ring: oklch(0.72 0.18 210);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+/* In-app Wikipedia article rendering */
+.wiki-article {
+  color: var(--foreground);
+  font-size: 15px;
+  line-height: 1.75;
+}
+
+.wiki-article h1,
+.wiki-article h2,
+.wiki-article h3,
+.wiki-article h4 {
+  font-family: var(--font-serif);
+  color: var(--foreground);
+  margin: 1.4em 0 0.55em;
+  line-height: 1.25;
+  font-weight: 650;
+}
+
+.wiki-article h2 {
+  font-size: 1.45rem;
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
+  padding-bottom: 0.35rem;
+}
+
+.wiki-article h3 {
+  font-size: 1.2rem;
+}
+
+.wiki-article p {
+  margin: 0.75em 0;
+}
+
+.wiki-article a {
+  color: var(--primary);
+  text-decoration: none;
+}
+
+.wiki-article a:hover {
+  text-decoration: underline;
+}
+
+.wiki-article ul,
+.wiki-article ol {
+  margin: 0.75em 0;
+  padding-left: 1.4em;
+}
+
+.wiki-article li {
+  margin: 0.25em 0;
+}
+
+.wiki-article table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+  font-size: 0.9em;
+  background: color-mix(in oklab, var(--card) 80%, transparent);
+}
+
+.wiki-article th,
+.wiki-article td {
+  border: 1px solid var(--border);
+  padding: 0.4em 0.6em;
+  vertical-align: top;
+}
+
+.wiki-article th {
+  background: color-mix(in oklab, var(--muted) 70%, transparent);
+  text-align: left;
+}
+
+.wiki-article .infobox,
+.wiki-article table.infobox,
+.wiki-article .infobox_v2,
+.wiki-article table.infobox_v2 {
+  display: none !important;
+}
+
+.wiki-article .thumb,
+.wiki-article .thumbinner {
+  max-width: 100%;
+}
+
+.wiki-article img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.4rem;
+}
+
+.wiki-article .mw-ref,
+.wiki-article .reference {
+  font-size: 0.75em;
+}
+
+.wiki-article .hatnote,
+.wiki-article .ambox,
+.wiki-article .navbox,
+.wiki-article .metadata {
+  font-size: 0.9em;
+  opacity: 0.9;
+}
+
+.wiki-article .mw-empty-elt {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .wiki-article .infobox,
+  .wiki-article table.infobox {
+    float: none;
+    width: 100%;
+    margin: 0 0 1rem;
+  }
+}
