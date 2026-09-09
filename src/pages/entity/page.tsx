@@ -15,10 +15,11 @@ import { Skeleton } from "@/components/ui/skeleton.tsx";
 import {
   Network, GitBranch, ArrowLeft, ChevronRight, ChevronLeft,
   User, MapPin, Building2, Lightbulb, Calendar, HelpCircle,
-  BookOpen, Copy, Check, Share2,
+  BookOpen, Copy, Check, Share2, ExternalLink,
   Image as ImageIcon, Link2, Clock, Sparkles, Film, Languages,
   Briefcase, Heart, Tag, GraduationCap, Landmark, Star, FlaskConical,
   List, Quote, ShieldCheck, Users, Globe2, Factory, Award, Layers,
+  TrendingUp, DollarSign, BarChart3, Package,
 } from "lucide-react";
 import SearchBox from "@/components/search/SearchBox.tsx";
 import { cn } from "@/lib/utils.ts";
@@ -165,6 +166,11 @@ function buildQuickFacts(entity: EntitySummary): QuickFact[] {
     pushFact(items, Layers, "Products", f("P1056"), { tone: "violet", limit: 3 });
     pushFact(items, Building2, "Parent", f("P749"), { tone: "amber", limit: 2 });
     pushFact(items, Users, "Employees", f("P1128"), { tone: "cyan", limit: 1 });
+    pushFact(items, DollarSign, "Revenue", f("P2139"), { tone: "emerald", limit: 1 });
+    pushFact(items, TrendingUp, "Market cap", f("P2226"), { tone: "amber", limit: 1 });
+    pushFact(items, BarChart3, "Net profit", f("P2295"), { tone: "violet", limit: 1 });
+    pushFact(items, Star, "Exchange", f("P414"), { tone: "rose", limit: 2 });
+    pushFact(items, Tag, "Ticker", f("P249"), { tone: "cyan", limit: 1 });
     pushFact(items, Star, "Type", f("P31"), { tone: "rose", limit: 2 });
   } else if (entity.type === "person") {
     const born = f("P569");
@@ -313,6 +319,107 @@ function buildQuickMetrics(entity: EntitySummary): QuickMetric[] {
   return metrics.slice(0, 3);
 }
 
+type HeroKpi = {
+  icon: ComponentType<{ className?: string }>;
+  label: string;
+  value: string;
+  hint?: string;
+  tone: "cyan" | "emerald" | "amber" | "violet" | "rose";
+};
+
+type HeroMarketing = {
+  kpis: HeroKpi[];
+  products: Array<{ label: string; id?: string }>;
+  industries: Array<{ label: string; id?: string }>;
+  website?: string;
+  stock?: string;
+  tagline: string;
+};
+
+function shortMoney(label: string): string {
+  // Already compact from API (e.g. "394.33B United States dollar") — trim unit noise
+  return label
+    .replace(/\s*United States dollar\b/gi, " USD")
+    .replace(/\s*euro\b/gi, " EUR")
+    .replace(/\s*pound sterling\b/gi, " GBP")
+    .replace(/\s*Japanese yen\b/gi, " JPY")
+    .replace(/\s*Indian rupee\b/gi, " INR")
+    .trim();
+}
+
+function buildHeroMarketing(entity: EntitySummary): HeroMarketing {
+  const f = (pid: string) => factOf(entity, pid);
+  const kpis: HeroKpi[] = [];
+  const products = labelsOf(entity, "P1056", 8);
+  const industries = labelsOf(entity, "P452", 6);
+  const website = entity.links.find((l) => l.kind === "website")?.url
+    || f("P856")?.values.find((v) => v.label.startsWith("http"))?.label
+    || f("P856")?.values[0]?.url;
+
+  const ticker = f("P249")?.values[0]?.label;
+  const exchange = f("P414")?.values[0]?.label;
+  const stock = ticker ? (exchange ? `${ticker} · ${exchange}` : ticker) : exchange;
+
+  if (entity.type === "organization") {
+    const revenue = f("P2139")?.values[0]?.label;
+    if (revenue) kpis.push({ icon: DollarSign, label: "Revenue", value: shortMoney(revenue), tone: "emerald" });
+    const mcap = f("P2226")?.values[0]?.label;
+    if (mcap) kpis.push({ icon: TrendingUp, label: "Market cap", value: shortMoney(mcap), tone: "cyan" });
+    const profit = f("P2295")?.values[0]?.label;
+    if (profit) kpis.push({ icon: BarChart3, label: "Net profit", value: shortMoney(profit), tone: "amber" });
+    const employees = f("P1128")?.values[0]?.label;
+    if (employees) kpis.push({ icon: Users, label: "Employees", value: employees, tone: "violet" });
+    const assets = f("P2403")?.values[0]?.label;
+    if (assets && kpis.length < 5) kpis.push({ icon: Layers, label: "Assets", value: shortMoney(assets), tone: "rose" });
+    const founded = f("P571")?.values[0]?.label;
+    if (founded && kpis.length < 5) {
+      const y = founded.match(/\b(\d{4})\b/)?.[1] ?? compactDate(founded);
+      kpis.push({ icon: Calendar, label: "Founded", value: y, hint: founded, tone: "cyan" });
+    }
+  } else if (entity.type === "person") {
+    if (entity.lifespan) kpis.push({ icon: Calendar, label: "Lifespan", value: entity.lifespan, tone: "cyan" });
+    const awards = f("P166")?.values.length;
+    if (awards) kpis.push({ icon: Award, label: "Awards", value: String(awards), tone: "amber" });
+    const works = f("P800")?.values.length;
+    if (works) kpis.push({ icon: Star, label: "Notable works", value: String(works), tone: "violet" });
+    const roles = f("P39")?.values.length || f("P106")?.values.length;
+    if (roles) kpis.push({ icon: Briefcase, label: "Roles", value: String(roles), tone: "emerald" });
+    const langs = f("P1412")?.values.length;
+    if (langs) kpis.push({ icon: Languages, label: "Languages", value: String(langs), tone: "rose" });
+  } else if (entity.type === "place") {
+    const pop = f("P1082")?.values[0]?.label;
+    if (pop) kpis.push({ icon: Users, label: "Population", value: pop, tone: "cyan" });
+    const area = f("P2046")?.values[0]?.label;
+    if (area) kpis.push({ icon: MapPin, label: "Area", value: area, tone: "emerald" });
+    const elev = f("P2044")?.values[0]?.label;
+    if (elev) kpis.push({ icon: TrendingUp, label: "Elevation", value: elev, tone: "amber" });
+  }
+
+  // Always fill remaining KPI slots with portfolio signals
+  if (kpis.length < 4) kpis.push({ icon: Layers, label: "Properties", value: String(entity.facts.length), tone: "violet" });
+  if (kpis.length < 4 && entity.related.length) {
+    kpis.push({ icon: Network, label: "Connections", value: String(entity.related.length), tone: "cyan" });
+  }
+  if (kpis.length < 4 && entity.images.length) {
+    kpis.push({ icon: ImageIcon, label: "Media", value: String(entity.images.length), tone: "rose" });
+  }
+
+  const tagline =
+    entity.description ||
+    industries.slice(0, 2).map((i) => i.label).join(" · ") ||
+    entity.instanceOf.slice(0, 2).map((i) => i.label).join(" · ") ||
+    "";
+
+  return {
+    kpis: kpis.slice(0, 5),
+    products,
+    industries: industries.length ? industries : entity.instanceOf.slice(0, 4).map((i) => ({ id: i.id, label: i.label })),
+    website,
+    stock,
+    tagline,
+  };
+}
+
 export default function EntityPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -321,7 +428,7 @@ export default function EntityPage() {
   const [resolvingLink, setResolvingLink] = useState(false);
 
   const { data: entity, isLoading, error } = useQuery({
-    queryKey: ["entity", id, "v9-rich-dossier"],
+    queryKey: ["entity", id, "v10-biz-hero"],
     queryFn: () => fetchEntitySummary(id!),
     enabled: Boolean(id),
     staleTime: 1000 * 60 * 30,
@@ -389,6 +496,7 @@ export default function EntityPage() {
 
   const quickFacts = useMemo(() => (entity ? buildQuickFacts(entity) : []), [entity]);
   const quickMetrics = useMemo(() => (entity ? buildQuickMetrics(entity) : []), [entity]);
+  const marketing = useMemo(() => (entity ? buildHeroMarketing(entity) : null), [entity]);
 
   const glanceFacts = useMemo(() => {
     if (!entity) return [] as EntityFact[];
@@ -517,9 +625,13 @@ export default function EntityPage() {
   const wiki = entity?.wikipedia;
   const breadcrumbMid = entity?.instanceOf[0]?.label || occupations[0] || cfg?.label;
   const portraitUrl =
+    (entity?.type === "organization"
+      ? entity.images.find((i) => i.propertyId === "P154")?.url ||
+        entity.images.find((i) => i.propertyId === "P18")?.url
+      : undefined) ||
     entity?.thumbnail ||
     entity?.images.find((i) => i.propertyId === "P18")?.url ||
-    entity?.images.find((i) => /\.(jpe?g|png|webp)$/i.test(i.filename))?.url;
+    entity?.images.find((i) => /\.(jpe?g|png|webp|svg)$/i.test(i.filename))?.url;
 
   return (
     <div className="min-h-screen bg-[#0b1220]">
@@ -577,40 +689,55 @@ export default function EntityPage() {
 
       {entity && cfg && Icon && (
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-          {/* ═══════════════ HERO ═══════════════ */}
+          {/* ═══════════════ HERO — brand / marketing / business ═══════════════ */}
           <section className="relative overflow-hidden border-b border-white/10">
             <div
               className="absolute inset-0"
               style={{
                 background: `
-                  radial-gradient(ellipse 55% 90% at 8% 55%, ${cfg.color}30 0%, transparent 55%),
+                  radial-gradient(ellipse 50% 80% at 0% 0%, ${cfg.color}28 0%, transparent 50%),
+                  radial-gradient(ellipse 45% 60% at 100% 100%, #22d3ee18 0%, transparent 45%),
                   linear-gradient(165deg, #0a1628 0%, #0f1c33 42%, #0c1526 100%)
                 `,
               }}
             />
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-[#0b1220]/40 to-transparent" />
+            <div
+              className="pointer-events-none absolute inset-0 opacity-[0.07]"
+              style={{
+                backgroundImage: "linear-gradient(rgba(148,163,184,0.35) 1px, transparent 1px), linear-gradient(90deg, rgba(148,163,184,0.35) 1px, transparent 1px)",
+                backgroundSize: "48px 48px",
+              }}
+            />
 
-            <div className="relative mx-auto max-w-7xl px-4 py-8 md:px-6 md:py-11 lg:py-12">
-              <div className="grid gap-7 lg:grid-cols-[200px_minmax(0,1fr)_300px] xl:grid-cols-[220px_minmax(0,1fr)_320px] lg:gap-8 xl:gap-10 items-start">
-                {/* Portrait */}
-                <div className="relative mx-auto lg:mx-0 shrink-0">
+            <div className="relative mx-auto max-w-7xl px-4 py-7 md:px-6 md:py-10 space-y-5 md:space-y-6">
+              <div className="flex flex-col lg:flex-row gap-6 lg:gap-8 items-center lg:items-start">
+                <div className="relative shrink-0">
                   {portraitUrl ? (
                     <img
                       src={portraitUrl}
                       alt={entity.label}
                       referrerPolicy="no-referrer"
-                      className="size-44 sm:size-48 lg:size-[200px] xl:size-[220px] rounded-2xl object-cover object-top border-[3px] border-white/20 shadow-[0_20px_50px_-12px_rgba(0,0,0,0.65)] bg-slate-800"
+                      className={cn(
+                        "rounded-2xl border border-white/15 shadow-[0_24px_50px_-18px_rgba(0,0,0,0.7)] bg-slate-800 object-cover",
+                        entity.type === "organization"
+                          ? "size-28 sm:size-32 object-contain p-3 bg-white/95"
+                          : "size-36 sm:size-40 lg:size-44 object-top"
+                      )}
                     />
                   ) : (
-                    <div className={cn("size-44 sm:size-48 lg:size-[200px] xl:size-[220px] rounded-2xl border border-dashed flex items-center justify-center", cfg.borderClass, cfg.bgClass)}>
-                      <Icon className={cn("size-16 opacity-40", cfg.textClass)} />
+                    <div className={cn("size-32 sm:size-36 rounded-2xl border border-dashed flex items-center justify-center", cfg.borderClass, cfg.bgClass)}>
+                      <Icon className={cn("size-12 opacity-40", cfg.textClass)} />
+                    </div>
+                  )}
+                  {marketing?.stock && (
+                    <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-emerald-400/30 bg-emerald-500/15 px-2.5 py-0.5 text-[10px] font-mono font-semibold text-emerald-200 backdrop-blur-sm">
+                      {marketing.stock}
                     </div>
                   )}
                 </div>
 
-                {/* Identity */}
-                <div className="min-w-0 text-center lg:text-left">
-                  <nav className="mb-3 flex flex-wrap items-center justify-center lg:justify-start gap-1.5 text-[11px] md:text-xs text-slate-400">
+                <div className="min-w-0 flex-1 text-center lg:text-left">
+                  <nav className="mb-2 flex flex-wrap items-center justify-center lg:justify-start gap-1.5 text-[11px] text-slate-400">
                     <button onClick={() => navigate("/")} className="hover:text-cyan-300 cursor-pointer">
                       {TYPE_BREADCRUMB[entity.type]}
                     </button>
@@ -624,150 +751,183 @@ export default function EntityPage() {
                     <span className="text-white/85 font-medium truncate max-w-[220px]">{entity.label}</span>
                   </nav>
 
-                  <h1 className="font-serif text-[2rem] sm:text-4xl xl:text-[2.75rem] font-bold tracking-tight text-white leading-[1.05] text-balance">
-                    {entity.label}
-                  </h1>
+                  <div className="flex flex-wrap items-center justify-center lg:justify-start gap-2.5">
+                    <h1 className="font-serif text-[2rem] sm:text-4xl xl:text-[2.7rem] font-bold tracking-tight text-white leading-[1.05] text-balance">
+                      {entity.label}
+                    </h1>
+                    <span className={cn("rounded-full border px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider", cfg.bgClass, cfg.textClass, cfg.borderClass)}>
+                      {cfg.label}
+                    </span>
+                  </div>
 
-                  {rolesLine && (
-                    <p className="mt-2.5 text-sm md:text-[15px] text-cyan-200/85 font-medium tracking-wide">
-                      {rolesLine}
+                  {(marketing?.tagline || rolesLine) && (
+                    <p className="mt-2 text-sm md:text-[15px] text-cyan-200/85 font-medium">
+                      {marketing?.tagline || rolesLine}
                     </p>
                   )}
 
                   {leadSnippet && (
-                    <p className="mt-3.5 text-[14.5px] md:text-[15px] leading-[1.7] text-slate-300/95 max-w-xl mx-auto lg:mx-0">
+                    <p className="mt-3 text-[14px] md:text-[15px] leading-relaxed text-slate-300/90 max-w-3xl mx-auto lg:mx-0">
                       {leadSnippet}
                     </p>
                   )}
 
-                  {tags.length > 0 && (
-                    <div className="mt-5 flex flex-wrap justify-center lg:justify-start gap-2">
-                      {tags.map((t) => (
-                        <button
-                          key={t.label}
-                          onClick={() => t.id && navigate(`/entity/${t.id}`)}
-                          className={cn(
-                            "rounded-full border border-cyan-300/40 bg-transparent px-3.5 py-1.5 text-xs font-medium text-cyan-100/95",
-                            t.id ? "hover:bg-cyan-400/15 cursor-pointer" : "cursor-default"
-                          )}
-                        >
-                          {t.label}
-                        </button>
-                      ))}
+                  <div className="mt-4 flex flex-wrap justify-center lg:justify-start gap-2">
+                    {(marketing?.industries.length ? marketing.industries : tags).slice(0, 6).map((t) => (
+                      <button
+                        key={`ind-${t.label}`}
+                        onClick={() => t.id && navigate(`/entity/${t.id}`)}
+                        className={cn(
+                          "rounded-full border border-cyan-300/35 bg-cyan-400/10 px-3 py-1 text-xs font-medium text-cyan-100",
+                          t.id && "hover:bg-cyan-400/20 cursor-pointer"
+                        )}
+                      >
+                        {t.label}
+                      </button>
+                    ))}
+                    {marketing?.website && (
+                      <a
+                        href={marketing.website}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 rounded-full border border-white/20 bg-white/5 px-3 py-1 text-xs font-medium text-white/90 hover:bg-white/10"
+                      >
+                        <ExternalLink className="size-3" /> Official site
+                      </a>
+                    )}
+                  </div>
+
+                  {marketing && marketing.products.length > 0 && (
+                    <div className="mt-3.5">
+                      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500 flex items-center justify-center lg:justify-start gap-1.5">
+                        <Package className="size-3" /> Product & offering line
+                      </p>
+                      <div className="flex flex-wrap justify-center lg:justify-start gap-1.5">
+                        {marketing.products.map((p) => (
+                          <button
+                            key={p.label}
+                            onClick={() => p.id && navigate(`/entity/${p.id}`)}
+                            className={cn(
+                              "rounded-lg border border-white/12 bg-white/[0.04] px-2.5 py-1 text-[12px] text-slate-200",
+                              p.id && "hover:border-cyan-400/40 hover:text-cyan-100 cursor-pointer"
+                            )}
+                          >
+                            {p.label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>
+              </div>
 
-                {/* Quick dossier — creative type-aware panel */}
-                <aside className="w-full max-w-md mx-auto lg:mx-0 lg:max-w-none self-start">
-                  <div className="relative rounded-2xl border border-white/12 bg-gradient-to-b from-[#152238] to-[#0e1626] shadow-[0_22px_50px_-20px_rgba(0,0,0,0.7)] overflow-hidden">
-                    <div
-                      className="absolute inset-x-0 top-0 h-1"
-                      style={{ background: `linear-gradient(90deg, ${cfg.color}, transparent 85%)` }}
-                    />
-                    <div className="pointer-events-none absolute -right-10 -top-10 size-36 rounded-full opacity-20 blur-2xl" style={{ background: cfg.color }} />
-
-                    <div className="relative px-4 pt-4 pb-3 sm:px-5">
-                      <div className="flex items-center justify-between gap-2 mb-3">
-                        <div>
-                          <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Quick dossier</p>
-                          <p className="text-xs text-slate-500 mt-0.5">{cfg.label} snapshot</p>
+              {marketing && marketing.kpis.length > 0 && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+                  {marketing.kpis.map((kpi) => {
+                    const KIcon = kpi.icon;
+                    const tone =
+                      kpi.tone === "emerald" ? "from-emerald-500/20 to-emerald-500/5 border-emerald-400/25 text-emerald-200"
+                      : kpi.tone === "amber" ? "from-amber-500/20 to-amber-500/5 border-amber-400/25 text-amber-200"
+                      : kpi.tone === "violet" ? "from-violet-500/20 to-violet-500/5 border-violet-400/25 text-violet-200"
+                      : kpi.tone === "rose" ? "from-rose-500/20 to-rose-500/5 border-rose-400/25 text-rose-200"
+                      : "from-cyan-500/20 to-cyan-500/5 border-cyan-400/25 text-cyan-200";
+                    return (
+                      <div
+                        key={kpi.label}
+                        className={cn("rounded-2xl border bg-gradient-to-br px-3.5 py-3 backdrop-blur-sm", tone)}
+                        title={kpi.hint}
+                      >
+                        <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider opacity-80">
+                          <KIcon className="size-3.5" />
+                          {kpi.label}
                         </div>
-                        <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-mono text-cyan-200/80">
-                          {entity.facts.length} props
-                        </span>
+                        <p className="mt-1.5 text-lg sm:text-xl font-bold text-white leading-tight truncate">
+                          {kpi.value}
+                        </p>
                       </div>
+                    );
+                  })}
+                </div>
+              )}
 
-                      {quickMetrics.length > 0 && (
-                        <div className="mb-3 grid grid-cols-3 gap-2">
-                          {quickMetrics.map((m) => (
-                            <div
-                              key={m.label}
-                              className="rounded-xl border border-white/10 bg-white/[0.04] px-2 py-2 text-center"
-                            >
-                              <p className="text-sm font-bold text-white leading-none truncate">{m.value}</p>
-                              <p className="mt-1 text-[9px] uppercase tracking-wider text-slate-500">{m.label}</p>
+              <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px] xl:grid-cols-[minmax(0,1fr)_340px] items-start">
+                <div className="rounded-2xl border border-white/10 bg-white/[0.03] overflow-hidden">
+                  <div className="flex items-center justify-between gap-2 border-b border-white/8 px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <BarChart3 className="size-4 text-cyan-300" />
+                      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-300">
+                        {entity.type === "organization" ? "Business intelligence" : "Profile intelligence"}
+                      </p>
+                    </div>
+                    <span className="text-[10px] font-mono text-slate-500">{entity.facts.length} signals</span>
+                  </div>
+                  <div className="grid sm:grid-cols-2 gap-px bg-white/5">
+                    {quickFacts.slice(0, 6).map((qf) => {
+                      const QIcon = qf.icon;
+                      return (
+                        <div key={qf.label} className="bg-[#0d1524] px-4 py-3.5 flex gap-3 min-h-[4.5rem]">
+                          <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-cyan-400/10 text-cyan-300">
+                            <QIcon className="size-4" />
+                          </span>
+                          <div className="min-w-0">
+                            <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{qf.label}</p>
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {qf.lines.slice(0, 3).map((line, i) =>
+                                line.id ? (
+                                  <button
+                                    key={`${line.text}-${i}`}
+                                    onClick={() => navigate(`/entity/${line.id}`)}
+                                    className="text-[13px] text-white/90 hover:text-cyan-300 hover:underline cursor-pointer text-left"
+                                  >
+                                    {line.text}{i < Math.min(qf.lines.length, 3) - 1 ? "," : ""}
+                                  </button>
+                                ) : (
+                                  <span key={`${line.text}-${i}`} className="text-[13px] text-white/90">
+                                    {line.text}{i < Math.min(qf.lines.length, 3) - 1 ? "," : ""}
+                                  </span>
+                                )
+                              )}
                             </div>
-                          ))}
+                          </div>
                         </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <aside className="space-y-3">
+                  <div className="rounded-2xl border border-white/12 bg-gradient-to-b from-[#152238] to-[#0e1626] p-4">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400 mb-3">Explore</p>
+                    <div className="grid grid-cols-1 gap-2.5">
+                      <ExploreBtn
+                        onClick={() => navigate(`/graph/${id}`)}
+                        icon={<Network className="size-4 shrink-0" />}
+                        label="Knowledge Graph"
+                        primary
+                      />
+                      {entity.type === "person" ? (
+                        <ExploreBtn
+                          onClick={() => navigate(`/family-tree/${id}`)}
+                          icon={<GitBranch className="size-4 shrink-0" />}
+                          label="Family Tree"
+                        />
+                      ) : (
+                        <ExploreBtn
+                          onClick={() => setActiveTab(categories.find((c) => c.id === "organization" || c.kind === "related")?.id ?? "overview")}
+                          icon={<Building2 className="size-4 shrink-0" />}
+                          label="Org details"
+                        />
                       )}
                     </div>
-
-                    <ul className="relative divide-y divide-white/[0.06] border-t border-white/8">
-                      {quickFacts.map((qf) => {
-                        const QIcon = qf.icon;
-                        const tone =
-                          qf.tone === "violet" ? "bg-violet-400/15 text-violet-300"
-                          : qf.tone === "amber" ? "bg-amber-400/15 text-amber-300"
-                          : qf.tone === "emerald" ? "bg-emerald-400/15 text-emerald-300"
-                          : qf.tone === "rose" ? "bg-rose-400/15 text-rose-300"
-                          : "bg-cyan-400/15 text-cyan-300";
-                        return (
-                          <li key={qf.label} className="group flex gap-3 px-4 py-3 sm:px-5 hover:bg-white/[0.03] transition-colors">
-                            <span className={cn("mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg", tone)}>
-                              <QIcon className="size-4" />
-                            </span>
-                            <div className="min-w-0 flex-1">
-                              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1">{qf.label}</p>
-                              <div className="flex flex-wrap gap-1.5">
-                                {qf.lines.map((line, i) =>
-                                  line.id ? (
-                                    <button
-                                      key={`${line.text}-${i}`}
-                                      onClick={() => navigate(`/entity/${line.id}`)}
-                                      className={cn(
-                                        "rounded-md border px-2 py-0.5 text-left text-[12.5px] leading-snug transition-colors cursor-pointer",
-                                        i === 0
-                                          ? "border-white/15 bg-white/8 text-white font-medium hover:border-cyan-400/40 hover:bg-cyan-400/10"
-                                          : "border-white/10 bg-transparent text-slate-300 hover:border-cyan-400/30 hover:text-cyan-200"
-                                      )}
-                                    >
-                                      {line.text}
-                                    </button>
-                                  ) : (
-                                    <span
-                                      key={`${line.text}-${i}`}
-                                      className={cn(
-                                        "rounded-md border px-2 py-0.5 text-[12.5px] leading-snug",
-                                        i === 0
-                                          ? "border-white/15 bg-white/8 text-white font-medium"
-                                          : "border-white/10 text-slate-300"
-                                      )}
-                                    >
-                                      {line.text}
-                                    </span>
-                                  )
-                                )}
-                              </div>
-                            </div>
-                          </li>
-                        );
-                      })}
-                      {quickFacts.length === 0 && (
-                        <li className="px-5 py-4 text-sm text-slate-400">Gathering dossier details…</li>
-                      )}
-                    </ul>
-                  </div>
-
-                  <div className="mt-3.5 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                    <ExploreBtn
-                      onClick={() => navigate(`/graph/${id}`)}
-                      icon={<Network className="size-4 shrink-0" />}
-                      label="Knowledge Graph"
-                      primary
-                    />
-                    {entity.type === "person" ? (
-                      <ExploreBtn
-                        onClick={() => navigate(`/family-tree/${id}`)}
-                        icon={<GitBranch className="size-4 shrink-0" />}
-                        label="Family Tree"
-                      />
-                    ) : (
-                      <ExploreBtn
-                        onClick={() => setActiveTab(categories.find((c) => c.kind === "related")?.id ?? "overview")}
-                        icon={<Sparkles className="size-4 shrink-0" />}
-                        label="Related"
-                      />
+                    {quickMetrics.length > 0 && (
+                      <div className="mt-4 grid grid-cols-3 gap-2">
+                        {quickMetrics.map((m) => (
+                          <div key={m.label} className="rounded-xl border border-white/10 bg-white/[0.04] px-2 py-2 text-center">
+                            <p className="text-sm font-bold text-white truncate">{m.value}</p>
+                            <p className="text-[9px] uppercase tracking-wider text-slate-500 mt-0.5">{m.label}</p>
+                          </div>
+                        ))}
+                      </div>
                     )}
                   </div>
                 </aside>
