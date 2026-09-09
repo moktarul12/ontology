@@ -109,6 +109,8 @@ export type GraphNode = {
   type: EntityType;
   thumbnail?: string;
   description?: string;
+  /** Sex/gender from Wikidata P21 when known (family-tree orientation) */
+  gender?: "male" | "female";
   x?: number;
   y?: number;
   fx?: number | null;

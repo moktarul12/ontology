@@ -5,23 +5,24 @@ import { motion } from "motion/react";
 import { toast } from "sonner";
 import {
   ArrowLeft, Network, Share2, RotateCcw, GitBranch,
-  ChevronUp, ChevronDown, Users, Info,
+  Users, Info, LayoutGrid, ChevronDown,
 } from "lucide-react";
 import SearchBox from "@/components/search/SearchBox.tsx";
 import FamilyTreeCanvas from "./_components/FamilyTreeCanvas.tsx";
 import NodeDetailModal from "@/pages/graph/_components/NodeDetailModal.tsx";
-import { fetchEntitySummary, fetchFamilyData } from "@/lib/wikidata/api.ts";
+import { fetchEntitySummary, fetchFamilyData, dedupeFamilyEdges } from "@/lib/wikidata/api.ts";
 import type { GraphNode, GraphEdge } from "@/lib/wikidata/types.ts";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { cn } from "@/lib/utils.ts";
 
 // Relation legend data
 const REL_LEGEND = [
-  { label: "father",  color: "#4DBFEF" },
-  { label: "mother",  color: "#E86B9B" },
-  { label: "spouse",  color: "#E8B84D" },
-  { label: "child",   color: "#4DC48A" },
-  { label: "sibling", color: "#B46DE8" },
+  { label: "father",   color: "#5B9FD8" },
+  { label: "mother",   color: "#D86B9B" },
+  { label: "son",      color: "#4DC48A" },
+  { label: "daughter", color: "#4DC48A" },
+  { label: "spouse",   color: "#E8B84D" },
+  { label: "sibling",  color: "#A46DD8" },
 ] as const;
 
 export default function FamilyTreePage() {
@@ -37,6 +38,8 @@ export default function FamilyTreePage() {
   const [loading, setLoading] = useState(true);
   const [showLegend, setShowLegend] = useState(false);
   const [depth, setDepth] = useState(1);
+  const [arrowDir, setArrowDir] = useState<"in" | "out" | "both">("out");
+  const [arrangeNonce, setArrangeNonce] = useState(0);
 
   // ── Root entity label ──────────────────────────────────────────────────
   const { data: rootEntity } = useQuery({
@@ -88,7 +91,7 @@ export default function FamilyTreePage() {
       }
 
       setNodes((prev) => [...prev, ...newNodes]);
-      setEdges((prev) => [...prev, ...newEdges]);
+      setEdges((prev) => dedupeFamilyEdges([...prev, ...newEdges]));
       setLoadedIds((prev) => new Set([...prev, ...data.nodes.map((n) => n.id)]));
 
       if (newNodes.length > 0) {
@@ -106,16 +109,22 @@ export default function FamilyTreePage() {
   }, [expandingIds, loadedIds, edges]);
 
   // ── Depth reload ───────────────────────────────────────────────────────
-  const handleDepthChange = (delta: number) => {
-    const newDepth = Math.max(1, Math.min(3, depth + delta));
-    setDepth(newDepth);
-    if (id) loadTree(id, newDepth);
+  const handleDepthSelect = (value: number) => {
+    const next = Math.max(1, Math.min(3, value));
+    if (next === depth) return;
+    setDepth(next);
+    if (id) loadTree(id, next);
   };
 
   const handleReset = () => {
     const w = window as unknown as Record<string, unknown>;
     const fn = w.__treeResetZoom;
     if (typeof fn === "function") fn();
+  };
+
+  const handleAutoArrange = () => {
+    setArrangeNonce((n) => n + 1);
+    toast.success("Tree auto-arranged");
   };
 
   // Count ancestor/descendant nodes for stats
@@ -166,28 +175,56 @@ export default function FamilyTreePage() {
           </div>
 
           <div className="flex items-center gap-1.5 ml-auto">
-            {/* Depth control */}
-            <div className="flex items-center gap-1 rounded-lg border border-border/60 bg-card/60 px-1.5 py-1">
-              <button
-                onClick={() => handleDepthChange(-1)}
-                disabled={depth <= 1 || loading}
-                className="flex size-6 items-center justify-center rounded text-muted-foreground hover:text-foreground disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed transition-colors"
-                title="Fewer generations"
-              >
-                <ChevronUp className="size-3.5" />
-              </button>
-              <span className="px-2 text-xs font-mono text-foreground min-w-[58px] text-center">
-                {loading ? "…" : `${depth} gen${depth > 1 ? "s" : ""}`}
-              </span>
-              <button
-                onClick={() => handleDepthChange(1)}
-                disabled={depth >= 3 || loading}
-                className="flex size-6 items-center justify-center rounded text-muted-foreground hover:text-foreground disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed transition-colors"
-                title="More generations"
-              >
-                <ChevronDown className="size-3.5" />
-              </button>
+            {/* Relation arrow direction: out (default) / in / both */}
+            <div className="flex items-center rounded-lg border border-border/60 bg-card/60 p-0.5" title="Relation perspective: Out = father/mother, In = son/daughter">
+              {([
+                { id: "in" as const, label: "In" },
+                { id: "out" as const, label: "Out" },
+                { id: "both" as const, label: "Both" },
+              ]).map((opt) => (
+                <button
+                  key={opt.id}
+                  onClick={() => setArrowDir(opt.id)}
+                  className={cn(
+                    "rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors cursor-pointer",
+                    arrowDir === opt.id
+                      ? "bg-primary/20 text-primary"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  {opt.label}
+                </button>
+              ))}
             </div>
+
+            {/* Depth / hops dropdown */}
+            <label className="relative flex items-center gap-1.5 rounded-lg border border-border/60 bg-card/60 pl-2.5 pr-1 py-1" title="Generation depth / hops">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Depth</span>
+              <div className="relative">
+                <select
+                  value={depth}
+                  disabled={loading}
+                  onChange={(e) => handleDepthSelect(Number(e.target.value))}
+                  className="appearance-none cursor-pointer rounded-md border-0 bg-transparent py-1 pl-1.5 pr-6 text-xs font-mono font-semibold text-foreground outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <option value={1}>1 hop</option>
+                  <option value={2}>2 hops</option>
+                  <option value={3}>3 hops</option>
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-0.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              </div>
+            </label>
+
+            {/* Auto arrange */}
+            <button
+              onClick={handleAutoArrange}
+              disabled={loading || nodes.length === 0}
+              className="flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-2.5 py-1.5 text-[11px] font-semibold text-primary hover:bg-primary/20 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Auto-arrange layout by generation"
+            >
+              <LayoutGrid className="size-3.5" />
+              Auto arrange
+            </button>
 
             {/* Legend toggle */}
             <button
@@ -252,7 +289,7 @@ export default function FamilyTreePage() {
               </div>
             ))}
             <span className="text-[10px] text-muted-foreground/50 ml-auto hidden md:block">
-              Ancestors above · Descendants below · Spouses &amp; siblings same row
+              Out = father/mother · In = son/daughter · Both = both labels
             </span>
           </motion.div>
         )}
@@ -327,6 +364,8 @@ export default function FamilyTreePage() {
             rootId={id!}
             onNodeClick={setSelectedNode}
             expandingIds={expandingIds}
+            arrowDir={arrowDir}
+            arrangeNonce={arrangeNonce}
           />
         )}
 
@@ -357,11 +396,16 @@ export default function FamilyTreePage() {
           </div>
         )}
 
-        {/* Hint */}
+        {/* Floating auto arrange */}
         {!loading && nodes.length > 0 && (
-          <div className="absolute bottom-4 right-4 rounded-lg border border-border/40 bg-card/70 backdrop-blur-sm px-3 py-1.5 text-[10px] text-muted-foreground/60 hidden sm:block pointer-events-none">
-            Click node for details · Click expand to grow · Drag to reposition
-          </div>
+          <button
+            onClick={handleAutoArrange}
+            className="absolute bottom-4 right-4 flex items-center gap-2 rounded-xl border border-primary/40 bg-card/90 backdrop-blur-sm px-3.5 py-2 text-xs font-semibold text-primary shadow-lg shadow-black/20 hover:bg-primary/15 transition-colors cursor-pointer"
+            title="Re-layout tree by generation"
+          >
+            <LayoutGrid className="size-3.5" />
+            Auto arrange
+          </button>
         )}
       </div>
     </div>

@@ -762,7 +762,113 @@ export async function fetchFamilyData(
   const nodes = new Map<string, import("./types.ts").GraphNode>();
   const edges: import("./types.ts").GraphEdge[] = [];
   await expandFamilyNode(rootId, depth, visited, nodes, edges);
-  return { nodes: [...nodes.values()], edges };
+  const normalized = normalizeChildEdgesToParent(edges, nodes);
+  return { nodes: [...nodes.values()], edges: dedupeFamilyEdges(normalized) };
+}
+
+/**
+ * A → child → B  becomes  B → father/mother → A
+ * so arrows read from the child's perspective toward the parent.
+ */
+function normalizeChildEdgesToParent(
+  edges: import("./types.ts").GraphEdge[],
+  nodes: Map<string, import("./types.ts").GraphNode>,
+): import("./types.ts").GraphEdge[] {
+  const idOf = (v: string | import("./types.ts").GraphNode) =>
+    typeof v === "object" ? v.id : v;
+
+  return edges.map((e) => {
+    if (e.label.toLowerCase() !== "child" && e.propertyId !== "P40") return e;
+
+    const parentId = idOf(e.source);
+    const childId = idOf(e.target);
+    const parentGender = nodes.get(parentId)?.gender;
+    const label =
+      parentGender === "female" ? "mother"
+      : parentGender === "male" ? "father"
+      : "parent";
+    const propertyId =
+      label === "mother" ? "P25"
+      : label === "father" ? "P22"
+      : "P40";
+
+    return {
+      ...e,
+      id: `${childId}-${propertyId}-${parentId}`,
+      source: childId,
+      target: parentId,
+      label,
+      propertyId,
+    };
+  });
+}
+
+/**
+ * When depth > 1, expanded relatives often mirror claims back
+ * (spouse↔spouse, sibling↔sibling, father + child). Keep one edge per bond.
+ */
+export function dedupeFamilyEdges(edges: import("./types.ts").GraphEdge[]): import("./types.ts").GraphEdge[] {
+  const priority: Record<string, number> = {
+    father: 50,
+    mother: 50,
+    parent: 45,
+    spouse: 40,
+    sibling: 40,
+    child: 30,
+  };
+
+  const pairKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+  const idOf = (v: string | import("./types.ts").GraphNode) =>
+    typeof v === "object" ? v.id : v;
+
+  const groups = new Map<string, import("./types.ts").GraphEdge[]>();
+  for (const e of edges) {
+    const key = pairKey(idOf(e.source), idOf(e.target));
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(e);
+  }
+
+  const out: import("./types.ts").GraphEdge[] = [];
+  for (const group of groups.values()) {
+    if (group.length === 1) {
+      out.push(group[0]);
+      continue;
+    }
+
+    // Prefer father/mother/parent over reciprocal "child" for the same pair
+    const hasParent = group.some((e) => /^(father|mother|parent)$/i.test(e.label));
+    const candidates = hasParent
+      ? group.filter((e) => !/^child$/i.test(e.label))
+      : group;
+
+    const sorted = [...candidates].sort(
+      (a, b) => (priority[b.label.toLowerCase()] ?? 0) - (priority[a.label.toLowerCase()] ?? 0)
+    );
+
+    const kept: import("./types.ts").GraphEdge[] = [];
+    const seenSymmetric = new Set<string>();
+
+    for (const e of sorted) {
+      const lbl = e.label.toLowerCase();
+      // Symmetric bonds: one edge only
+      if (lbl === "spouse" || lbl === "sibling") {
+        if (seenSymmetric.has(lbl)) continue;
+        seenSymmetric.add(lbl);
+        kept.push(e);
+        continue;
+      }
+      // Parent/child bond: one directed edge only
+      if (lbl === "father" || lbl === "mother" || lbl === "parent" || lbl === "child") {
+        if (kept.some((k) => /^(father|mother|parent|child)$/i.test(k.label))) continue;
+        kept.push(e);
+        continue;
+      }
+      if (!kept.some((k) => k.id === e.id || k.label.toLowerCase() === lbl)) kept.push(e);
+    }
+
+    out.push(...(kept.length ? kept : [sorted[0]]));
+  }
+  return out;
 }
 
 async function expandFamilyNode(
@@ -801,6 +907,7 @@ async function expandFamilyNode(
   const deathYear = typeof death === "object" && death && "time" in death
     ? extractYear(death.time as string) : undefined;
   const lifespan = birthYear ? `${birthYear}–${deathYear ?? ""}` : undefined;
+  const gender = sexFromClaims(entity.claims);
 
   if (!nodes.has(id)) {
     nodes.set(id, {
@@ -808,7 +915,14 @@ async function expandFamilyNode(
       label: lifespan ? `${label}\n${lifespan}` : label,
       description: desc,
       type: "person",
+      gender,
     });
+  } else {
+    const existing = nodes.get(id)!;
+    if (gender && !existing.gender) existing.gender = gender;
+    if (lifespan && !existing.label.includes("\n")) {
+      existing.label = `${label}\n${lifespan}`;
+    }
   }
 
   if (depth === 0) return;
@@ -850,6 +964,17 @@ async function expandFamilyNode(
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function sexFromClaims(claims?: Record<string, unknown[]>): "male" | "female" | undefined {
+  const list = claims?.["P21"] as ClaimSnakValue[] | undefined;
+  const val = list?.[0]?.mainsnak?.datavalue?.value;
+  if (typeof val !== "object" || !val || !("id" in val)) return undefined;
+  const qid = (val as { id: string }).id;
+  // Q6581097 male, Q6581072 female (Wikidata)
+  if (qid === "Q6581097") return "male";
+  if (qid === "Q6581072") return "female";
+  return undefined;
+}
 
 function pickLabel(labels?: Record<string, { value: string }>): string | null {
   if (!labels) return null;

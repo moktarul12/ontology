@@ -34,16 +34,79 @@ const ROLE_STYLE: Record<NodeRole, { border: string; bg: string; text: string; s
 
 // ── Relation edge colors ─────────────────────────────────────────────────────
 const REL_COLORS: Record<string, string> = {
-  father:  "#5B9FD8",
-  mother:  "#D86B9B",
-  spouse:  "#E8B84D",
-  child:   "#4DC48A",
-  sibling: "#A46DD8",
+  father:   "#5B9FD8",
+  mother:   "#D86B9B",
+  parent:   "#5B9FD8",
+  spouse:   "#E8B84D",
+  child:    "#4DC48A",
+  son:      "#4DC48A",
+  daughter: "#4DC48A",
+  sibling:  "#A46DD8",
 };
 const REL_DEFAULT = "#5A6A8E";
 
+export type ArrowDir = "in" | "out" | "both";
+
 function relColor(label: string): string {
-  return REL_COLORS[label.toLowerCase()] ?? REL_DEFAULT;
+  const key = label.toLowerCase().split(/\s*\/\s*/)[0]?.trim() ?? label;
+  return REL_COLORS[key] ?? REL_DEFAULT;
+}
+
+function childRoleLabel(gender?: "male" | "female"): string {
+  if (gender === "female") return "daughter";
+  if (gender === "male") return "son";
+  return "child";
+}
+
+function edgeEndpointId(v: string | GraphNode): string {
+  return typeof v === "object" ? v.id : v;
+}
+
+/**
+ * Out = stored Wikidata-style label (child → father → parent).
+ * In  = inverted label (parent → son/daughter → child) + reversed arrow.
+ * Both = combined label, arrows on both ends.
+ */
+function displayRelation(
+  edge: GraphEdge,
+  nodes: GraphNode[],
+  mode: ArrowDir,
+): { label: string; reverse: boolean } {
+  const lbl = edge.label.toLowerCase();
+  const src = nodes.find((n) => n.id === edgeEndpointId(edge.source));
+  const tgt = nodes.find((n) => n.id === edgeEndpointId(edge.target));
+
+  if (mode === "out") {
+    return { label: edge.label, reverse: false };
+  }
+
+  if (mode === "in") {
+    if (lbl === "father" || lbl === "mother" || lbl === "parent") {
+      // source is child claiming parent → invert to son/daughter from parent
+      return { label: childRoleLabel(src?.gender), reverse: true };
+    }
+    if (lbl === "child") {
+      // source is parent → invert to father/mother from child
+      const g = src?.gender;
+      return {
+        label: g === "female" ? "mother" : g === "male" ? "father" : "parent",
+        reverse: true,
+      };
+    }
+    // spouse / sibling: same word, reverse arrow for perspective
+    return { label: edge.label, reverse: true };
+  }
+
+  // both
+  if (lbl === "father" || lbl === "mother" || lbl === "parent") {
+    return { label: `${edge.label} / ${childRoleLabel(src?.gender)}`, reverse: false };
+  }
+  if (lbl === "child") {
+    const g = src?.gender;
+    const parent = g === "female" ? "mother" : g === "male" ? "father" : "parent";
+    return { label: `${childRoleLabel(tgt?.gender)} / ${parent}`, reverse: false };
+  }
+  return { label: edge.label, reverse: false };
 }
 
 // ── Generation label names ───────────────────────────────────────────────────
@@ -74,12 +137,12 @@ function assignGenerations(nodes: GraphNode[], edges: GraphEdge[], rootId: strin
       const lbl = edge.label.toLowerCase();
 
       if (src === cur && !gen.has(tgt)) {
-        const d = lbl === "father" || lbl === "mother" ? -1 : lbl === "child" ? 1 : 0;
+        const d = lbl === "father" || lbl === "mother" || lbl === "parent" ? -1 : lbl === "child" ? 1 : 0;
         gen.set(tgt, g + d);
         queue.push(tgt);
       }
       if (tgt === cur && !gen.has(src)) {
-        const d = lbl === "father" || lbl === "mother" ? 1 : lbl === "child" ? -1 : 0;
+        const d = lbl === "father" || lbl === "mother" || lbl === "parent" ? 1 : lbl === "child" ? -1 : 0;
         gen.set(src, g + d);
         queue.push(src);
       }
@@ -115,10 +178,21 @@ type Props = {
   rootId: string;
   onNodeClick: (node: GraphNode) => void;
   expandingIds: Set<string>;
+  arrowDir?: ArrowDir;
+  /** Increment to trigger auto-arrange */
+  arrangeNonce?: number;
 };
 
 // ── Component ────────────────────────────────────────────────────────────────
-export default function FamilyTreeCanvas({ nodes, edges, rootId, onNodeClick, expandingIds }: Props) {
+export default function FamilyTreeCanvas({
+  nodes,
+  edges,
+  rootId,
+  onNodeClick,
+  expandingIds,
+  arrowDir = "out",
+  arrangeNonce = 0,
+}: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
   const simRef = useRef<d3.Simulation<GraphNode, d3.SimulationLinkDatum<GraphNode>> | null>(null);
@@ -210,9 +284,65 @@ export default function FamilyTreeCanvas({ nodes, edges, rootId, onNodeClick, ex
     if (!svgRef.current || !zoomRef.current) return;
     d3.select(svgRef.current).transition().duration(600).call(zoomRef.current.transform, d3.zoomIdentity);
   }, []);
+
+  const autoArrange = useCallback(() => {
+    if (!svgRef.current || nodes.length === 0) return;
+    const W = svgRef.current.clientWidth || 960;
+    const H = svgRef.current.clientHeight || 600;
+    canvasH.current = H;
+
+    const gens = assignGenerations(nodes, edges, rootId);
+    genMapRef.current = gens;
+
+    const byGen = new Map<number, string[]>();
+    for (const [id, g] of gens) {
+      if (!byGen.has(g)) byGen.set(g, []);
+      byGen.get(g)!.push(id);
+    }
+
+    // Clear pinned drag positions and re-seed generation layout
+    nodes.forEach((n) => {
+      n.fx = null;
+      n.fy = null;
+      const g = gens.get(n.id) ?? 0;
+      const row = byGen.get(g) ?? [];
+      const idx = row.indexOf(n.id);
+      const totalW = (NODE_W + 24) * Math.max(row.length, 1);
+      n.x = W / 2 - totalW / 2 + idx * (NODE_W + 24) + NODE_W / 2;
+      n.y = H / 2 + g * LEVEL_HEIGHT;
+    });
+
+    const root = nodes.find((n) => n.id === rootId);
+    if (root) {
+      root.fx = W / 2;
+      root.fy = H / 2;
+      root.x = W / 2;
+      root.y = H / 2;
+    }
+
+    const sim = simRef.current;
+    if (sim) {
+      sim.nodes(nodes);
+      sim.alpha(1).restart();
+    }
+    tick((t) => t + 1);
+    resetZoom();
+  }, [nodes, edges, rootId, resetZoom]);
+
   useEffect(() => {
     (window as unknown as Record<string, unknown>).__treeResetZoom = resetZoom;
+    return () => {
+      delete (window as unknown as Record<string, unknown>).__treeResetZoom;
+    };
   }, [resetZoom]);
+
+  // React to Auto arrange button from the page toolbar
+  const arrangeNonceRef = useRef(0);
+  useEffect(() => {
+    if (!arrangeNonce || arrangeNonce === arrangeNonceRef.current) return;
+    arrangeNonceRef.current = arrangeNonce;
+    autoArrange();
+  }, [arrangeNonce, autoArrange]);
 
   // ── Drag ────────────────────────────────────────────────────────────────────
   const attachDrag = useCallback((el: SVGGElement | null, node: GraphNode) => {
@@ -239,11 +369,19 @@ export default function FamilyTreeCanvas({ nodes, edges, rootId, onNodeClick, ex
     <svg ref={svgRef} className="absolute inset-0 w-full h-full" style={{ cursor: "grab" }}>
       <defs>
         {Object.entries(REL_COLORS).map(([rel, color]) => (
-          <marker key={rel} id={`ft-arr-${rel}`} viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto">
-            <path d="M 0 0 L 10 5 L 0 10 z" fill={color} opacity={0.7} />
-          </marker>
+          <g key={rel}>
+            <marker id={`ft-arr-${rel}`} viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill={color} opacity={0.7} />
+            </marker>
+            <marker id={`ft-arr-start-${rel}`} viewBox="0 0 10 10" refX="2" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill={color} opacity={0.7} />
+            </marker>
+          </g>
         ))}
         <marker id="ft-arr-default" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill={REL_DEFAULT} opacity={0.5} />
+        </marker>
+        <marker id="ft-arr-start-default" viewBox="0 0 10 10" refX="2" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
           <path d="M 0 0 L 10 5 L 0 10 z" fill={REL_DEFAULT} opacity={0.5} />
         </marker>
       </defs>
@@ -284,30 +422,38 @@ export default function FamilyTreeCanvas({ nodes, edges, rootId, onNodeClick, ex
           const tgt = typeof edge.target === "object" ? edge.target : nodes.find(n => n.id === edge.target);
           if (!src || !tgt || src.x === undefined || tgt.x === undefined) return null;
 
-          const sx = src.x ?? 0, sy = src.y ?? 0;
-          const tx = tgt.x ?? 0, ty = tgt.y ?? 0;
+          const { label: displayLabel, reverse } = displayRelation(edge, nodes, arrowDir);
+
+          // For "in", draw from target→source so arrow + label match inverted relation
+          const from = reverse ? tgt : src;
+          const to = reverse ? src : tgt;
+
+          const sx = from.x ?? 0, sy = from.y ?? 0;
+          const tx = to.x ?? 0, ty = to.y ?? 0;
           const dx = tx - sx, dy = ty - sy;
           const len = Math.sqrt(dx * dx + dy * dy) || 1;
 
-          // Edge connects at rect border
-          const x1 = sx + (dx / len) * (NODE_W / 2 + 2);
-          const y1 = sy + (dy / len) * (NODE_H / 2 + 2);
-          const x2 = tx - (dx / len) * (NODE_W / 2 + 9);
-          const y2 = ty - (dy / len) * (NODE_H / 2 + 2);
+          const startPad = arrowDir === "both" ? 9 : 2;
+          const endPad = 9;
+          const x1 = sx + (dx / len) * (NODE_W / 2 + startPad);
+          const y1 = sy + (dy / len) * (NODE_H / 2 + startPad);
+          const x2 = tx - (dx / len) * (NODE_W / 2 + endPad);
+          const y2 = ty - (dy / len) * (NODE_H / 2 + endPad);
 
-          const color = relColor(edge.label);
-          const relKey = edge.label.toLowerCase();
-          const markerId = REL_COLORS[relKey] ? `ft-arr-${relKey}` : "ft-arr-default";
+          const color = relColor(displayLabel);
+          const relKey = displayLabel.toLowerCase().split(/\s*\/\s*/)[0]?.trim() ?? "";
+          const hasNamed = Boolean(REL_COLORS[relKey]);
+          const endMarker = hasNamed ? `ft-arr-${relKey}` : "ft-arr-default";
+          const startMarker = hasNamed ? `ft-arr-start-${relKey}` : "ft-arr-start-default";
+          const markerEnd = `url(#${endMarker})`;
+          const markerStart = arrowDir === "both" ? `url(#${startMarker})` : undefined;
 
-          // For parent-child (vertical), use an elbow path; for horizontal, curve gently
           const isVertical = Math.abs(dy) > Math.abs(dx) * 1.5;
           let pathD: string;
           if (isVertical) {
-            // Orthogonal elbow: down from parent, then across, then down to child
             const midY = (y1 + y2) / 2;
             pathD = `M${x1},${y1} C${x1},${midY} ${x2},${midY} ${x2},${y2}`;
           } else {
-            // Gentle curve for horizontal connections
             const cx = (x1 + x2) / 2;
             const cy = (y1 + y2) / 2 + dx * 0.06;
             pathD = `M${x1},${y1} Q${cx},${cy} ${x2},${y2}`;
@@ -315,19 +461,27 @@ export default function FamilyTreeCanvas({ nodes, edges, rootId, onNodeClick, ex
 
           const lx = (x1 + x2) / 2;
           const ly = isVertical ? (y1 + y2) / 2 : (y1 + y2) / 2 + dx * 0.03;
+          const labelW = Math.max(36, displayLabel.length * 5.2 + 10);
 
           return (
-            <g key={edge.id}>
-              <path d={pathD} fill="none" stroke={`${color}70`} strokeWidth={2} markerEnd={`url(#${markerId})`} />
+            <g key={`${edge.id}-${arrowDir}`}>
+              <path
+                d={pathD}
+                fill="none"
+                stroke={`${color}70`}
+                strokeWidth={2}
+                markerEnd={markerEnd}
+                markerStart={markerStart}
+              />
               {len > 80 && (
                 <g>
-                  <rect x={lx - 18} y={ly - 8} width={36} height={14} rx={4} fill="oklch(0.14 0.018 255)" opacity={0.85} />
+                  <rect x={lx - labelW / 2} y={ly - 8} width={labelW} height={14} rx={4} fill="oklch(0.14 0.018 255)" opacity={0.85} />
                   <text
                     x={lx} y={ly}
                     textAnchor="middle" dominantBaseline="middle"
                     style={{ fontSize: "8px", fill: color, fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, letterSpacing: "0.04em", pointerEvents: "none", userSelect: "none" }}
                   >
-                    {edge.label}
+                    {displayLabel}
                   </text>
                 </g>
               )}
