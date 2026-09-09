@@ -258,3 +258,40 @@
     margin: 0 0 1rem;
   }
 }
+
+/* Light encyclopedia body (KnowledgeHub-style entity layout) */
+.wiki-article-light {
+  color: #334155;
+}
+
+.wiki-article-light h1,
+.wiki-article-light h2,
+.wiki-article-light h3,
+.wiki-article-light h4 {
+  color: #0f172a;
+}
+
+.wiki-article-light h2 {
+  border-bottom-color: #e2e8f0;
+}
+
+.wiki-article-light a {
+  color: #0e7490;
+}
+
+.wiki-article-light table {
+  background: #f8fafc;
+}
+
+.wiki-article-light th,
+.wiki-article-light td {
+  border-color: #e2e8f0;
+}
+
+.wiki-article-light th {
+  background: #f1f5f9;
+}
+
+.entity-body a {
+  color: inherit;
+}

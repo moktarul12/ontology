@@ -65,6 +65,9 @@ const TYPE_QID_MAP: Record<string, EntityType> = {
   Q178706: "organization",
   Q245065: "organization",
   Q17127659: "organization",
+  Q891723: "organization", // public company
+  Q167037: "organization", // corporation
+  Q155271: "organization", // retail company
   Q1656682: "event",
   Q1190554: "event",
   Q198: "event",
@@ -276,12 +279,13 @@ export async function fetchEntitySummary(id: string): Promise<EntitySummary> {
   }
   const type = detectTypeFromInstanceOf(instanceOf.map((i) => i.id));
 
-  // Images
+  // Images from Wikidata (P18 portrait preferred)
   const images: EntityImage[] = [];
   for (const pid of IMAGE_PROPERTY_IDS) {
     for (const claim of (claims[pid] as ClaimSnakValue[] | undefined) ?? []) {
       const filename = claim.mainsnak?.datavalue?.value;
       if (typeof filename !== "string") continue;
+      if (!isUsableMediaFilename(filename)) continue;
       images.push({
         propertyId: pid,
         property: propertyLabels[pid] ?? GRAPH_PROP_LABELS[pid] ?? pid,
@@ -292,8 +296,15 @@ export async function fetchEntitySummary(id: string): Promise<EntitySummary> {
     }
   }
 
-  let thumbnail: string | undefined = images[0]?.url || images[0]?.thumb;
-  if (wikipedia?.thumbnail) thumbnail = wikipedia.thumbnail;
+  // Prefer Wikidata P18 (and other image props) for the hero — never let a
+  // Wikipedia decorative/SVG gallery file overwrite the portrait.
+  const p18 = images.find((i) => i.propertyId === "P18");
+  let thumbnail: string | undefined =
+    p18?.url ||
+    images[0]?.url ||
+    wikipedia?.thumbnail ||
+    undefined;
+
   if (!thumbnail && sitelink) {
     thumbnail = await fetchWikipediaThumbnail(sitelink.title);
   }
@@ -304,6 +315,7 @@ export async function fetchEntitySummary(id: string): Promise<EntitySummary> {
     for (const g of wikipedia.gallery) {
       const key = g.filename.toLowerCase();
       if (seen.has(key)) continue;
+      if (!isUsableMediaFilename(g.filename)) continue;
       seen.add(key);
       images.push({
         propertyId: "wiki-gallery",
@@ -313,6 +325,12 @@ export async function fetchEntitySummary(id: string): Promise<EntitySummary> {
         filename: g.filename,
       });
     }
+  }
+
+  // If still no portrait, use first usable gallery photo
+  if (!thumbnail) {
+    const firstPhoto = images.find((i) => /\.(jpe?g|png|webp)$/i.test(i.filename));
+    thumbnail = firstPhoto?.url;
   }
 
   // Build ALL facts
@@ -938,13 +956,19 @@ async function fetchWikipediaArticle(title: string): Promise<WikipediaArticle | 
     const lead = textArticle?.lead || stripHtmlToText(parsed?.html ?? "").slice(0, 1200);
     const sections = textArticle?.sections ?? [];
 
+    // Prefer Wikipedia pageimages / REST over first parse-gallery file (often an icon SVG)
+    const portrait =
+      textArticle?.thumbnail ||
+      pickPortraitFromGallery(parsed?.gallery) ||
+      parsed?.thumbnail;
+
     return {
       title: parsed?.title || textArticle?.title || title,
       url: wikiUrl(title),
       lead,
       sections, // keep ALL sections including references
       html: parsed?.html,
-      thumbnail: parsed?.thumbnail || textArticle?.thumbnail,
+      thumbnail: portrait,
       gallery: parsed?.gallery ?? [],
       otherLanguages,
     };
@@ -987,9 +1011,7 @@ async function fetchWikipediaParsedHtml(title: string): Promise<{
 
   const rawHtml = data.parse.text["*"];
   const html = sanitizeWikiHtml(rawHtml);
-  const imageNames = (data.parse.images ?? []).filter((name) =>
-    /\.(jpe?g|png|gif|webp|svg)$/i.test(name) && !/semi-protection|ambox|edit|icon|logo_of_wikimedia|question_book|padlock/i.test(name)
-  );
+  const imageNames = (data.parse.images ?? []).filter((name) => isUsableMediaFilename(name));
 
   const gallery = imageNames.slice(0, 24).map((filename) => ({
     filename,
@@ -1000,7 +1022,7 @@ async function fetchWikipediaParsedHtml(title: string): Promise<{
   return {
     title: data.parse.title ?? title,
     html,
-    thumbnail: gallery[0]?.url,
+    thumbnail: pickPortraitFromGallery(gallery),
     gallery,
   };
 }
@@ -1211,7 +1233,24 @@ export async function resolveWikipediaTitleToQid(title: string): Promise<string 
 
 function getCommonsThumbUrl(filename: string, width: number): string {
   const encoded = encodeURIComponent(filename.replace(/ /g, "_"));
+  // Special:FilePath redirects to an allowed Wikimedia thumbnail size
   return `https://commons.wikimedia.org/wiki/Special:FilePath/${encoded}?width=${width}`;
+}
+
+/** Skip icons, audio, and decorative wiki chrome — keep real photos/illustrations */
+function isUsableMediaFilename(filename: string): boolean {
+  if (!/\.(jpe?g|png|gif|webp)$/i.test(filename)) return false;
+  return !/semi-protection|ambox|edit|icon|logo_of_wikimedia|question_book|padlock|symbol_|commons-logo|wiki_letter|red_pencil|increase2|decrease2|sound-icon|speaker_icon|nuvola|crystal_clear|ogg|opus/i.test(
+    filename
+  );
+}
+
+function pickPortraitFromGallery(
+  gallery?: Array<{ filename: string; url: string; thumb: string }>
+): string | undefined {
+  if (!gallery?.length) return undefined;
+  const photo = gallery.find((g) => /\.(jpe?g|png|webp)$/i.test(g.filename));
+  return photo?.url ?? gallery[0]?.url;
 }
 
 function formatWikidataTime(time: string, precision?: number): string {
@@ -1246,6 +1285,11 @@ function formatWikidataTime(time: string, precision?: number): string {
 function formatNumber(amount: string): string {
   const n = Number(amount);
   if (!Number.isFinite(n)) return amount;
+  const abs = Math.abs(n);
+  if (abs >= 1e12) return `${(n / 1e12).toFixed(abs >= 1e13 ? 0 : 2)}T`;
+  if (abs >= 1e9) return `${(n / 1e9).toFixed(abs >= 1e10 ? 0 : 2)}B`;
+  if (abs >= 1e6) return `${(n / 1e6).toFixed(abs >= 1e7 ? 0 : 1)}M`;
+  if (abs >= 1e3) return `${(n / 1e3).toFixed(abs >= 1e4 ? 0 : 1)}K`;
   return n.toLocaleString("en-US");
 }
 
