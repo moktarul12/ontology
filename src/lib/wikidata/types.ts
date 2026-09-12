@@ -111,6 +111,15 @@ export type GraphNode = {
   description?: string;
   /** Sex/gender from Wikidata P21 when known (family-tree orientation) */
   gender?: "male" | "female";
+  /** Knowledge-graph / family-tree presentation hubs */
+  kind?: "entity" | "hub";
+  hubOf?: string;
+  hubPropertyId?: string;
+  hubRelation?: string;
+  /** "+N more" control under a relation hub */
+  hubMore?: boolean;
+  hubTotal?: number;
+  hubShown?: number;
   x?: number;
   y?: number;
   fx?: number | null;

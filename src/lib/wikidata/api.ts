@@ -116,6 +116,7 @@ const GRAPH_PROP_LABELS: Record<string, string> = {
   P140: "Religion", P150: "Contains", P155: "Follows", P156: "Followed by",
   P159: "Headquarters", P161: "Cast member", P166: "Award received",
   P169: "CEO", P172: "Ethnic group", P17: "Country", P190: "Sister city",
+  P170: "Creator", P175: "Performer", P162: "Producer",
   P241: "Military branch", P276: "Location", P279: "Subclass of",
   P30: "Continent", P355: "Subsidiary", P364: "Original language",
   P414: "Stock exchange", P452: "Industry", P463: "Member of",
@@ -644,11 +645,135 @@ function extractYearFromLabel(label: string): string {
 // ─── Graph data ──────────────────────────────────────────────────────────────
 
 const GRAPH_PROPS = [
-  "P31", "P17", "P131", "P279", "P361", "P527", "P22", "P25", "P26", "P40",
+  "P31", "P17", "P131", "P361", "P527", "P22", "P25", "P26", "P40",
   "P19", "P20", "P27", "P106", "P108", "P69", "P112", "P463", "P1344",
   "P159", "P169", "P140", "P136", "P495", "P57", "P58", "P161", "P86",
-  "P50", "P170", "P127", "P749", "P355", "P166", "P39", "P452",
+  "P50", "P170", "P175", "P162", "P800", "P127", "P749", "P355", "P166", "P39", "P452",
 ];
+
+/** Roles found on works pointing back to a person (filmography / discography). */
+export const CREATIVE_ROLE_QUERIES: Array<{ pid: string; label: string; limit: number }> = [
+  { pid: "P161", label: "Actor", limit: 10 },
+  { pid: "P57", label: "Director", limit: 10 },
+  { pid: "P162", label: "Producer", limit: 10 },
+  { pid: "P86", label: "Composer", limit: 10 },
+  { pid: "P175", label: "Performer", limit: 10 },
+  { pid: "P58", label: "Screenwriter", limit: 10 },
+];
+
+export function isCreativeRoleProperty(propertyId: string): boolean {
+  return CREATIVE_ROLE_QUERIES.some((r) => r.pid === propertyId);
+}
+
+const SPARQL_ENDPOINT = "https://query.wikidata.org/sparql";
+
+/**
+ * Reverse-lookup works where `personId` appears as cast / director / producer / etc.
+ * Wikidata stores those claims on the work, so outbound expand alone misses filmography.
+ */
+export async function fetchCreativeRoles(
+  personId: string,
+  opts?: { propertyId?: string; existingIds?: Set<string>; limitPerRole?: number },
+): Promise<Array<{ qid: string; pid: string; label: string; workLabel: string; type: EntityType }>> {
+  const roles = opts?.propertyId
+    ? CREATIVE_ROLE_QUERIES.filter((r) => r.pid === opts.propertyId)
+    : CREATIVE_ROLE_QUERIES;
+  if (!roles.length) return [];
+
+  const unions = roles
+    .map(
+      (r) => `
+    {
+      SELECT ?work ?prop WHERE {
+        ?work wdt:${r.pid} wd:${personId} .
+        BIND("${r.pid}" AS ?prop)
+      } LIMIT ${opts?.limitPerRole ?? r.limit}
+    }`,
+    )
+    .join(" UNION ");
+
+  const sparql = `
+    SELECT ?work ?workLabel ?prop WHERE {
+      ${unions}
+      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+    }
+  `;
+
+  try {
+    const res = await fetch(
+      `${SPARQL_ENDPOINT}?${new URLSearchParams({ format: "json", query: sparql })}`,
+      { headers: { Accept: "application/sparql-results+json" } },
+    );
+    if (!res.ok) return [];
+    const data = await res.json() as {
+      results?: { bindings?: Array<{
+        work?: { value?: string };
+        workLabel?: { value?: string };
+        prop?: { value?: string };
+      }> };
+    };
+
+    const out: Array<{ qid: string; pid: string; label: string; workLabel: string; type: EntityType }> = [];
+    const seen = new Set<string>();
+    const existing = opts?.existingIds ?? new Set<string>();
+
+    for (const row of data.results?.bindings ?? []) {
+      const uri = row.work?.value ?? "";
+      const qid = uri.split("/").pop();
+      const pid = row.prop?.value;
+      if (!qid || !pid || existing.has(qid)) continue;
+      const key = `${pid}:${qid}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const role = CREATIVE_ROLE_QUERIES.find((r) => r.pid === pid);
+      out.push({
+        qid,
+        pid,
+        label: role?.label ?? GRAPH_PROP_LABELS[pid] ?? pid,
+        workLabel: row.workLabel?.value ?? qid,
+        type: "work",
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+function roleLabelForProp(pid: string): string | undefined {
+  return CREATIVE_ROLE_QUERIES.find((r) => r.pid === pid)?.label;
+}
+
+/** Fetch more works for one creative role (hub expand). */
+export async function fetchCreativeRoleExpansion(
+  personId: string,
+  propertyId: string,
+  existingIds: Set<string>,
+): Promise<GraphData> {
+  const roles = await fetchCreativeRoles(personId, {
+    propertyId,
+    existingIds,
+    limitPerRole: 20,
+  });
+  const nodes: import("./types.ts").GraphNode[] = [];
+  const edges: import("./types.ts").GraphEdge[] = [];
+  for (const r of roles) {
+    nodes.push({
+      id: r.qid,
+      label: r.workLabel,
+      type: r.type,
+      kind: "entity",
+    });
+    edges.push({
+      id: `${personId}-${r.pid}-${r.qid}`,
+      source: personId,
+      target: r.qid,
+      label: r.label,
+      propertyId: r.pid,
+    });
+  }
+  return { nodes, edges };
+}
 
 export async function fetchGraphData(
   rootId: string,
@@ -690,11 +815,12 @@ async function expandNode(
   const label = pickLabel(entity.labels) ?? id;
   const desc = pickLabel(entity.descriptions) ?? undefined;
 
-  const neighbors: { qid: string; pid: string }[] = [];
+  const neighbors: { qid: string; pid: string; edgeLabel?: string }[] = [];
   for (const pid of GRAPH_PROPS) {
     const claimList = entity.claims?.[pid] as ClaimSnakValue[] | undefined;
     if (!claimList) continue;
-    for (const claim of claimList.slice(0, 5)) {
+    const cap = pid === "P800" ? 12 : 5;
+    for (const claim of claimList.slice(0, cap)) {
       const val = claim.mainsnak?.datavalue?.value;
       if (typeof val === "object" && val && "id" in val && typeof val.id === "string") {
         neighbors.push({ qid: val.id, pid });
@@ -711,19 +837,40 @@ async function expandNode(
     .filter((x): x is string => Boolean(x));
   const type = detectTypeFromInstanceOf(instanceOfIds);
 
-  if (!nodes.has(id)) nodes.set(id, { id, label, description: desc, type });
-  if (depth === 0 || neighbors.length === 0) return;
+  if (!nodes.has(id)) nodes.set(id, { id, label, description: desc, type, kind: "entity" });
+  if (depth === 0) return;
 
-  const newQids = neighbors.map((n) => n.qid).filter((q) => !visited.has(q));
+  // Person filmography / discography via reverse claims on works
+  if (type === "person") {
+    const roles = await fetchCreativeRoles(id, {
+      existingIds: new Set([...visited, ...nodes.keys()]),
+    });
+    for (const r of roles) {
+      neighbors.push({ qid: r.qid, pid: r.pid, edgeLabel: r.label });
+      if (!nodes.has(r.qid)) {
+        nodes.set(r.qid, {
+          id: r.qid,
+          label: r.workLabel,
+          type: r.type,
+          kind: "entity",
+        });
+      }
+    }
+  }
+
+  if (neighbors.length === 0) return;
+
+  const newQids = neighbors.map((n) => n.qid).filter((q) => !visited.has(q) && !nodes.has(q));
   const batchLabels = newQids.length > 0 ? await resolveLabels(newQids) : {};
   const batchTypes = newQids.length > 0 ? await fetchEntityTypes(newQids) : {};
 
-  for (const { qid, pid } of neighbors) {
+  for (const { qid, pid, edgeLabel } of neighbors) {
     if (!nodes.has(qid)) {
       nodes.set(qid, {
         id: qid,
         label: batchLabels[qid] ?? qid,
         type: batchTypes[qid] ?? "unknown",
+        kind: "entity",
       });
     }
     const edgeId = `${id}-${pid}-${qid}`;
@@ -732,7 +879,7 @@ async function expandNode(
         id: edgeId,
         source: id,
         target: qid,
-        label: GRAPH_PROP_LABELS[pid] ?? pid,
+        label: edgeLabel ?? roleLabelForProp(pid) ?? GRAPH_PROP_LABELS[pid] ?? pid,
         propertyId: pid,
       });
     }
