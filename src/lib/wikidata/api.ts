@@ -761,9 +761,47 @@ export async function fetchFamilyData(
   const visited = new Set([...existingIds, rootId]);
   const nodes = new Map<string, import("./types.ts").GraphNode>();
   const edges: import("./types.ts").GraphEdge[] = [];
-  await expandFamilyNode(rootId, depth, visited, nodes, edges);
+  /** Claims seen while expanding — used to link co-parents at hop 1. */
+  const claimsCache = new Map<string, Record<string, ClaimSnakValue[] | undefined>>();
+  await expandFamilyNode(rootId, depth, visited, nodes, edges, claimsCache);
+  // Leaf nodes (depth 0) were not expanded for neighbors; still wire family
+  // claims between people already on the graph (e.g. spouse → shared child).
+  linkFamilyClaimsAmongKnown(claimsCache, nodes, edges);
   const normalized = normalizeChildEdgesToParent(edges, nodes);
   return { nodes: [...nodes.values()], edges: dedupeFamilyEdges(normalized) };
+}
+
+/**
+ * Add missing family edges when both endpoints are already in `nodes`
+ * (Amit→mother→Ruma, Leena→child→Sumit, etc. at hop 1).
+ */
+function linkFamilyClaimsAmongKnown(
+  claimsCache: Map<string, Record<string, ClaimSnakValue[] | undefined>>,
+  nodes: Map<string, import("./types.ts").GraphNode>,
+  edges: import("./types.ts").GraphEdge[],
+): void {
+  for (const [id, claims] of claimsCache) {
+    if (!claims) continue;
+    for (const pid of Object.keys(FAMILY_PROPS)) {
+      const claimList = claims[pid];
+      if (!claimList) continue;
+      for (const claim of claimList.slice(0, 12)) {
+        const val = claim.mainsnak?.datavalue?.value;
+        if (typeof val !== "object" || !val || !("id" in val)) continue;
+        const qid = (val as { id: string }).id;
+        if (!nodes.has(qid)) continue;
+        const edgeId = `${id}-${pid}-${qid}`;
+        if (edges.some((e) => e.id === edgeId)) continue;
+        edges.push({
+          id: edgeId,
+          source: id,
+          target: qid,
+          label: FAMILY_PROPS[pid] ?? pid,
+          propertyId: pid,
+        });
+      }
+    }
+  }
 }
 
 /**
@@ -877,6 +915,7 @@ async function expandFamilyNode(
   visited: Set<string>,
   nodes: Map<string, import("./types.ts").GraphNode>,
   edges: import("./types.ts").GraphEdge[],
+  claimsCache: Map<string, Record<string, ClaimSnakValue[] | undefined>>,
 ): Promise<void> {
   if (depth < 0) return;
 
@@ -895,6 +934,8 @@ async function expandFamilyNode(
   const data = await res.json() as { entities: Record<string, WikidataEntity> };
   const entity = data.entities[id];
   if (!entity) return;
+
+  claimsCache.set(id, (entity.claims ?? {}) as Record<string, ClaimSnakValue[] | undefined>);
 
   const label = pickLabel(entity.labels) ?? id;
   const desc = pickLabel(entity.descriptions) ?? undefined;
@@ -958,7 +999,7 @@ async function expandFamilyNode(
     }
     if (!visited.has(qid)) {
       visited.add(qid);
-      await expandFamilyNode(qid, depth - 1, visited, nodes, edges);
+      await expandFamilyNode(qid, depth - 1, visited, nodes, edges, claimsCache);
     }
   }
 }

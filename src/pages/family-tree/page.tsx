@@ -5,7 +5,7 @@ import { motion } from "motion/react";
 import { toast } from "sonner";
 import {
   ArrowLeft, Network, Share2, RotateCcw, GitBranch,
-  Users, Info, LayoutGrid, ChevronDown,
+  Users, Info, LayoutGrid, ChevronDown, Download,
 } from "lucide-react";
 import SearchBox from "@/components/search/SearchBox.tsx";
 import FamilyTreeCanvas from "./_components/FamilyTreeCanvas.tsx";
@@ -40,6 +40,7 @@ export default function FamilyTreePage() {
   const [depth, setDepth] = useState(1);
   const [arrowDir, setArrowDir] = useState<"in" | "out" | "both">("out");
   const [arrangeNonce, setArrangeNonce] = useState(0);
+  const [useHubs, setUseHubs] = useState(true);
 
   // ── Root entity label ──────────────────────────────────────────────────
   const { data: rootEntity } = useQuery({
@@ -60,6 +61,7 @@ export default function FamilyTreePage() {
       setNodes(data.nodes);
       setEdges(data.edges);
       setLoadedIds(new Set(data.nodes.map((n) => n.id)));
+      // Canvas re-layouts silently when nodes change (no toast)
     } catch {
       toast.error("Failed to load family data");
     } finally {
@@ -124,7 +126,54 @@ export default function FamilyTreePage() {
 
   const handleAutoArrange = () => {
     setArrangeNonce((n) => n + 1);
-    toast.success("Tree auto-arranged");
+  };
+
+  const handleDownloadJson = () => {
+    if (!id || nodes.length === 0) return;
+
+    const endpointId = (v: string | GraphNode) =>
+      typeof v === "object" ? v.id : v;
+
+    const payload = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      rootId: id,
+      rootLabel: rootEntity?.label ?? id,
+      depth,
+      useHubs,
+      nodeCount: nodes.length,
+      edgeCount: edges.length,
+      nodes: nodes.map((n) => ({
+        id: n.id,
+        label: n.label,
+        type: n.type,
+        description: n.description,
+        thumbnail: n.thumbnail,
+        gender: n.gender,
+      })),
+      edges: edges.map((e) => ({
+        id: e.id,
+        source: endpointId(e.source),
+        target: endpointId(e.target),
+        label: e.label,
+        propertyId: e.propertyId,
+      })),
+    };
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const safeName = (rootEntity?.label ?? id)
+      .replace(/[^\w\-]+/g, "_")
+      .replace(/_+/g, "_")
+      .slice(0, 60);
+    a.href = url;
+    a.download = `family-tree-${safeName}-${id}-d${depth}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success("Family tree JSON downloaded");
   };
 
   // Count ancestor/descendant nodes for stats
@@ -215,15 +264,41 @@ export default function FamilyTreePage() {
               </div>
             </label>
 
+            {/* Relation hubs */}
+            <button
+              onClick={() => setUseHubs((v) => !v)}
+              disabled={loading || nodes.length === 0}
+              className={cn(
+                "flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed",
+                useHubs
+                  ? "border-primary/40 bg-primary/10 text-primary"
+                  : "border-border/60 text-muted-foreground hover:text-foreground",
+              )}
+              title="Fan focus relations through parent / child / spouse / sibling hubs"
+            >
+              Hubs
+            </button>
+
             {/* Auto arrange */}
             <button
               onClick={handleAutoArrange}
               disabled={loading || nodes.length === 0}
               className="flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-2.5 py-1.5 text-[11px] font-semibold text-primary hover:bg-primary/20 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-              title="Auto-arrange layout by generation"
+              title="Rearrange: family · wide · mirrored"
             >
               <LayoutGrid className="size-3.5" />
               Auto arrange
+            </button>
+
+            {/* Download JSON */}
+            <button
+              onClick={handleDownloadJson}
+              disabled={loading || nodes.length === 0}
+              className="flex items-center gap-1.5 rounded-lg border border-border/60 px-2.5 py-1.5 text-[11px] font-semibold text-muted-foreground hover:text-foreground transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Download current family tree as JSON"
+            >
+              <Download className="size-3.5" />
+              <span className="hidden sm:inline">JSON</span>
             </button>
 
             {/* Legend toggle */}
@@ -366,6 +441,7 @@ export default function FamilyTreePage() {
             expandingIds={expandingIds}
             arrowDir={arrowDir}
             arrangeNonce={arrangeNonce}
+            useHubs={useHubs}
           />
         )}
 
