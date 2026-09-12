@@ -33,9 +33,27 @@ function idOf(v: string | GraphNode): string {
   return typeof v === "object" ? v.id : v;
 }
 
+/** Approximate text width so labels are never clipped with ellipsis. */
+function labelWidth(label: string, fontSize: number, pad = 28): number {
+  return Math.ceil(label.length * fontSize * 0.62) + pad;
+}
+
 function getNodeSize(node: GraphNode, rootId: string, edges: GraphEdge[]) {
-  if (isKnowledgeHub(node)) return HUB_SIZE;
-  if (node.id === rootId) return ROOT_SIZE;
+  if (isHubMoreNode(node)) {
+    return { w: Math.max(HUB_SIZE.w, labelWidth(node.label, 10, 24)), h: HUB_SIZE.h, rx: HUB_SIZE.rx };
+  }
+  if (isKnowledgeHub(node)) {
+    const w = Math.min(200, Math.max(HUB_SIZE.w, labelWidth(node.label, 10, 26)));
+    const h = node.hubTotal != null ? 36 : HUB_SIZE.h;
+    return { w, h, rx: HUB_SIZE.rx };
+  }
+  if (node.id === rootId) {
+    return {
+      w: Math.min(240, Math.max(ROOT_SIZE.w, labelWidth(node.label, 11, 36))),
+      h: ROOT_SIZE.h,
+      rx: ROOT_SIZE.rx,
+    };
+  }
   const isDirectNeighbor = edges.some((e) => {
     const src = idOf(e.source);
     const tgt = idOf(e.target);
@@ -46,7 +64,13 @@ function getNodeSize(node: GraphNode, rootId: string, edges: GraphEdge[]) {
       (tgt.startsWith("khub:") && src === node.id)
     );
   });
-  return isDirectNeighbor ? NEAR_SIZE : FAR_SIZE;
+  const base = isDirectNeighbor ? NEAR_SIZE : FAR_SIZE;
+  const fontSize = isDirectNeighbor ? 10 : 9;
+  return {
+    w: Math.min(220, Math.max(base.w, labelWidth(node.label, fontSize, 32))),
+    h: base.h,
+    rx: base.rx,
+  };
 }
 
 /** Approximate edge attach point on a rounded rect (for orbit router endpoints). */
@@ -460,7 +484,7 @@ export default function GraphCanvas({
                     userSelect: "none",
                   }}
                 >
-                  {node.label.length > 16 ? node.label.slice(0, 15) + "…" : node.label}
+                  {node.label}
                 </text>
                 <text
                   y={10}
