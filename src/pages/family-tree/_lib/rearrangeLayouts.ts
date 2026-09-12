@@ -68,7 +68,8 @@ function pin(n: GraphNode, x: number, y: number): void {
 
 function half(n: GraphNode): { hw: number; hh: number } {
   if (isHubNode(n)) return { hw: HUB_W / 2 + 14, hh: HUB_H / 2 + 14 };
-  return { hw: PERSON / 2 + 16, hh: PERSON / 2 + 16 };
+  // Rounded-rect people (≈148×56)
+  return { hw: 74 + 12, hh: 28 + 12 };
 }
 
 function boundsOf(nodes: GraphNode[]): LayoutBounds {

@@ -50,18 +50,23 @@ export default function FamilyTreePage() {
   });
 
   // ── Initial load ───────────────────────────────────────────────────────
-  const loadTree = useCallback(async (rootId: string, hops: number) => {
+  const loadTree = useCallback(async (
+    rootId: string,
+    hops: number,
+    opts?: { clear?: boolean },
+  ) => {
     setLoading(true);
     setSelectedNode(null);
-    setNodes([]);
-    setEdges([]);
-    setLoadedIds(new Set());
+    if (opts?.clear) {
+      setNodes([]);
+      setEdges([]);
+      setLoadedIds(new Set());
+    }
     try {
       const data = await fetchFamilyData(rootId, hops, new Set());
       setNodes(data.nodes);
       setEdges(data.edges);
       setLoadedIds(new Set(data.nodes.map((n) => n.id)));
-      // Canvas re-layouts silently when nodes change (no toast)
     } catch {
       toast.error("Failed to load family data");
     } finally {
@@ -71,7 +76,7 @@ export default function FamilyTreePage() {
 
   useEffect(() => {
     if (!id) return;
-    loadTree(id, depth);
+    loadTree(id, depth, { clear: true });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
@@ -115,7 +120,7 @@ export default function FamilyTreePage() {
     const next = Math.max(1, Math.min(3, value));
     if (next === depth) return;
     setDepth(next);
-    if (id) loadTree(id, next);
+    if (id) loadTree(id, next); // keep current tree visible while fetching
   };
 
   const handleReset = () => {
@@ -382,16 +387,15 @@ export default function FamilyTreePage() {
           <rect width="100%" height="100%" fill="url(#ftdots)" />
         </svg>
 
-        {/* Loading */}
-        {loading && (
-          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-5 bg-background/80 backdrop-blur-sm">
+        {/* Loading — keep existing tree visible; only full-screen on first load */}
+        {loading && nodes.length === 0 && (
+          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-5 bg-background/70 backdrop-blur-[2px]">
             <div className="flex items-center gap-3">
               <div className="size-5 rounded-full border-2 border-primary border-t-transparent animate-spin" />
               <span className="text-sm text-muted-foreground">
                 Loading family data from Wikidata…
               </span>
             </div>
-            {/* Skeleton tree preview */}
             <div className="flex flex-col items-center gap-3 pointer-events-none select-none">
               <div className="flex gap-6">
                 {[0, 1].map((i) => (
@@ -406,6 +410,16 @@ export default function FamilyTreePage() {
                   <Skeleton key={i} className="h-10 w-28 rounded-lg" style={{ animationDelay: `${i * 0.1}s` }} />
                 ))}
               </div>
+            </div>
+          </div>
+        )}
+        {loading && nodes.length > 0 && (
+          <div className="absolute top-4 left-1/2 z-20 -translate-x-1/2 pointer-events-none">
+            <div className="flex items-center gap-2.5 rounded-full border border-border/60 bg-card/90 px-3.5 py-2 shadow-md backdrop-blur-sm">
+              <div className="size-3.5 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+              <span className="text-xs font-medium text-muted-foreground">
+                Loading family data from Wikidata…
+              </span>
             </div>
           </div>
         )}
@@ -431,8 +445,8 @@ export default function FamilyTreePage() {
           </div>
         )}
 
-        {/* Tree canvas */}
-        {!loading && nodes.length > 0 && (
+        {/* Tree canvas — stay mounted while reloading so the previous tree stays visible */}
+        {nodes.length > 0 && (
           <FamilyTreeCanvas
             nodes={nodes}
             edges={edges}
@@ -454,7 +468,7 @@ export default function FamilyTreePage() {
         />
 
         {/* Stats bar */}
-        {!loading && nodes.length > 0 && (
+        {nodes.length > 0 && (
           <div className="absolute bottom-4 left-4 flex items-center gap-2 rounded-lg border border-border/50 bg-card/80 backdrop-blur-sm px-3 py-1.5 text-[10px] text-muted-foreground">
             <span><span className="font-mono text-foreground">{nodes.length}</span> people</span>
             {ancestorCount > 0 && (
@@ -473,10 +487,11 @@ export default function FamilyTreePage() {
         )}
 
         {/* Floating auto arrange */}
-        {!loading && nodes.length > 0 && (
+        {nodes.length > 0 && (
           <button
             onClick={handleAutoArrange}
-            className="absolute bottom-4 right-4 flex items-center gap-2 rounded-xl border border-primary/40 bg-card/90 backdrop-blur-sm px-3.5 py-2 text-xs font-semibold text-primary shadow-lg shadow-black/20 hover:bg-primary/15 transition-colors cursor-pointer"
+            disabled={loading}
+            className="absolute bottom-4 right-4 flex items-center gap-2 rounded-xl border border-primary/40 bg-card/90 backdrop-blur-sm px-3.5 py-2 text-xs font-semibold text-primary shadow-lg shadow-black/20 hover:bg-primary/15 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             title="Re-layout tree by generation"
           >
             <LayoutGrid className="size-3.5" />

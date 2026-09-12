@@ -11,7 +11,7 @@ export default function GraphLegend() {
         return (
           <div key={type} className="flex items-center gap-1.5">
             <span
-              className="size-2.5 rounded-full border"
+              className="size-2.5 rounded-[3px] border"
               style={{ background: `${cfg.hex}30`, borderColor: cfg.hex }}
             />
             <span className="text-[10px] text-muted-foreground">{cfg.label}</span>

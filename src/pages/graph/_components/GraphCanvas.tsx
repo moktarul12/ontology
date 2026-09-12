@@ -2,7 +2,6 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import * as d3 from "d3";
 import type { GraphNode, GraphEdge } from "@/lib/wikidata/types.ts";
 import { getEntityTypeConfig } from "@/lib/wikidata/entity-types.ts";
-import { cn } from "@/lib/utils.ts";
 
 type Props = {
   nodes: GraphNode[];
@@ -15,20 +14,40 @@ type Props = {
 
 type ZoomTransform = { x: number; y: number; k: number };
 
-// Node display sizes
-const ROOT_RADIUS = 28;
-const NODE_RADIUS = 20;
-const MINI_RADIUS = 14;
+/** Rounded-rect sizes by hop from root */
+const ROOT_SIZE = { w: 132, h: 48, rx: 12 };
+const NEAR_SIZE = { w: 112, h: 42, rx: 10 };
+const FAR_SIZE = { w: 96, h: 36, rx: 9 };
 
-// How many hops from root a node is
-function getNodeRadius(nodeId: string, rootId: string, edges: GraphEdge[]): number {
-  if (nodeId === rootId) return ROOT_RADIUS;
+function getNodeSize(nodeId: string, rootId: string, edges: GraphEdge[]) {
+  if (nodeId === rootId) return ROOT_SIZE;
   const isDirectNeighbor = edges.some((e) => {
     const src = typeof e.source === "object" ? e.source.id : e.source;
     const tgt = typeof e.target === "object" ? e.target.id : e.target;
     return (src === rootId && tgt === nodeId) || (tgt === rootId && src === nodeId);
   });
-  return isDirectNeighbor ? NODE_RADIUS : MINI_RADIUS;
+  return isDirectNeighbor ? NEAR_SIZE : FAR_SIZE;
+}
+
+/** Edge attach point on rounded-rect boundary toward (tx,ty). */
+function rectEdgePoint(
+  cx: number,
+  cy: number,
+  w: number,
+  h: number,
+  tx: number,
+  ty: number,
+  pad = 0,
+): { x: number; y: number } {
+  const dx = tx - cx;
+  const dy = ty - cy;
+  const hw = w / 2 + pad;
+  const hh = h / 2 + pad;
+  if (dx === 0 && dy === 0) return { x: cx, y: cy };
+  const sx = Math.abs(dx) / hw;
+  const sy = Math.abs(dy) / hh;
+  const t = Math.max(sx, sy) || 1;
+  return { x: cx + dx / t, y: cy + dy / t };
 }
 
 export default function GraphCanvas({
@@ -47,19 +66,16 @@ export default function GraphCanvas({
   const [, forceRender] = useState(0);
   const draggedRef = useRef(false);
 
-  // ── Initialize simulation ──────────────────────────────────────────────────
   useEffect(() => {
     if (!svgRef.current) return;
     const width = svgRef.current.clientWidth || 800;
     const height = svgRef.current.clientHeight || 600;
 
-    // Preserve existing positions when adding new nodes
     const existingPositions = new Map<string, { x: number; y: number; fx?: number | null; fy?: number | null }>();
     simulationRef.current?.nodes().forEach((n) => {
       existingPositions.set(n.id, { x: n.x ?? 0, y: n.y ?? 0, fx: n.fx, fy: n.fy });
     });
 
-    // Apply preserved positions to new nodes list
     nodes.forEach((n) => {
       const prev = existingPositions.get(n.id);
       if (prev) {
@@ -68,20 +84,17 @@ export default function GraphCanvas({
         n.fx = prev.fx;
         n.fy = prev.fy;
       } else if (n.x === undefined) {
-        // New node — scatter near center
         n.x = width / 2 + (Math.random() - 0.5) * 120;
         n.y = height / 2 + (Math.random() - 0.5) * 120;
       }
     });
 
-    // Pin root node to center initially
     const root = nodes.find((n) => n.id === rootId);
     if (root && root.fx === undefined) {
       root.fx = width / 2;
       root.fy = height / 2;
     }
 
-    // Build simulation
     const linkForce = d3
       .forceLink<GraphNode, d3.SimulationLinkDatum<GraphNode>>(edges as d3.SimulationLinkDatum<GraphNode>[])
       .id((d) => d.id)
@@ -89,16 +102,22 @@ export default function GraphCanvas({
         const src = typeof e.source === "object" ? (e.source as GraphNode).id : e.source;
         const tgt = typeof e.target === "object" ? (e.target as GraphNode).id : e.target;
         const isRoot = src === rootId || tgt === rootId;
-        return isRoot ? 160 : 110;
+        return isRoot ? 180 : 130;
       })
       .strength(0.5);
 
     const sim = d3
       .forceSimulation<GraphNode>(nodes)
       .force("link", linkForce)
-      .force("charge", d3.forceManyBody().strength(-320).distanceMax(500))
+      .force("charge", d3.forceManyBody().strength(-380).distanceMax(500))
       .force("center", d3.forceCenter(width / 2, height / 2).strength(0.04))
-      .force("collision", d3.forceCollide<GraphNode>().radius((d) => getNodeRadius(d.id, rootId, edges) + 12))
+      .force(
+        "collision",
+        d3.forceCollide<GraphNode>().radius((d) => {
+          const s = getNodeSize(d.id, rootId, edges);
+          return Math.max(s.w, s.h) * 0.55 + 14;
+        }),
+      )
       .alphaDecay(0.03)
       .on("tick", () => forceRender((t) => t + 1));
 
@@ -108,7 +127,6 @@ export default function GraphCanvas({
     return () => { sim.stop(); };
   }, [nodes, edges, rootId]);
 
-  // ── Zoom & pan ─────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!svgRef.current) return;
     const zoom = d3
@@ -122,7 +140,6 @@ export default function GraphCanvas({
     return () => { d3.select(svgRef.current!).on(".zoom", null); };
   }, []);
 
-  // ── Drag behavior per node ─────────────────────────────────────────────────
   const attachDrag = useCallback((el: SVGGElement | null, node: GraphNode) => {
     if (!el) return;
     const drag = d3.drag<SVGGElement, unknown>()
@@ -139,14 +156,12 @@ export default function GraphCanvas({
       })
       .on("end", (event) => {
         if (!event.active) simulationRef.current?.alphaTarget(0);
-        // Keep pinned after drag
         node.fx = event.x;
         node.fy = event.y;
       });
     d3.select(el).call(drag);
   }, []);
 
-  // ── Reset zoom ─────────────────────────────────────────────────────────────
   const resetZoom = useCallback(() => {
     if (!svgRef.current || !zoomRef.current) return;
     d3.select(svgRef.current)
@@ -155,14 +170,14 @@ export default function GraphCanvas({
       .call(zoomRef.current.transform, d3.zoomIdentity);
   }, []);
 
-  // Expose reset to parent via imperative handle — pass via prop instead
   useEffect(() => {
     (window as unknown as Record<string, unknown>).__graphResetZoom = resetZoom;
+    return () => {
+      delete (window as unknown as Record<string, unknown>).__graphResetZoom;
+    };
   }, [resetZoom]);
 
-  const tX = transform.x;
-  const tY = transform.y;
-  const tK = transform.k;
+  const { x: tX, y: tY, k: tK } = transform;
 
   return (
     <svg
@@ -171,8 +186,7 @@ export default function GraphCanvas({
       style={{ cursor: "grab" }}
     >
       <defs>
-        {/* Arrow markers per entity type */}
-        {(["person", "place", "organization", "concept", "event", "unknown"] as const).map((type) => {
+        {(["person", "place", "organization", "event", "concept", "creative", "unknown"] as const).map((type) => {
           const cfg = getEntityTypeConfig(type);
           return (
             <marker
@@ -185,17 +199,16 @@ export default function GraphCanvas({
               markerHeight="6"
               orient="auto"
             >
-              <path d="M 0 0 L 10 5 L 0 10 z" fill={cfg.hex} opacity={0.5} />
+              <path d="M 0 0 L 10 5 L 0 10 z" fill={cfg.hex} opacity={0.55} />
             </marker>
           );
         })}
         <marker id="arrow-default" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-          <path d="M 0 0 L 10 5 L 0 10 z" fill="#4a5568" opacity={0.6} />
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#6A7A96" opacity={0.55} />
         </marker>
       </defs>
 
       <g transform={`translate(${tX},${tY}) scale(${tK})`} ref={gRef}>
-        {/* ── Edges ─────────────────────────────────────────────────────── */}
         <g className="edges">
           {edges.map((edge) => {
             const src = typeof edge.source === "object" ? edge.source : nodes.find((n) => n.id === edge.source);
@@ -204,29 +217,21 @@ export default function GraphCanvas({
 
             const sx = src.x ?? 0, sy = src.y ?? 0;
             const tx = tgt.x ?? 0, ty = tgt.y ?? 0;
-            const dx = tx - sx, dy = ty - sy;
-            const len = Math.sqrt(dx * dx + dy * dy) || 1;
-            // Offset endpoints to edge of node circles
-            const srcR = getNodeRadius(src.id, rootId, edges);
-            const tgtR = getNodeRadius(tgt.id, rootId, edges) + 6; // +6 for arrow
-            const x1 = sx + (dx / len) * srcR;
-            const y1 = sy + (dy / len) * srcR;
-            const x2 = tx - (dx / len) * tgtR;
-            const y2 = ty - (dy / len) * tgtR;
+            const srcSz = getNodeSize(src.id, rootId, edges);
+            const tgtSz = getNodeSize(tgt.id, rootId, edges);
+            const p1 = rectEdgePoint(sx, sy, srcSz.w, srcSz.h, tx, ty);
+            const p2 = rectEdgePoint(tx, ty, tgtSz.w, tgtSz.h, sx, sy, 6);
 
-            // Curved line
-            const mx = (x1 + x2) / 2 - dy * 0.12;
-            const my = (y1 + y2) / 2 + dx * 0.12;
-            const pathD = `M${x1},${y1} Q${mx},${my} ${x2},${y2}`;
+            const mx = (p1.x + p2.x) / 2 - (p2.y - p1.y) * 0.12;
+            const my = (p1.y + p2.y) / 2 + (p2.x - p1.x) * 0.12;
+            const pathD = `M${p1.x},${p1.y} Q${mx},${my} ${p2.x},${p2.y}`;
+            const len = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
 
             const tgtNode = typeof edge.target === "object" ? edge.target as GraphNode : tgt;
             const markerType = tgtNode.type ?? "unknown";
-
-            // Label midpoint along quadratic bezier at t=0.5
-            const lx = 0.25 * x1 + 0.5 * mx + 0.25 * x2;
-            const ly = 0.25 * y1 + 0.5 * my + 0.25 * y2;
-            // Text angle
-            const angle = Math.atan2(y2 - y1, x2 - x1) * (180 / Math.PI);
+            const lx = 0.25 * p1.x + 0.5 * mx + 0.25 * p2.x;
+            const ly = 0.25 * p1.y + 0.5 * my + 0.25 * p2.y;
+            const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x) * (180 / Math.PI);
             const flipped = angle > 90 || angle < -90;
 
             return (
@@ -234,11 +239,10 @@ export default function GraphCanvas({
                 <path
                   d={pathD}
                   fill="none"
-                  stroke={`${getEntityTypeConfig(markerType).hex}55`}
-                  strokeWidth={1.2}
+                  stroke={`${getEntityTypeConfig(markerType).hex}66`}
+                  strokeWidth={1.35}
                   markerEnd={`url(#arrow-${markerType})`}
                 />
-                {/* Edge label */}
                 {len > 80 && (
                   <text
                     x={lx}
@@ -248,7 +252,7 @@ export default function GraphCanvas({
                     transform={`rotate(${flipped ? angle + 180 : angle}, ${lx}, ${ly})`}
                     style={{
                       fontSize: "8px",
-                      fill: "oklch(0.55 0.04 230)",
+                      fill: "#5A6A80",
                       fontFamily: "'Space Grotesk', sans-serif",
                       pointerEvents: "none",
                       userSelect: "none",
@@ -262,15 +266,17 @@ export default function GraphCanvas({
           })}
         </g>
 
-        {/* ── Nodes ─────────────────────────────────────────────────────── */}
         <g className="nodes">
           {nodes.map((node) => {
             const cfg = getEntityTypeConfig(node.type);
-            const r = getNodeRadius(node.id, rootId, edges);
+            const sz = getNodeSize(node.id, rootId, edges);
             const isRoot = node.id === rootId;
             const isExpanding = expandingIds.has(node.id);
             const x = node.x ?? 0;
             const y = node.y ?? 0;
+            const fill = isRoot ? `${cfg.hex}22` : "#FFFFFF";
+            const textColor = isRoot ? "#123048" : "#1A2438";
+            const subColor = cfg.hex;
 
             return (
               <g
@@ -288,21 +294,27 @@ export default function GraphCanvas({
                   onNodeExpand(node);
                 }}
               >
-                {/* Glow for root */}
                 {isRoot && (
-                  <circle
-                    r={r + 8}
+                  <rect
+                    x={-sz.w / 2 - 5}
+                    y={-sz.h / 2 - 5}
+                    width={sz.w + 10}
+                    height={sz.h + 10}
+                    rx={sz.rx + 3}
                     fill="none"
                     stroke={cfg.hex}
                     strokeWidth={1}
-                    opacity={0.25}
+                    opacity={0.35}
                   />
                 )}
 
-                {/* Spinning ring when expanding */}
                 {isExpanding && (
-                  <circle
-                    r={r + 5}
+                  <rect
+                    x={-sz.w / 2 - 6}
+                    y={-sz.h / 2 - 6}
+                    width={sz.w + 12}
+                    height={sz.h + 12}
+                    rx={sz.rx + 4}
                     fill="none"
                     stroke={cfg.hex}
                     strokeWidth={1.5}
@@ -312,50 +324,57 @@ export default function GraphCanvas({
                   />
                 )}
 
-                {/* Node circle */}
-                <circle
-                  r={r}
-                  fill={`${cfg.hex}22`}
+                <rect
+                  x={-sz.w / 2}
+                  y={-sz.h / 2}
+                  width={sz.w}
+                  height={sz.h}
+                  rx={sz.rx}
+                  fill={fill}
                   stroke={cfg.hex}
-                  strokeWidth={isRoot ? 2.5 : 1.5}
+                  strokeWidth={isRoot ? 2.5 : 1.75}
                   className="transition-all duration-150"
                 />
+                <rect
+                  x={-sz.w / 2}
+                  y={-sz.h / 2 + sz.rx}
+                  width={3}
+                  height={sz.h - sz.rx * 2}
+                  fill={cfg.hex}
+                  opacity={0.8}
+                />
 
-                {/* Type initial letter */}
                 <text
+                  y={-5}
                   textAnchor="middle"
                   dominantBaseline="middle"
                   style={{
-                    fontSize: isRoot ? "13px" : r > 16 ? "11px" : "9px",
-                    fill: cfg.hex,
+                    fontSize: isRoot ? "11px" : sz.w > 100 ? "10px" : "9px",
+                    fill: textColor,
                     fontFamily: "'Space Grotesk', sans-serif",
                     fontWeight: 700,
                     pointerEvents: "none",
                     userSelect: "none",
                   }}
                 >
-                  {node.type === "person" ? "P" :
-                   node.type === "place" ? "L" :
-                   node.type === "organization" ? "O" :
-                   node.type === "event" ? "E" :
-                   node.type === "concept" ? "C" : "?"}
+                  {node.label.length > 16 ? node.label.slice(0, 15) + "…" : node.label}
                 </text>
-
-                {/* Node label below */}
                 <text
-                  y={r + 10}
+                  y={10}
                   textAnchor="middle"
-                  dominantBaseline="hanging"
+                  dominantBaseline="middle"
                   style={{
-                    fontSize: isRoot ? "11px" : "9px",
-                    fill: isRoot ? "oklch(0.93 0.01 220)" : "oklch(0.75 0.02 220)",
+                    fontSize: "8px",
+                    fill: subColor,
                     fontFamily: "'Space Grotesk', sans-serif",
-                    fontWeight: isRoot ? 600 : 400,
+                    fontWeight: 600,
+                    letterSpacing: "0.04em",
                     pointerEvents: "none",
                     userSelect: "none",
+                    textTransform: "uppercase",
                   }}
                 >
-                  {node.label.length > 18 ? node.label.slice(0, 17) + "…" : node.label}
+                  {cfg.label}
                 </text>
               </g>
             );

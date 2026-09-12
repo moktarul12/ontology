@@ -34,44 +34,43 @@ import { routeOrbitEdge, routeLabelPoint } from "../_lib/orbitEdgeRouter.ts";
 const LEVEL_HEIGHT = 180;
 const NODE_W = 148;
 const NODE_H = 52;
-const NODE_RX = 10;
+const NODE_RX = 12;
+const ROOT_W = 164;
+const ROOT_H = 58;
 const HUB_W = 86;
 const HUB_H = 28;
-/** Orbit-view circle radii (hubs mode) */
-const ROOT_R = 58;
-const PERSON_R = 46;
 
-// ── Role-based visual styles ─────────────────────────────────────────────────
+// ── Role-based visual styles (light theme) ───────────────────────────────────
 type NodeRole = "root" | "ancestor" | "ancestor2" | "descendant" | "descendant2" | "spouse" | "sibling";
 
 const ROLE_STYLE: Record<NodeRole, { border: string; bg: string; text: string; sub: string; strokeW: number }> = {
-  root:        { border: "#4DBFEF", bg: "#4DBFEF20", text: "#E8F8FF",  sub: "#7ECFE8",  strokeW: 2.5 },
-  ancestor:    { border: "#5B9FD8", bg: "#5B9FD812", text: "#C4DBEF",  sub: "#7AAEC8",  strokeW: 1.5 },
-  ancestor2:   { border: "#4A7CB0", bg: "#4A7CB00E", text: "#A8C4DE",  sub: "#6898BA",  strokeW: 1   },
-  descendant:  { border: "#4DC48A", bg: "#4DC48A14", text: "#C4EFD8",  sub: "#72C8A0",  strokeW: 1.5 },
-  descendant2: { border: "#38926A", bg: "#38926A0E", text: "#A0D8BC",  sub: "#5AAA84",  strokeW: 1   },
-  spouse:      { border: "#E8B84D", bg: "#E8B84D14", text: "#FFEABF",  sub: "#CDA060",  strokeW: 1.5 },
-  sibling:     { border: "#A46DD8", bg: "#A46DD812", text: "#E0C8FF",  sub: "#9068B4",  strokeW: 1.5 },
+  root:        { border: "#1D6F9F", bg: "#E8F5FC", text: "#0F3A55",  sub: "#3A7A9E",  strokeW: 2.5 },
+  ancestor:    { border: "#5B6BB5", bg: "#EEF0FA", text: "#2A3270",  sub: "#5C6498",  strokeW: 1.5 },
+  ancestor2:   { border: "#6B7AB0", bg: "#F2F4FA", text: "#3A4570",  sub: "#6A7498",  strokeW: 1   },
+  descendant:  { border: "#2A9A6A", bg: "#E8F7F0", text: "#145038",  sub: "#3A8A62",  strokeW: 1.5 },
+  descendant2: { border: "#3A9A72", bg: "#EEF8F3", text: "#1A5A40",  sub: "#4A8A68",  strokeW: 1   },
+  spouse:      { border: "#C45A7A", bg: "#FCEEF2", text: "#6A2038",  sub: "#A05068",  strokeW: 1.5 },
+  sibling:     { border: "#2E8B57", bg: "#EAF6EF", text: "#145030",  sub: "#3A7A52",  strokeW: 1.5 },
 };
 
-// ── Relation edge / hub colors (orbit view) ─────────────────────────────────
+// ── Relation edge / hub colors (light-friendly) ─────────────────────────────
 const REL_COLORS: Record<string, string> = {
-  father:   "#7B6BB5",
-  mother:   "#7B6BB5",
-  parent:   "#7B6BB5",
-  spouse:   "#E88BA8",
-  child:    "#E8B04D",
-  son:      "#E8B04D",
-  daughter: "#E8B04D",
-  sibling:  "#5BAF7A",
+  father:   "#6B5CA8",
+  mother:   "#6B5CA8",
+  parent:   "#6B5CA8",
+  spouse:   "#C45A7A",
+  child:    "#C48A2A",
+  son:      "#C48A2A",
+  daughter: "#C48A2A",
+  sibling:  "#2E8B57",
 };
-const REL_DEFAULT = "#5A6A8E";
+const REL_DEFAULT = "#6A7A96";
 
 const HUB_FILL: Record<string, string> = {
-  parent: "#7B6BB5",
-  spouse: "#E88BA8",
-  child: "#E8B04D",
-  sibling: "#5BAF7A",
+  parent: "#6B5CA8",
+  spouse: "#C45A7A",
+  child: "#C48A2A",
+  sibling: "#2E8B57",
 };
 
 export type ArrowDir = "in" | "out" | "both";
@@ -544,10 +543,7 @@ export default function FamilyTreeCanvas({
   const H = canvasH;
   const nodeSize = (n: GraphNode) => {
     if (isHubNode(n)) return { w: HUB_W, h: HUB_H };
-    if (useHubs) {
-      if (n.id === rootId) return { w: ROOT_R * 2, h: ROOT_R * 2 };
-      return { w: PERSON_R * 2, h: PERSON_R * 2 };
-    }
+    if (n.id === rootId) return { w: ROOT_W, h: ROOT_H };
     return { w: NODE_W, h: NODE_H };
   };
 
@@ -741,7 +737,7 @@ export default function FamilyTreeCanvas({
               )}
               {showEdgeLabel && (
                 <g>
-                  <rect x={lx - labelW / 2} y={ly - 8} width={labelW} height={14} rx={4} fill="oklch(0.14 0.018 255)" opacity={0.85} />
+                  <rect x={lx - labelW / 2} y={ly - 8} width={labelW} height={14} rx={4} fill="#FFFFFF" opacity={0.92} stroke="#D0D8E4" strokeWidth={0.75} />
                   <text
                     x={lx} y={ly}
                     textAnchor="middle" dominantBaseline="middle"
@@ -790,7 +786,7 @@ export default function FamilyTreeCanvas({
                   textAnchor="middle" dominantBaseline="middle"
                   style={{
                     fontSize: "11px",
-                    fill: "#1a1a1a",
+                    fill: "#FFFFFF",
                     fontFamily: "'Space Grotesk', sans-serif",
                     fontWeight: 700,
                     letterSpacing: "0.02em",
@@ -804,15 +800,18 @@ export default function FamilyTreeCanvas({
             );
           }
 
-          if (useHubs) {
-            const orbitRel = isRoot ? null : personOrbitRelation(node.id, edges, nodes);
-            const accent = isRoot ? "#2B4A8C" : (orbitRel ? relColor(orbitRel) : style.border);
-            const fill = isRoot ? "#2B4A8C" : `${accent}22`;
-            const textMain = isRoot ? "#FFFFFF" : "#E8EEF8";
-            const textSub = isRoot ? "#C5D0E8" : `${accent}cc`;
-            const r = isRoot ? ROOT_R : PERSON_R;
+          const orbitRel = useHubs && !isRoot ? personOrbitRelation(node.id, edges, nodes) : null;
+          const accent = isRoot
+            ? ROLE_STYLE.root.border
+            : (orbitRel ? relColor(orbitRel) : style.border);
+          const fill = isRoot ? ROLE_STYLE.root.bg : (orbitRel ? `${accent}18` : style.bg);
+          const textMain = isRoot ? ROLE_STYLE.root.text : style.text;
+          const textSub = isRoot ? ROLE_STYLE.root.sub : (orbitRel ? `${accent}` : style.sub);
+          const nW = isRoot ? ROOT_W : NODE_W;
+          const nH = isRoot ? ROOT_H : NODE_H;
+          const rx = NODE_RX;
 
-            return (
+          return (
               <g
                 key={node.id}
                 ref={el => attachDrag(el, node)}
@@ -825,11 +824,21 @@ export default function FamilyTreeCanvas({
                 }}
               >
                 {isRoot && (
-                  <circle r={r + 8} fill="none" stroke={accent} strokeWidth={1} opacity={0.25} />
+                  <rect
+                    x={-nW / 2 - 6} y={-nH / 2 - 6}
+                    width={nW + 12} height={nH + 12}
+                    rx={rx + 4}
+                    fill="none"
+                    stroke={accent}
+                    strokeWidth={1}
+                    opacity={0.35}
+                  />
                 )}
                 {isExpanding && (
-                  <circle
-                    r={r + 6}
+                  <rect
+                    x={-nW / 2 - 7} y={-nH / 2 - 7}
+                    width={nW + 14} height={nH + 14}
+                    rx={rx + 5}
                     fill="none"
                     stroke={accent}
                     strokeWidth={1.5}
@@ -838,27 +847,42 @@ export default function FamilyTreeCanvas({
                     style={{ animation: "ft-spin 1.2s linear infinite", transformOrigin: "0 0" }}
                   />
                 )}
-                <circle r={r} fill={fill} stroke={accent} strokeWidth={isRoot ? 2.5 : 2} />
+                <rect
+                  x={-nW / 2} y={-nH / 2}
+                  width={nW} height={nH}
+                  rx={rx}
+                  fill={fill}
+                  stroke={accent}
+                  strokeWidth={isRoot ? 2.5 : 2}
+                />
+                <rect
+                  x={-nW / 2}
+                  y={-nH / 2 + rx}
+                  width={3}
+                  height={nH - rx * 2}
+                  fill={accent}
+                  opacity={0.75}
+                />
                 <text
-                  y={lifeLine ? -9 : 0}
+                  y={lifeLine ? -8 : 0}
                   textAnchor="middle" dominantBaseline="middle"
                   style={{
-                    fontSize: isRoot ? "13px" : "11px",
+                    fontSize: isRoot ? "12px" : "10.5px",
                     fill: textMain,
                     fontFamily: "'Space Grotesk', sans-serif",
-                    fontWeight: 700,
+                    fontWeight: isRoot ? 700 : 600,
                     pointerEvents: "none",
                     userSelect: "none",
                   }}
                 >
-                  {nameLine.length > (isRoot ? 16 : 14) ? nameLine.slice(0, isRoot ? 15 : 13) + "…" : nameLine}
+                  {nameLine.length > 18 ? nameLine.slice(0, 17) + "…" : nameLine}
                 </text>
                 {lifeLine && (
                   <text
-                    y={10}
+                    y={9}
                     textAnchor="middle" dominantBaseline="middle"
                     style={{
-                      fontSize: "9px",
+                      fontSize: "8.5px",
                       fill: textSub,
                       fontFamily: "'Space Grotesk', sans-serif",
                       fontWeight: 500,
@@ -866,83 +890,11 @@ export default function FamilyTreeCanvas({
                       userSelect: "none",
                     }}
                   >
-                    {lifeLine.length > 16 ? lifeLine.slice(0, 15) + "…" : lifeLine}
+                    {lifeLine.length > 18 ? lifeLine.slice(0, 17) + "…" : lifeLine}
                   </text>
                 )}
               </g>
             );
-          }
-
-          const nW = isRoot ? NODE_W + 16 : NODE_W;
-          const nH = isRoot ? NODE_H + 6 : NODE_H;
-
-          return (
-            <g
-              key={node.id}
-              ref={el => attachDrag(el, node)}
-              transform={`translate(${x},${y})`}
-              style={{ cursor: "pointer" }}
-              onClick={e => {
-                if (draggedRef.current) { draggedRef.current = false; return; }
-                e.stopPropagation();
-                onNodeClick(node);
-              }}
-            >
-              {isRoot && (
-                <rect
-                  x={-nW / 2 - 6} y={-nH / 2 - 6}
-                  width={nW + 12} height={nH + 12}
-                  rx={NODE_RX + 5} fill="none" stroke={style.border} strokeWidth={1} opacity={0.3}
-                />
-              )}
-
-              {isExpanding && (
-                <rect
-                  x={-nW / 2 - 7} y={-nH / 2 - 7}
-                  width={nW + 14} height={nH + 14}
-                  rx={NODE_RX + 6} fill="none" stroke={style.border} strokeWidth={1.5}
-                  strokeDasharray="8 5" opacity={0.8}
-                  style={{ animation: "ft-spin 1.2s linear infinite", transformOrigin: "0 0" }}
-                />
-              )}
-
-              <rect
-                x={-nW / 2} y={-nH / 2}
-                width={nW} height={nH}
-                rx={NODE_RX} fill={style.bg} stroke={style.border} strokeWidth={style.strokeW}
-              />
-
-              <rect
-                x={-nW / 2} y={-nH / 2 + NODE_RX}
-                width={3} height={nH - NODE_RX * 2}
-                fill={style.border} opacity={0.7}
-              />
-
-              <text
-                y={lifeLine ? -8 : 0}
-                textAnchor="middle" dominantBaseline="middle"
-                style={{
-                  fontSize: isRoot ? "12px" : "10.5px",
-                  fill: style.text,
-                  fontFamily: "'Space Grotesk', sans-serif",
-                  fontWeight: isRoot ? 700 : 600,
-                  pointerEvents: "none", userSelect: "none",
-                }}
-              >
-                {nameLine.length > 18 ? nameLine.slice(0, 17) + "…" : nameLine}
-              </text>
-
-              {lifeLine && (
-                <text
-                  y={8}
-                  textAnchor="middle" dominantBaseline="middle"
-                  style={{ fontSize: "8.5px", fill: style.sub, fontFamily: "'Space Grotesk', sans-serif", pointerEvents: "none", userSelect: "none" }}
-                >
-                  {lifeLine}
-                </text>
-              )}
-            </g>
-          );
         })}
       </g>
 
