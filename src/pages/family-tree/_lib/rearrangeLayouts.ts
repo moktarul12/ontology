@@ -244,6 +244,7 @@ function placeExtended(
   cy: number,
   gap: number,
   satelliteReach: number,
+  focusSpouseIds: Set<string>,
 ): void {
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const adj = new Map<string, string[]>();
@@ -254,7 +255,9 @@ function placeExtended(
   for (const e of edges) {
     const s = idOf(e.source);
     const t = idOf(e.target);
-    if (isHubNode(byId.get(s)!) || isHubNode(byId.get(t)!)) continue;
+    const sn = byId.get(s);
+    const tn = byId.get(t);
+    if (!sn || !tn || isHubNode(sn) || isHubNode(tn)) continue;
     addAdj(s, t);
     addAdj(t, s);
   }
@@ -265,25 +268,21 @@ function placeExtended(
     const leftover = nodes.filter((n) => !isHubNode(n) && !placed.has(n.id));
     if (!leftover.length) break;
 
-    // Group unplaced people by their best placed anchor
     const byAnchor = new Map<string, GraphNode[]>();
     const stranded: GraphNode[] = [];
 
     for (const n of leftover) {
       const neighbors = adj.get(n.id) ?? [];
       let best: GraphNode | null = null;
-      let bestDist = Infinity;
+      let bestD = -1;
       for (const oid of neighbors) {
         if (!placed.has(oid)) continue;
         const o = byId.get(oid);
-        if (!o || o.x == null) continue;
-        const d =
-          (o.x - cx) * (o.x - cx) + (o.y! - cy) * (o.y! - cy);
-        // Prefer anchors farther from focus (outer ring-1), stable tie-break by id
-        const score = -d;
-        if (!best || score < bestDist || (score === bestDist && oid < best.id)) {
+        if (!o || o.x == null || o.y == null) continue;
+        const d = (o.x - cx) ** 2 + (o.y - cy) ** 2;
+        if (!best || d > bestD || (d === bestD && oid < best.id)) {
           best = o;
-          bestDist = score;
+          bestD = d;
         }
       }
       if (!best) {
@@ -295,7 +294,6 @@ function placeExtended(
     }
 
     if (!byAnchor.size) {
-      // True isolates: park in a far outer arc so they're visible, not on the hub
       if (stranded.length) {
         const r = satelliteReach * 2.2;
         const start = -Math.PI / 2;
@@ -312,16 +310,34 @@ function placeExtended(
       const anchor = byId.get(anchorId)!;
       const ax = anchor.x ?? cx;
       const ay = anchor.y ?? cy;
+      group.sort((a, b) => a.label.localeCompare(b.label));
+
+      // Spouse’s siblings (hop 2): park beside the spouse, not through the kids
+      if (focusSpouseIds.has(anchorId)) {
+        const side = ax >= cx ? 1 : -1;
+        const colX = ax + side * (satelliteReach + PERSON * 0.4);
+        if (group.length === 1) {
+          pin(group[0]!, colX, ay);
+          placed.add(group[0]!.id);
+        } else {
+          const total = (group.length - 1) * pitch;
+          let y = ay - total / 2;
+          for (const n of group) {
+            pin(n, colX, y);
+            placed.add(n.id);
+            y += pitch;
+          }
+        }
+        continue;
+      }
+
       let dx = ax - cx;
       let dy = ay - cy;
       const len = Math.hypot(dx, dy) || 1;
       dx /= len;
       dy /= len;
-      // Outward from focus through the anchor
       const clusterCx = ax + dx * satelliteReach;
       const clusterCy = ay + dy * satelliteReach;
-
-      group.sort((a, b) => a.label.localeCompare(b.label));
 
       if (group.length === 1) {
         pin(group[0]!, clusterCx, clusterCy);
@@ -329,14 +345,13 @@ function placeExtended(
         continue;
       }
 
-      // Fan along a line perpendicular to the outward ray (readable cluster)
       const px = -dy;
       const py = dx;
       const total = (group.length - 1) * pitch;
       for (let i = 0; i < group.length; i++) {
         const t = -total / 2 + i * pitch;
-        // Slight arc so multi-child clusters feel organic
-        const bulge = Math.sin((i / Math.max(group.length - 1, 1)) * Math.PI) * (gap * 0.35);
+        const bulge =
+          Math.sin((i / Math.max(group.length - 1, 1)) * Math.PI) * (gap * 0.35);
         pin(
           group[i]!,
           clusterCx + px * t + dx * bulge,
@@ -448,23 +463,59 @@ export function layoutFamilyTree(
     placed.add(childHub.id);
   }
 
-  type Unit = { kind: "petal"; petal: Petal } | { kind: "child"; node: GraphNode };
-  const units: Unit[] = [
-    ...petals.map((p) => ({ kind: "petal" as const, petal: p })),
-    ...soloChildren.map((n) => ({ kind: "child" as const, node: n })),
-  ];
+  const focusSpouseIds = new Set(spouses.map((s) => s.id));
 
-  if (units.length) {
+  // Sole spouse + shared kids: vertical family stack (no spouse/child hub collision)
+  const soleFamily =
+    spouses.length === 1 &&
+    petals.length === 1 &&
+    soloSpouses.length === 0 &&
+    soloChildren.length === 0;
+
+  type Unit = { kind: "petal"; petal: Petal } | { kind: "child"; node: GraphNode };
+  const units: Unit[] = soleFamily
+    ? []
+    : [
+        ...petals.map((p) => ({ kind: "petal" as const, petal: p })),
+        ...soloChildren.map((n) => ({ kind: "child" as const, node: n })),
+      ];
+
+  if (soleFamily) {
+    const petal = petals[0]!;
+    const kids = petal.children;
+    const spouse = petal.spouse;
+    const stack = PERSON + gap + 28;
+    const spouseHubY = cy + Math.round(arm * 0.65);
+    const spouseY = spouseHubY + stack;
+    const childHubY = spouseY + stack;
+    const childY = childHubY + stack + 12;
+    const kidGap = gap + (kids.length >= 4 ? 20 : 8);
+
+    if (spouseHub) {
+      pin(spouseHub, cx, spouseHubY);
+      placed.add(spouseHub.id);
+    }
+    pin(spouse, cx, spouseY);
+    placed.add(spouse.id);
+
+    if (childHub) {
+      pin(childHub, cx, childHubY);
+      placed.add(childHub.id);
+    }
+    packRow(kids, cx, childY, kidGap);
+    for (const k of kids) placed.add(k.id);
+  } else if (units.length) {
     const unitPitch = pitch + (petals.length ? 48 : 0);
     const total = units.length * unitPitch;
     let x = cx - total / 2 + unitPitch / 2;
     const childY = cy + outer;
-    const spouseY = cy + outer - (PERSON + gap * 0.85);
+    const spouseY = childY - (PERSON + gap + 40);
+    const kidGap = gap + 8;
 
     for (const u of units) {
       if (u.kind === "petal") {
         const kids = u.petal.children;
-        packRow(kids, x, childY, gap);
+        packRow(kids, x, childY, kidGap);
         const kx = kids.reduce((s, k) => s + (k.x ?? x), 0) / kids.length;
         pin(u.petal.spouse, kx, spouseY);
         placed.add(u.petal.spouse.id);
@@ -475,20 +526,47 @@ export function layoutFamilyTree(
       }
       x += unitPitch;
     }
+
+    if (childHub && children.length) {
+      const ay = children.reduce((s, p) => s + (p.y ?? childY), 0) / children.length;
+      const hubY = Math.min(ay - (PERSON + gap), cy + arm + 40);
+      const ax = children.reduce((s, p) => s + (p.x ?? cx), 0) / children.length;
+      pin(childHub, cx * 0.25 + ax * 0.75, hubY);
+    }
+    if (spouseHub && spouses.length) {
+      const ax = spouses.reduce((s, p) => s + (p.x ?? cx), 0) / spouses.length;
+      const ay = spouses.reduce((s, p) => s + (p.y ?? cy), 0) / spouses.length;
+      const below = ay > cy + arm * 0.4;
+      if (below) {
+        pin(spouseHub, ax, Math.min(ay - (PERSON * 0.75 + gap * 0.5), cy + arm));
+      } else {
+        pin(spouseHub, cx * 0.35 + ax * 0.65, cy * 0.35 + ay * 0.65);
+      }
+    }
+  } else {
+    if (spouseHub && spouses.length) {
+      const ax = spouses.reduce((s, p) => s + (p.x ?? cx), 0) / spouses.length;
+      const ay = spouses.reduce((s, p) => s + (p.y ?? cy), 0) / spouses.length;
+      pin(spouseHub, cx * 0.35 + ax * 0.65, cy * 0.35 + ay * 0.65);
+    }
+    if (childHub && children.length) {
+      const ax = children.reduce((s, p) => s + (p.x ?? cx), 0) / children.length;
+      const ay = children.reduce((s, p) => s + (p.y ?? cy), 0) / children.length;
+      pin(childHub, cx * 0.3 + ax * 0.7, Math.max(ay - (PERSON + gap), cy + arm));
+    }
   }
 
-  if (spouseHub && spouses.length) {
-    const ax = spouses.reduce((s, p) => s + (p.x ?? cx), 0) / spouses.length;
-    const ay = spouses.reduce((s, p) => s + (p.y ?? cy), 0) / spouses.length;
-    pin(spouseHub, cx * 0.35 + ax * 0.65, cy * 0.35 + ay * 0.65);
-  }
-  if (childHub && children.length) {
-    const ax = children.reduce((s, p) => s + (p.x ?? cx), 0) / children.length;
-    const ay = children.reduce((s, p) => s + (p.y ?? cy), 0) / children.length;
-    pin(childHub, cx * 0.3 + ax * 0.7, cy * 0.3 + ay * 0.7);
-  }
-
-  placeExtended(nodes, edges, rootId, placed, cx, cy, gap, satelliteReach);
+  placeExtended(
+    nodes,
+    edges,
+    rootId,
+    placed,
+    cx,
+    cy,
+    gap,
+    satelliteReach,
+    focusSpouseIds,
+  );
 
   for (const n of nodes) {
     if (!isHubNode(n) || placed.has(n.id)) continue;

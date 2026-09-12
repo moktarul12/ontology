@@ -11,7 +11,8 @@
  *   - Shared focus parents → Parent hub; drop father/mother.
  *   - Focus sole spouse → Child hub; drop per-child mother/father.
  *   - Focus multi-spouse → COPARENT arcs.
- *   - Anywhere in the graph: sibling edges implied by shared parents → drop.
+ *   - Anywhere: sibling cliques collapse to a star around the nearest-to-focus person
+ *     (spouse’s siblings at hop 2 — no all-pairs web).
  *   - Anywhere: sole co-parent of a person's kids → drop mother/father fan;
  *     multi co-parent → COPARENT arcs.
  */
@@ -379,6 +380,8 @@ function buildFamilyIndex(
 /**
  * Hop 2–3: same rules as focus, without nesting hubs on every person.
  * - Drop sibling edges when parents are already known.
+ * - Collapse sibling meshes to a star around the member closest to focus
+ *   (e.g. Krishna's brothers/sisters — no all-pairs web).
  * - Sole co-parent: drop mother/father fan (kids keep link to the other parent).
  * - Multi co-parent: COPARENT arcs.
  */
@@ -389,6 +392,7 @@ function minimizeExtendedFamilyEdges(
   outEdges: GraphEdge[],
   consumed: Set<string>,
   nodes: GraphNode[],
+  focusSpouseIds: Set<string>,
 ): void {
   const { parentsOf, childrenOf, spousesOf } = buildFamilyIndex(
     allEdges,
@@ -418,6 +422,13 @@ function minimizeExtendedFamilyEdges(
     if (kids.size > 1) consumeSiblingEdgesAmong(kids, allEdges, consumed);
   }
 
+  // Hop-2 sibling mesh: drop sibling↔sibling when both are already 2+ hops out
+  // (e.g. Uma↔Premnath↔Rajendra — keep only links to Krishna at hop 1)
+  pruneDeepSiblingEdges(rootId, allEdges, consumed, nodeIds);
+
+  // Remaining cliques (≥3) → star around focus spouse / nearest to focus
+  pruneSiblingMeshesToStar(rootId, allEdges, consumed, nodeIds, focusSpouseIds);
+
   // Co-parent folds for every non-focus person
   for (const personId of nodeIds) {
     if (personId === rootId) continue;
@@ -433,7 +444,6 @@ function minimizeExtendedFamilyEdges(
         const s = idOf(e.source);
         const t = idOf(e.target);
         const lbl = e.label.toLowerCase();
-        // Only drop co-parent fan when the kid still links to `personId`
         const kidId =
           isParentLabel(lbl) && t === spouseId && kids.has(s) ? s
           : lbl === "child" && s === spouseId && kids.has(t) ? t
@@ -443,8 +453,6 @@ function minimizeExtendedFamilyEdges(
         consumed.add(e.id);
       }
     } else {
-      // Multi-spouse: soft COPARENT only for the spouse↔kid edges,
-      // never consume the kid→personId parent edge (would isolate kids).
       for (const spouseId of spouses) {
         if (spouseId === personId) continue;
         const spouseKids = new Set<string>();
@@ -466,6 +474,146 @@ function minimizeExtendedFamilyEdges(
           foldCoParentEdges(spouseId, spouseKids, allEdges, outEdges, consumed, nodes);
         }
       }
+    }
+  }
+}
+
+/**
+ * Drop sibling edges where both people are already 2+ hops from the focus.
+ * Those are the noisy all-pairs links among a spouse’s siblings, cousins, etc.
+ * Links that touch hop-0/1 (focus, parents, kids, spouses, siblings) stay.
+ */
+function pruneDeepSiblingEdges(
+  rootId: string,
+  allEdges: GraphEdge[],
+  consumed: Set<string>,
+  nodeIds: Set<string>,
+): void {
+  const dist = familyDistanceFromRoot(rootId, allEdges, nodeIds);
+  for (const e of allEdges) {
+    if (consumed.has(e.id)) continue;
+    if (e.label.toLowerCase() !== "sibling") continue;
+    const s = idOf(e.source);
+    const t = idOf(e.target);
+    if (!nodeIds.has(s) || !nodeIds.has(t)) continue;
+    const ds = dist.get(s) ?? 99;
+    const dt = dist.get(t) ?? 99;
+    if (ds >= 2 && dt >= 2) consumed.add(e.id);
+  }
+}
+
+/** BFS hop distance from root over all person–person family edges. */
+function familyDistanceFromRoot(
+  rootId: string,
+  allEdges: GraphEdge[],
+  nodeIds: Set<string>,
+): Map<string, number> {
+  const adj = new Map<string, string[]>();
+  const link = (a: string, b: string) => {
+    if (!nodeIds.has(a) || !nodeIds.has(b)) return;
+    if (!adj.has(a)) adj.set(a, []);
+    adj.get(a)!.push(b);
+  };
+  for (const e of allEdges) {
+    const s = idOf(e.source);
+    const t = idOf(e.target);
+    const lbl = e.label.toLowerCase();
+    if (
+      !isParentLabel(lbl) &&
+      lbl !== "child" &&
+      lbl !== "spouse" &&
+      lbl !== "sibling"
+    ) {
+      continue;
+    }
+    link(s, t);
+    link(t, s);
+  }
+
+  const dist = new Map<string, number>();
+  dist.set(rootId, 0);
+  const q = [rootId];
+  while (q.length) {
+    const cur = q.shift()!;
+    const d = dist.get(cur)!;
+    for (const n of adj.get(cur) ?? []) {
+      if (dist.has(n)) continue;
+      dist.set(n, d + 1);
+      q.push(n);
+    }
+  }
+  return dist;
+}
+
+/**
+ * Within each sibling connected component, keep only edges to one anchor
+ * (person closest to the focus — usually the focus spouse). Drops the
+ * all-pairs sibling web at hop 2 (Uma↔Premnath↔Rajendra↔…).
+ */
+function pruneSiblingMeshesToStar(
+  rootId: string,
+  allEdges: GraphEdge[],
+  consumed: Set<string>,
+  nodeIds: Set<string>,
+  focusSpouseIds: Set<string>,
+): void {
+  const dist = familyDistanceFromRoot(rootId, allEdges, nodeIds);
+
+  const adj = new Map<string, Set<string>>();
+  const add = (a: string, b: string) => {
+    if (!adj.has(a)) adj.set(a, new Set());
+    adj.get(a)!.add(b);
+  };
+
+  for (const e of allEdges) {
+    if (consumed.has(e.id)) continue;
+    if (e.label.toLowerCase() !== "sibling") continue;
+    const s = idOf(e.source);
+    const t = idOf(e.target);
+    if (!nodeIds.has(s) || !nodeIds.has(t)) continue;
+    add(s, t);
+    add(t, s);
+  }
+
+  const seen = new Set<string>();
+  for (const start of adj.keys()) {
+    if (seen.has(start)) continue;
+    const comp: string[] = [];
+    const stack = [start];
+    seen.add(start);
+    while (stack.length) {
+      const cur = stack.pop()!;
+      comp.push(cur);
+      for (const n of adj.get(cur) ?? []) {
+        if (seen.has(n)) continue;
+        seen.add(n);
+        stack.push(n);
+      }
+    }
+    if (comp.length < 3) continue; // pair is already a star of 1 edge
+
+    // Prefer: focus → focus spouse → nearer to focus
+    let anchor = comp[0]!;
+    let best = Infinity;
+    for (const id of comp) {
+      let score = dist.get(id) ?? 99;
+      if (id === rootId) score = -2;
+      else if (focusSpouseIds.has(id)) score = -1;
+      if (score < best || (score === best && id < anchor)) {
+        best = score;
+        anchor = id;
+      }
+    }
+
+    // Drop every sibling edge that does not touch the anchor
+    for (const e of allEdges) {
+      if (consumed.has(e.id)) continue;
+      if (e.label.toLowerCase() !== "sibling") continue;
+      const s = idOf(e.source);
+      const t = idOf(e.target);
+      if (!comp.includes(s) || !comp.includes(t)) continue;
+      if (s === anchor || t === anchor) continue;
+      consumed.add(e.id);
     }
   }
 }
@@ -536,7 +684,15 @@ export function toRelationHubs(
   linkSoleSpouseToChildHub(rootId, spouses, children, edges, outNodes, outEdges, consumed);
   addFocusCoParentLinks(spouses, children, edges, outEdges, consumed, nodes);
 
-  minimizeExtendedFamilyEdges(rootId, edges, nodeIds, outEdges, consumed, nodes);
+  minimizeExtendedFamilyEdges(
+    rootId,
+    edges,
+    nodeIds,
+    outEdges,
+    consumed,
+    nodes,
+    new Set(spouses.keys()),
+  );
 
   for (const e of edges) {
     if (!consumed.has(e.id)) outEdges.push(e);
