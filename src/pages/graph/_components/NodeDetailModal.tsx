@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import { fetchEntitySummary } from "@/lib/wikidata/api.ts";
+import { entityPath } from "@/lib/entityPath.ts";
 import { getEntityTypeConfig } from "@/lib/wikidata/entity-types.ts";
 import type { GraphNode } from "@/lib/wikidata/types.ts";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
@@ -124,7 +125,7 @@ export default function NodeDetailModal({ node, onClose, onExpand, isExpanding }
                           v.id ? (
                             <button
                               key={i}
-                              onClick={() => navigate(`/entity/${v.id}`)}
+                              onClick={() => navigate(entityPath(v.id!, v.label))}
                               className="rounded px-1.5 py-0.5 text-[10px] font-medium border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors cursor-pointer"
                             >
                               {v.label}
@@ -166,7 +167,7 @@ export default function NodeDetailModal({ node, onClose, onExpand, isExpanding }
               </button>
               <div className="flex gap-2">
                 <button
-                  onClick={() => navigate(`/entity/${node.id}`)}
+                  onClick={() => navigate(entityPath(node.id, node.label))}
                   className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-border/60 bg-muted/20 px-3 py-2 text-[10px] font-medium text-muted-foreground hover:text-foreground hover:border-border transition-colors cursor-pointer"
                 >
                   <Network className="size-3" /> Overview

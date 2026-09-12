@@ -80,6 +80,66 @@ function relColor(label: string): string {
   return REL_COLORS[key] ?? REL_DEFAULT;
 }
 
+/** Attach edge to rounded-rect border (not a circle approx). */
+function rectEdgePoint(
+  cx: number,
+  cy: number,
+  w: number,
+  h: number,
+  tx: number,
+  ty: number,
+  pad = 0,
+): { x: number; y: number } {
+  const dx = tx - cx;
+  const dy = ty - cy;
+  const hw = w / 2 + pad;
+  const hh = h / 2 + pad;
+  if (dx === 0 && dy === 0) return { x: cx, y: cy };
+  const sx = Math.abs(dx) / hw;
+  const sy = Math.abs(dy) / hh;
+  const t = Math.max(sx, sy) || 1;
+  return { x: cx + dx / t, y: cy + dy / t };
+}
+
+/** Incoming direction angle (degrees) at path end for an overlay arrowhead. */
+function pathEndAngle(pathD: string, x1: number, y1: number, x2: number, y2: number): number {
+  const q = pathD.match(/Q([\d.-]+),([\d.-]+)\s+([\d.-]+),([\d.-]+)/);
+  if (q) {
+    const cx = Number(q[1]);
+    const cy = Number(q[2]);
+    return (Math.atan2(y2 - cy, x2 - cx) * 180) / Math.PI;
+  }
+  const pts = [...pathD.matchAll(/[ML]([\d.-]+),([\d.-]+)/g)].map((m) => ({
+    x: Number(m[1]),
+    y: Number(m[2]),
+  }));
+  if (pts.length >= 2) {
+    const a = pts[pts.length - 2]!;
+    const b = pts[pts.length - 1]!;
+    return (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+  }
+  return (Math.atan2(y2 - y1, x2 - x1) * 180) / Math.PI;
+}
+
+function pathStartAngle(pathD: string, x1: number, y1: number, x2: number, y2: number): number {
+  const q = pathD.match(/Q([\d.-]+),([\d.-]+)/);
+  if (q) {
+    const cx = Number(q[1]);
+    const cy = Number(q[2]);
+    return (Math.atan2(cy - y1, cx - x1) * 180) / Math.PI;
+  }
+  const pts = [...pathD.matchAll(/[ML]([\d.-]+),([\d.-]+)/g)].map((m) => ({
+    x: Number(m[1]),
+    y: Number(m[2]),
+  }));
+  if (pts.length >= 2) {
+    const a = pts[0]!;
+    const b = pts[1]!;
+    return (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+  }
+  return (Math.atan2(y2 - y1, x2 - x1) * 180) / Math.PI;
+}
+
 function childRoleLabel(gender?: "male" | "female"): string {
   if (gender === "female") return "daughter";
   if (gender === "male") return "son";
@@ -598,7 +658,7 @@ export default function FamilyTreeCanvas({
           );
         })}
 
-        {/* ── Edges ──────────────────────────────────────────────────────── */}
+        {/* ── Edges (under nodes) ─────────────────────────────────────────── */}
         {edges.map(edge => {
           const src = typeof edge.source === "object" ? edge.source : nodes.find(n => n.id === edge.source);
           const tgt = typeof edge.target === "object" ? edge.target : nodes.find(n => n.id === edge.target);
@@ -619,12 +679,11 @@ export default function FamilyTreeCanvas({
           const isHubShare = edge.propertyId === "HUB_SHARE";
           const isCoParent = isCoParentEdge(edge);
           const isSpoke = isHubEdge && !edge.label.trim();
-          const startPad = useHubs ? 2 : (arrowDir === "both" && !isSpoke ? 9 : 2);
-          const endPad = useHubs ? 2 : 9;
-          const x1 = sx + (dx / len) * (fromSz.w / 2 + startPad);
-          const y1 = sy + (dy / len) * (fromSz.h / 2 + startPad);
-          const x2 = tx - (dx / len) * (toSz.w / 2 + endPad);
-          const y2 = ty - (dy / len) * (toSz.h / 2 + endPad);
+          // Stop clearly outside the rect so tips aren't buried under the fill
+          const tipGap = isHubEdge && !isCoParent ? 1.5 : 5;
+          const p1 = rectEdgePoint(sx, sy, fromSz.w, fromSz.h, tx, ty, tipGap);
+          const p2 = rectEdgePoint(tx, ty, toSz.w, toSz.h, sx, sy, tipGap);
+          const x1 = p1.x, y1 = p1.y, x2 = p2.x, y2 = p2.y;
 
           const spokeRel =
             (src as HubGraphNode).hubRelation ??
@@ -637,31 +696,15 @@ export default function FamilyTreeCanvas({
               : isHubNode(src) || isHubNode(tgt)
                 ? relColor(spokeRel === "parent" ? "parent" : spokeRel)
                 : REL_DEFAULT;
-          const relKey = displayLabel.toLowerCase().split(/\s*\/\s*/)[0]?.trim() ?? "";
-          const hasNamed = Boolean(REL_COLORS[relKey]);
-          const endMarker = hasNamed ? `ft-arr-${relKey}` : "ft-arr-default";
-          const startMarker = hasNamed ? `ft-arr-start-${relKey}` : "ft-arr-start-default";
-          const markerEnd =
-            (useHubs && isHubEdge) || isCoParent
-              ? undefined
-              : isSpoke
-                ? undefined
-                : `url(#${endMarker})`;
-          const markerStart =
-            (useHubs && isHubEdge) || isCoParent
-              ? undefined
-              : arrowDir === "both" && !isSpoke
-                ? `url(#${startMarker})`
-                : undefined;
 
           let pathD: string;
           const skip = new Set([from.id, to.id]);
           if (useHubs) {
-            // Orbit graph package: circle-aware routing (no edge-through-node)
             pathD = routeOrbitEdge(x1, y1, x2, y2, nodes, skip, {
               preferStraight: isHubEdge && !isCoParent,
+              smoothOnly: isHubEdge || isCoParent,
               loft: isCoParent ? Math.min(70, Math.max(32, len * 0.3)) : undefined,
-              pad: isCoParent ? 10 : 8,
+              pad: isCoParent ? 10 : 6,
               rootId,
             });
           } else if (isCoParent) {
@@ -687,7 +730,7 @@ export default function FamilyTreeCanvas({
             !isCoParent;
 
           return (
-            <g key={`${edge.id}-${arrowDir}`}>
+            <g key={`${edge.id}-${arrowDir}-path`}>
               {isCoParent && (
                 <path
                   d={pathD}
@@ -712,8 +755,6 @@ export default function FamilyTreeCanvas({
                 strokeWidth={isCoParent ? 2 : useHubs ? (isSpoke ? 1.75 : 2) : isSpoke ? 1.5 : 2}
                 strokeDasharray={isCoParent ? "5 7" : isHubShare ? "4 5" : undefined}
                 strokeLinecap="round"
-                markerEnd={markerEnd}
-                markerStart={markerStart}
               />
               {isCoParent && len > 60 && (
                 <text
@@ -895,6 +936,103 @@ export default function FamilyTreeCanvas({
                 )}
               </g>
             );
+        })}
+
+        {/* ── Arrowheads on top of nodes (never buried under fills) ─────── */}
+        {edges.map((edge) => {
+          const src = typeof edge.source === "object" ? edge.source : nodes.find((n) => n.id === edge.source);
+          const tgt = typeof edge.target === "object" ? edge.target : nodes.find((n) => n.id === edge.target);
+          if (!src || !tgt || src.x === undefined || tgt.x === undefined) return null;
+
+          const { label: displayLabel, reverse } = displayRelation(edge, nodes, arrowDir);
+          const from = reverse ? tgt : src;
+          const to = reverse ? src : tgt;
+          const fromSz = nodeSize(from);
+          const toSz = nodeSize(to);
+
+          const sx = from.x ?? 0, sy = from.y ?? 0;
+          const tx = to.x ?? 0, ty = to.y ?? 0;
+          const dx = tx - sx, dy = ty - sy;
+          const len = Math.sqrt(dx * dx + dy * dy) || 1;
+
+          const isHubEdge = edge.propertyId === "HUB" || edge.propertyId === "HUB_SHARE";
+          const isCoParent = isCoParentEdge(edge);
+          const isSpoke = isHubEdge && !edge.label.trim();
+
+          // Hub spokes stay unmarked; show arrows for mother/father & labeled links
+          // (direction already applied via displayRelation reverse)
+          const showEnd =
+            isCoParent || (!(useHubs && isHubEdge) && !isSpoke);
+          const showStart =
+            !isCoParent &&
+            !(useHubs && isHubEdge) &&
+            !isSpoke &&
+            arrowDir === "both";
+          if (!showEnd && !showStart) return null;
+
+          const tipGap = isHubEdge && !isCoParent ? 1.5 : 5;
+          const p1 = rectEdgePoint(sx, sy, fromSz.w, fromSz.h, tx, ty, tipGap);
+          const p2 = rectEdgePoint(tx, ty, toSz.w, toSz.h, sx, sy, tipGap);
+          const x1 = p1.x, y1 = p1.y, x2 = p2.x, y2 = p2.y;
+
+          const spokeRel =
+            (src as HubGraphNode).hubRelation ??
+            (tgt as HubGraphNode).hubRelation ??
+            "child";
+          const color = isCoParent
+            ? relColor(displayLabel || "mother")
+            : displayLabel
+              ? relColor(displayLabel)
+              : isHubNode(src) || isHubNode(tgt)
+                ? relColor(spokeRel === "parent" ? "parent" : spokeRel)
+                : REL_DEFAULT;
+
+          let pathD: string;
+          const skip = new Set([from.id, to.id]);
+          if (useHubs) {
+            pathD = routeOrbitEdge(x1, y1, x2, y2, nodes, skip, {
+              preferStraight: isHubEdge && !isCoParent,
+              smoothOnly: isHubEdge || isCoParent,
+              loft: isCoParent ? Math.min(70, Math.max(32, len * 0.3)) : undefined,
+              pad: isCoParent ? 10 : 6,
+              rootId,
+            });
+          } else if (isCoParent) {
+            const mx = (x1 + x2) / 2;
+            const my = (y1 + y2) / 2;
+            const nx = -dy / len;
+            const ny = dx / len;
+            const loft = Math.min(70, Math.max(28, len * 0.28));
+            pathD = `M${x1},${y1} Q${mx + nx * loft},${my + ny * loft} ${x2},${y2}`;
+          } else {
+            pathD = edgePathAvoidingNodes(x1, y1, x2, y2, nodes, skip, {
+              preferRadial: isHubEdge,
+            });
+          }
+
+          const endAng = pathEndAngle(pathD, x1, y1, x2, y2);
+          const startAng = pathStartAngle(pathD, x1, y1, x2, y2);
+
+          return (
+            <g key={`${edge.id}-${arrowDir}-arr`} style={{ pointerEvents: "none" }}>
+              {showEnd && (
+                <path
+                  d="M -9 -5 L 0 0 L -9 5 Z"
+                  fill={color}
+                  opacity={0.95}
+                  transform={`translate(${x2},${y2}) rotate(${endAng})`}
+                />
+              )}
+              {showStart && (
+                <path
+                  d="M -9 -5 L 0 0 L -9 5 Z"
+                  fill={color}
+                  opacity={0.95}
+                  transform={`translate(${x1},${y1}) rotate(${startAng + 180})`}
+                />
+              )}
+            </g>
+          );
         })}
       </g>
 

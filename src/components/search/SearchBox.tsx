@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useDebounce } from "@/hooks/use-debounce.ts";
 import { searchEntities } from "@/lib/wikidata/api.ts";
+import { entityPath } from "@/lib/entityPath.ts";
 import { getEntityTypeConfig } from "@/lib/wikidata/entity-types.ts";
 import type { SearchResult } from "@/lib/wikidata/types.ts";
 import { motion, AnimatePresence } from "motion/react";
@@ -62,7 +63,7 @@ export default function SearchBox({ size = "lg", placeholder = "Search any perso
   const handleSelect = (result: SearchResult) => {
     setOpen(false);
     setQuery(result.label);
-    navigate(`/entity/${result.id}`);
+    navigate(entityPath(result.id, result.label));
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

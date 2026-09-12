@@ -6,7 +6,7 @@
  *   root → [Occupation] → roles…
  *
  * Expanded neighbors stay plain entities (no secondary hubs).
- * Taxonomy edges like "subclass of" (P279) are never shown.
+ * Taxonomy edges like "subclass of" / "instance of" are never shown.
  */
 
 import type { GraphNode, GraphEdge } from "@/lib/wikidata/types.ts";
@@ -20,8 +20,23 @@ export type KnowledgeHubNode = GraphNode & {
 
 export const HUB_PAGE_SIZE = 10;
 
-/** Never show these as edges or hubs (taxonomy noise). */
-export const HIDDEN_GRAPH_PROPERTIES = new Set(["P279"]);
+/** Never show these as edges or hubs (taxonomy / low-signal noise). */
+export const HIDDEN_GRAPH_PROPERTIES = new Set(["P279", "P31"]);
+
+/**
+ * Relations enabled by default in the Relations filter.
+ * Everything else is available but unchecked until the user opts in.
+ */
+export const IMPORTANT_GRAPH_PROPERTIES = new Set([
+  // Creative / works
+  "P161", "P57", "P162", "P86", "P175", "P58", "P800", "P50", "P170",
+  // Career
+  "P106", "P108", "P69", "P166", "P39",
+  // Family
+  "P26", "P22", "P25", "P40",
+  // Place / identity
+  "P19", "P20", "P27",
+]);
 
 /** Stable arm order: creative roles, then bio / people / place, then alpha. */
 export const HUB_SORT_RANK: Record<string, number> = {
@@ -44,10 +59,30 @@ export const HUB_SORT_RANK: Record<string, number> = {
   P19: 300,
   P20: 310,
   P27: 320,
-  P31: 400,
   P136: 410,
   P452: 420,
 };
+
+export function isImportantRelation(propertyId: string): boolean {
+  return IMPORTANT_GRAPH_PROPERTIES.has(propertyId);
+}
+
+/** Property IDs that touch the root but are not in the default-important set. */
+export function defaultHiddenRelations(
+  edges: GraphEdge[],
+  rootId: string,
+): Set<string> {
+  const hidden = new Set<string>();
+  for (const e of edges) {
+    if (!e.propertyId || e.propertyId === "HUB") continue;
+    if (HIDDEN_GRAPH_PROPERTIES.has(e.propertyId)) continue;
+    const s = typeof e.source === "object" ? e.source.id : e.source;
+    const t = typeof e.target === "object" ? e.target.id : e.target;
+    if (s !== rootId && t !== rootId) continue;
+    if (!IMPORTANT_GRAPH_PROPERTIES.has(e.propertyId)) hidden.add(e.propertyId);
+  }
+  return hidden;
+}
 
 const HUB_COLORS: Record<string, string> = {
   P161: "#2A7AB0",

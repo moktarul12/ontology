@@ -14,6 +14,7 @@ import { fetchEntitySummary, fetchFamilyData, dedupeFamilyEdges } from "@/lib/wi
 import type { GraphNode, GraphEdge } from "@/lib/wikidata/types.ts";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { cn } from "@/lib/utils.ts";
+import { entityPath } from "@/lib/entityPath.ts";
 
 // Relation legend data
 const REL_LEGEND = [
@@ -204,7 +205,7 @@ export default function FamilyTreePage() {
       <header className="shrink-0 border-b border-border/60 bg-background/95 backdrop-blur-sm z-10">
         <div className="flex items-center gap-2.5 px-4 py-2.5 md:px-5">
           <button
-            onClick={() => navigate(`/entity/${id}`)}
+            onClick={() => navigate(entityPath(id!, rootEntity?.label))}
             className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/60 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
           >
             <ArrowLeft className="size-4" />

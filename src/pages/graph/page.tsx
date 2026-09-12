@@ -17,7 +17,8 @@ import {
 import type { GraphNode, GraphEdge } from "@/lib/wikidata/types.ts";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { cn } from "@/lib/utils.ts";
-import { toKnowledgeHubs, isKnowledgeHub, isHubMoreNode, HUB_PAGE_SIZE, HIDDEN_GRAPH_PROPERTIES, hubIdFor } from "./_lib/relationHubs.ts";
+import { toKnowledgeHubs, isKnowledgeHub, isHubMoreNode, HUB_PAGE_SIZE, HIDDEN_GRAPH_PROPERTIES, hubIdFor, defaultHiddenRelations, isImportantRelation } from "./_lib/relationHubs.ts";
+import { entityPath } from "@/lib/entityPath.ts";
 
 function edgeEndpointId(v: string | GraphNode): string {
   return typeof v === "object" ? v.id : v;
@@ -66,6 +67,7 @@ export default function GraphPage() {
         setNodes(data.nodes);
         setEdges(data.edges);
         setLoadedIds(new Set(data.nodes.map((n) => n.id)));
+        setHiddenRelations(defaultHiddenRelations(data.edges, id));
       })
       .catch(() => toast.error("Failed to load graph data"))
       .finally(() => setGraphLoading(false));
@@ -233,6 +235,7 @@ export default function GraphPage() {
       setNodes(data.nodes);
       setEdges(data.edges);
       setLoadedIds(new Set(data.nodes.map((n) => n.id)));
+      setHiddenRelations(defaultHiddenRelations(data.edges, id));
     } catch {
       toast.error("Failed to reload graph");
     } finally {
@@ -257,7 +260,7 @@ export default function GraphPage() {
       <header className="shrink-0 border-b border-border/60 bg-background/95 backdrop-blur-sm z-10">
         <div className="flex items-center gap-2.5 px-4 py-2.5 md:px-5">
           <button
-            onClick={() => navigate(`/entity/${id}`)}
+            onClick={() => navigate(entityPath(id!, rootEntity?.label))}
             className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/60 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
           >
             <ArrowLeft className="size-4" />
@@ -331,6 +334,14 @@ export default function GraphPage() {
                       <button
                         type="button"
                         className="text-[10px] text-primary hover:underline cursor-pointer"
+                        onClick={() => setHiddenRelations(defaultHiddenRelations(edges, id!))}
+                        title="Enable important relations only"
+                      >
+                        Important
+                      </button>
+                      <button
+                        type="button"
+                        className="text-[10px] text-primary hover:underline cursor-pointer"
                         onClick={() => setHiddenRelations(new Set())}
                       >
                         All
@@ -349,6 +360,7 @@ export default function GraphPage() {
                   <ul className="space-y-0.5">
                     {relationOptions.map((rel) => {
                       const checked = !hiddenRelations.has(rel.propertyId);
+                      const important = isImportantRelation(rel.propertyId);
                       return (
                         <li key={rel.propertyId}>
                           <label className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs cursor-pointer hover:bg-muted/50">
@@ -358,7 +370,9 @@ export default function GraphPage() {
                               onChange={() => toggleRelation(rel.propertyId)}
                               className="size-3.5 accent-primary cursor-pointer"
                             />
-                            <span className="flex-1 truncate text-foreground">{rel.label}</span>
+                            <span className={cn("flex-1 truncate", important ? "text-foreground font-medium" : "text-muted-foreground")}>
+                              {rel.label}
+                            </span>
                             <span className="font-mono text-[10px] text-muted-foreground">{rel.count}</span>
                           </label>
                         </li>

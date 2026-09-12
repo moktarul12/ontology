@@ -1,6 +1,7 @@
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { fetchEntitySummary, resolveWikipediaTitleToQid } from "@/lib/wikidata/api.ts";
+import { fetchEntitySummary, resolveWikipediaTitleToQid, searchEntities } from "@/lib/wikidata/api.ts";
+import { entityPath, parseEntityParam } from "@/lib/entityPath.ts";
 import { getEntityTypeConfig } from "@/lib/wikidata/entity-types.ts";
 import {
   sectionOrderForType,
@@ -421,18 +422,46 @@ function buildHeroMarketing(entity: EntitySummary): HeroMarketing {
 }
 
 export default function EntityPage() {
-  const { id } = useParams<{ id: string }>();
+  const { id: rawParam } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [copied, setCopied] = useState(false);
   const [activeTab, setActiveTab] = useState("overview");
   const [resolvingLink, setResolvingLink] = useState(false);
 
+  const parsed = useMemo(() => parseEntityParam(rawParam ?? ""), [rawParam]);
+
+  const { data: slugQid, isLoading: resolvingSlug } = useQuery({
+    queryKey: ["entity-slug", parsed.slug],
+    queryFn: async () => {
+      const q = (parsed.slug ?? "").replace(/-/g, " ").trim();
+      if (!q) return null;
+      const hits = await searchEntities(q, 8);
+      return hits[0]?.id ?? null;
+    },
+    enabled: !parsed.qid && Boolean(parsed.slug),
+    staleTime: 1000 * 60 * 60,
+  });
+
+  const qid = parsed.qid ?? slugQid ?? undefined;
+
   const { data: entity, isLoading, error } = useQuery({
-    queryKey: ["entity", id, "v10-biz-hero"],
-    queryFn: () => fetchEntitySummary(id!),
-    enabled: Boolean(id),
+    queryKey: ["entity", qid, "v10-biz-hero"],
+    queryFn: () => fetchEntitySummary(qid!),
+    enabled: Boolean(qid),
     staleTime: 1000 * 60 * 30,
   });
+
+  // Prefer /entity/albert-einstein-Q9458 over bare /entity/Q9458
+  useEffect(() => {
+    if (!entity || !qid || !rawParam) return;
+    const canonical = entityPath(qid, entity.label);
+    const current = `/entity/${rawParam}`;
+    if (current !== canonical) {
+      navigate(canonical, { replace: true });
+    }
+  }, [entity, qid, rawParam, navigate]);
+
+  const pageLoading = isLoading || (!parsed.qid && resolvingSlug);
 
   const cfg = entity ? getEntityTypeConfig(entity.type) : null;
   const Icon = entity ? TYPE_ICONS[entity.type] : null;
@@ -605,7 +634,7 @@ export default function EntityPage() {
       setResolvingLink(true);
       try {
         const qid = await resolveWikipediaTitleToQid(title);
-        if (qid) navigate(`/entity/${qid}`);
+        if (qid) navigate(entityPath(qid));
         else toast.message(`No Wikidata entity for “${title}”`);
       } finally {
         setResolvingLink(false);
@@ -637,7 +666,7 @@ export default function EntityPage() {
     <div className="min-h-screen bg-[#0b1220]">
       {/* Top nav */}
       <header className="sticky top-0 z-30 border-b border-white/10 bg-[#0b1220]/95 backdrop-blur-md">
-        <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-2.5 md:px-6">
+        <div className="mx-auto flex max-w-[1600px] items-center gap-3 px-5 py-2.5">
           <button
             onClick={() => navigate("/")}
             className="flex shrink-0 items-center gap-2 cursor-pointer"
@@ -666,14 +695,24 @@ export default function EntityPage() {
         </div>
       </header>
 
-      {isLoading && (
-        <div className="mx-auto max-w-7xl px-4 py-8 md:px-6 space-y-6">
+      {pageLoading && (
+        <div className="mx-auto max-w-[1600px] px-5 py-8 space-y-6">
           <Skeleton className="h-64 w-full rounded-2xl bg-white/10" />
           <div className="grid lg:grid-cols-[200px_1fr_260px] gap-5">
             <Skeleton className="h-72 hidden lg:block rounded-xl bg-white/10" />
             <Skeleton className="h-96 rounded-xl bg-white/10" />
             <Skeleton className="h-72 hidden lg:block rounded-xl bg-white/10" />
           </div>
+        </div>
+      )}
+
+      {!pageLoading && !qid && (
+        <div className="flex flex-col items-center justify-center py-24 text-center gap-3">
+          <HelpCircle className="size-5 text-red-400" />
+          <p className="text-white font-medium">Could not find this entity</p>
+          <button onClick={() => navigate("/")} className="mt-2 text-cyan-300 text-sm hover:underline cursor-pointer">
+            Back to search
+          </button>
         </div>
       )}
 
@@ -709,7 +748,7 @@ export default function EntityPage() {
               }}
             />
 
-            <div className="relative mx-auto max-w-7xl px-4 py-7 md:px-6 md:py-10 space-y-5 md:space-y-6">
+            <div className="relative mx-auto max-w-[1600px] px-5 py-7 md:py-10 space-y-5 md:space-y-6">
               <div className="flex flex-col lg:flex-row gap-6 lg:gap-8 items-center lg:items-start">
                 <div className="relative shrink-0">
                   {portraitUrl ? (
@@ -776,7 +815,7 @@ export default function EntityPage() {
                     {(marketing?.industries.length ? marketing.industries : tags).slice(0, 6).map((t) => (
                       <button
                         key={`ind-${t.label}`}
-                        onClick={() => t.id && navigate(`/entity/${t.id}`)}
+                        onClick={() => t.id && navigate(entityPath(t.id, t.label))}
                         className={cn(
                           "rounded-full border border-cyan-300/35 bg-cyan-400/10 px-3 py-1 text-xs font-medium text-cyan-100",
                           t.id && "hover:bg-cyan-400/20 cursor-pointer"
@@ -806,7 +845,7 @@ export default function EntityPage() {
                         {marketing.products.map((p) => (
                           <button
                             key={p.label}
-                            onClick={() => p.id && navigate(`/entity/${p.id}`)}
+                            onClick={() => p.id && navigate(entityPath(p.id, p.label))}
                             className={cn(
                               "rounded-lg border border-white/12 bg-white/[0.04] px-2.5 py-1 text-[12px] text-slate-200",
                               p.id && "hover:border-cyan-400/40 hover:text-cyan-100 cursor-pointer"
@@ -876,7 +915,7 @@ export default function EntityPage() {
                                 line.id ? (
                                   <button
                                     key={`${line.text}-${i}`}
-                                    onClick={() => navigate(`/entity/${line.id}`)}
+                                    onClick={() => navigate(entityPath(line.id!, line.text))}
                                     className="text-[13px] text-white/90 hover:text-cyan-300 hover:underline cursor-pointer text-left"
                                   >
                                     {line.text}{i < Math.min(qf.lines.length, 3) - 1 ? "," : ""}
@@ -900,14 +939,14 @@ export default function EntityPage() {
                     <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400 mb-3">Explore</p>
                     <div className="grid grid-cols-1 gap-2.5">
                       <ExploreBtn
-                        onClick={() => navigate(`/graph/${id}`)}
+                        onClick={() => navigate(`/graph/${qid}`)}
                         icon={<Network className="size-4 shrink-0" />}
                         label="Knowledge Graph"
                         primary
                       />
                       {entity.type === "person" ? (
                         <ExploreBtn
-                          onClick={() => navigate(`/family-tree/${id}`)}
+                          onClick={() => navigate(`/family-tree/${qid}`)}
                           icon={<GitBranch className="size-4 shrink-0" />}
                           label="Family Tree"
                         />
@@ -937,7 +976,7 @@ export default function EntityPage() {
 
           {/* ═══════════════ BODY (light) ═══════════════ */}
           <section className="entity-body bg-[#f4f7fb] text-slate-800 min-h-[70vh]">
-            <div className="mx-auto max-w-7xl px-4 py-6 md:px-6 md:py-8 pb-24">
+            <div className="mx-auto max-w-[1600px] px-5 py-6 md:py-8 pb-24">
               {resolvingLink && (
                 <p className="mb-3 text-xs text-cyan-700 animate-pulse">Opening linked entity…</p>
               )}
@@ -966,7 +1005,7 @@ export default function EntityPage() {
                 </div>
               </nav>
 
-              <div className="grid gap-5 lg:grid-cols-[210px_minmax(0,1fr)_260px] xl:grid-cols-[220px_minmax(0,1fr)_280px] items-start">
+              <div className="grid gap-4 lg:grid-cols-[180px_minmax(0,1fr)_240px] xl:grid-cols-[190px_minmax(0,1fr)_260px] items-start">
                 {/* Left TOC */}
                 <nav className="hidden lg:block sticky top-[4.25rem]">
                   <div className="rounded-2xl border border-slate-200/80 bg-white shadow-sm shadow-slate-200/50 overflow-hidden">
@@ -1121,7 +1160,7 @@ export default function EntityPage() {
                             {entity.related.map((r) => (
                               <li key={`${r.id}-${r.propertyId}`}>
                                 <button
-                                  onClick={() => navigate(`/entity/${r.id}`)}
+                                  onClick={() => navigate(entityPath(r.id, r.label))}
                                   className="w-full text-left rounded-xl border border-slate-200 bg-slate-50/50 px-3 py-2.5 hover:border-cyan-300 hover:bg-cyan-50/50 transition-colors cursor-pointer"
                                 >
                                   <span className="block text-sm font-medium text-slate-900">{r.label}</span>
@@ -1170,7 +1209,7 @@ export default function EntityPage() {
                                   <span key={j}>
                                     {j > 0 && ", "}
                                     {v.id ? (
-                                      <button onClick={() => navigate(`/entity/${v.id}`)} className="text-cyan-700 hover:underline cursor-pointer">
+                                      <button onClick={() => navigate(entityPath(v.id!, v.label))} className="text-cyan-700 hover:underline cursor-pointer">
                                         {v.label}
                                       </button>
                                     ) : v.label}
@@ -1194,7 +1233,7 @@ export default function EntityPage() {
                         {entity.related.slice(0, 6).map((r) => (
                           <li key={`${r.id}-${r.propertyId}`}>
                             <button
-                              onClick={() => navigate(`/entity/${r.id}`)}
+                              onClick={() => navigate(entityPath(r.id, r.label))}
                               className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm text-slate-700 hover:bg-cyan-50 hover:text-cyan-900 cursor-pointer transition-colors"
                             >
                               <span className="flex-1 truncate font-medium">{r.label}</span>
@@ -1215,7 +1254,7 @@ export default function EntityPage() {
                         {entity.related.slice(0, 4).map((r) => (
                           <li key={`pop-${r.id}`}>
                             <button
-                              onClick={() => navigate(`/entity/${r.id}`)}
+                              onClick={() => navigate(entityPath(r.id, r.label))}
                               className="flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left hover:bg-slate-50 cursor-pointer"
                             >
                               <div className="size-9 rounded-lg bg-gradient-to-br from-cyan-100 to-slate-100 border border-slate-200 flex items-center justify-center shrink-0">
@@ -1233,7 +1272,7 @@ export default function EntityPage() {
                   )}
 
                   <p className="text-center text-[10px] text-slate-400 font-mono px-2">
-                    {id} · {entity.facts.length} properties
+                    {qid} · {entity.facts.length} properties
                   </p>
                 </aside>
               </div>
@@ -1356,7 +1395,7 @@ function KeyHighlights({ facts, onNavigate }: { facts: EntityFact[]; onNavigate:
                 <span key={j}>
                   {j > 0 && ", "}
                   {v.id ? (
-                    <button onClick={() => onNavigate(`/entity/${v.id}`)} className="text-cyan-700 hover:underline cursor-pointer">
+                    <button onClick={() => onNavigate(entityPath(v.id!, v.label))} className="text-cyan-700 hover:underline cursor-pointer">
                       {v.label}
                     </button>
                   ) : v.label}
@@ -1406,7 +1445,7 @@ function TimelinePanel({
                 <>
                   {": "}
                   {item.entityId ? (
-                    <button onClick={() => onNavigate(`/entity/${item.entityId}`)} className="cursor-pointer text-cyan-700 hover:underline">
+                    <button onClick={() => onNavigate(entityPath(item.entityId!, item.value))} className="cursor-pointer text-cyan-700 hover:underline">
                       {item.value}
                     </button>
                   ) : item.value}
@@ -1450,7 +1489,7 @@ function FactsPanel({
                 v.id ? (
                   <button
                     key={j}
-                    onClick={() => onNavigate(`/entity/${v.id}`)}
+                    onClick={() => onNavigate(entityPath(v.id!, v.label))}
                     className={cn(
                       "rounded-md border px-2 py-0.5 text-xs font-medium transition-colors cursor-pointer",
                       light
@@ -1476,7 +1515,7 @@ function FactsPanel({
                     <li key={`${vi}-${qi}`} className={cn("text-[11px]", light ? "text-slate-500" : "text-muted-foreground")}>
                       <span className="opacity-70">{q.property}: </span>
                       {q.id ? (
-                        <button onClick={() => onNavigate(`/entity/${q.id}`)} className={cn("hover:underline cursor-pointer", light ? "text-cyan-700" : "text-primary")}>
+                        <button onClick={() => onNavigate(entityPath(q.id!, q.label))} className={cn("hover:underline cursor-pointer", light ? "text-cyan-700" : "text-primary")}>
                           {q.label}
                         </button>
                       ) : q.label}

@@ -2,6 +2,7 @@ import { useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
 import SearchBox from "@/components/search/SearchBox.tsx";
 import { Network } from "lucide-react";
+import { entityPath } from "@/lib/entityPath.ts";
 
 const EXAMPLE_CHIPS = [
   { label: "Albert Einstein", id: "Q937", type: "person" as const },
@@ -154,7 +155,7 @@ export default function Index() {
                 initial={{ opacity: 0, scale: 0.85 }}
                 animate={{ opacity: 1, scale: 1 }}
                 transition={{ delay: 0.5 + i * 0.04, duration: 0.25 }}
-                onClick={() => navigate(`/entity/${chip.id}`)}
+                onClick={() => navigate(entityPath(chip.id, chip.label))}
                 className="rounded-full border px-3 py-1 text-xs font-medium cursor-pointer transition-all duration-150 hover:scale-105 hover:brightness-125"
                 style={{
                   borderColor: `${TYPE_COLORS[chip.type]}40`,

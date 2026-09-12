@@ -22,6 +22,11 @@ export type RouteOpts = {
   loft?: number;
   /** Extra padding around obstacles. */
   pad?: number;
+  /**
+   * Prefer smooth quadratic detours only — never sharp multi-segment elbows.
+   * Use for hub spokes so routes stay readable.
+   */
+  smoothOnly?: boolean;
 };
 
 const HUB_R = 28;
@@ -210,7 +215,8 @@ export function routeOrbitEdge(
   }
 
   // Try single quadratic bends with increasing clearance
-  const clearances = [1.15, 1.4, 1.75, 2.2, 2.8];
+  const clearances = [1.15, 1.4, 1.75, 2.2, 2.8, 3.4];
+  let bestSoft: string | null = null;
   for (const side of [1, -1] as const) {
     for (const k of clearances) {
       // Bend around the worst (closest-to-chord) blocker
@@ -227,10 +233,18 @@ export function routeOrbitEdge(
       // Nudge further along perpendicular for multi-blockers
       const cx = wp.x + px * side * 12 * k;
       const cy = wp.y + py * side * 12 * k;
+      const soft = `M${x1},${y1} Q${cx},${cy} ${x2},${y2}`;
       if (!sampleQuadHits(x1, y1, cx, cy, x2, y2, obstacles, pad, skipIds)) {
-        return `M${x1},${y1} Q${cx},${cy} ${x2},${y2}`;
+        return soft;
       }
+      if (!bestSoft) bestSoft = soft;
     }
+  }
+
+  // Hub spokes: stay smooth even if slightly imperfect — never sharp elbows
+  if (opts?.smoothOnly) {
+    if (opts.preferStraight) return `M${x1},${y1} L${x2},${y2}`;
+    return bestSoft ?? `M${x1},${y1} Q${midX + px * Math.min(48, len * 0.2)},${midY + py * Math.min(48, len * 0.2)} ${x2},${y2}`;
   }
 
   // Two-waypoint polyline around successive blockers
