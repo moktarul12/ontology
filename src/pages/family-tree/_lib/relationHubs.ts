@@ -98,6 +98,30 @@ function addHub(
       propertyId: "HUB",
     });
   }
+
+  // Child hub already groups siblings — drop pairwise sibling edges among them
+  if (relation === "child" && targets.size > 1) {
+    consumeSiblingEdgesAmong(new Set(targets.keys()), allEdges, consumed);
+  }
+  // Sibling hub: edges among those siblings are also redundant
+  if (relation === "sibling" && targets.size > 1) {
+    consumeSiblingEdgesAmong(new Set(targets.keys()), allEdges, consumed);
+  }
+}
+
+/** Sibling–sibling edges are noise when a Child/Sibling hub already groups them. */
+function consumeSiblingEdgesAmong(
+  personIds: Set<string>,
+  allEdges: GraphEdge[],
+  consumed: Set<string>,
+): void {
+  for (const e of allEdges) {
+    if (consumed.has(e.id)) continue;
+    if (e.label.toLowerCase() !== "sibling") continue;
+    const s = idOf(e.source);
+    const t = idOf(e.target);
+    if (personIds.has(s) && personIds.has(t)) consumed.add(e.id);
+  }
 }
 
 function collectRoot(
