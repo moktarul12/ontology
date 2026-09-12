@@ -273,6 +273,7 @@ export default function FamilyTreeCanvas({
   const [canvasH, setCanvasH] = useState(600);
   const draggedRef = useRef(false);
   const arrangeModeIdxRef = useRef(0);
+  const lastArrangeModeRef = useRef<ArrangeMode>("family");
   const pinnedArrangeRef = useRef(false);
 
   const { nodes, edges } = useMemo(() => {
@@ -618,7 +619,8 @@ export default function FamilyTreeCanvas({
           const dx = tx - sx, dy = ty - sy;
           const len = Math.sqrt(dx * dx + dy * dy) || 1;
 
-          const isHubEdge = edge.propertyId === "HUB";
+          const isHubEdge = edge.propertyId === "HUB" || edge.propertyId === "HUB_SHARE";
+          const isHubShare = edge.propertyId === "HUB_SHARE";
           const isCoParent = isCoParentEdge(edge);
           const isSpoke = isHubEdge && !edge.label.trim();
           const startPad = useHubs ? 2 : (arrowDir === "both" && !isSpoke ? 9 : 2);
@@ -705,12 +707,14 @@ export default function FamilyTreeCanvas({
                 stroke={
                   isCoParent
                     ? `${color}aa`
-                    : useHubs
-                      ? `${color}99`
-                      : `${color}${isSpoke ? "50" : "70"}`
+                    : isHubShare
+                      ? `${color}66`
+                      : useHubs
+                        ? `${color}99`
+                        : `${color}${isSpoke ? "50" : "70"}`
                 }
                 strokeWidth={isCoParent ? 2 : useHubs ? (isSpoke ? 1.75 : 2) : isSpoke ? 1.5 : 2}
-                strokeDasharray={isCoParent ? "5 7" : undefined}
+                strokeDasharray={isCoParent ? "5 7" : isHubShare ? "4 5" : undefined}
                 strokeLinecap="round"
                 markerEnd={markerEnd}
                 markerStart={markerStart}

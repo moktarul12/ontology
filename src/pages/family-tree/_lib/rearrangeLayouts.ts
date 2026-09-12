@@ -1,5 +1,5 @@
 /**
- * Family tree layout — designed from scratch for readable hop 1–3 graphs.
+ * Family tree layout — readable hop 1–3 graphs with generous spacing.
  *
  * Visual model (focus at center):
  *
@@ -10,11 +10,10 @@
  *      siblings           childless spouses
  *                       |
  *                    [Child]
- *            family petals: (co-parent + child)
- *            then solo children
+ *            family petals (co-parent + child)
  *
- * Extended relatives (depth 2–3) pack into generation rows above/below,
- * anchored under the person they connect to — no nested hubs.
+ * Hop 2–3: satellite clusters around their hop-1 anchor, pushed outward
+ * from the focus — not packed onto the same ring as ring-1.
  */
 
 import type { GraphNode, GraphEdge } from "@/lib/wikidata/types.ts";
@@ -32,7 +31,7 @@ export const ARRANGE_MODES: ArrangeMode[] = ["family", "wide", "mirror"];
 
 export const ARRANGE_MODE_LABEL: Record<ArrangeMode, string> = {
   family: "Family petals (parents ↑ · children ↓)",
-  wide: "Wide spacing",
+  wide: "Wide spacing (hop-2 satellites)",
   mirror: "Mirrored (siblings ↔ spouses)",
 };
 
@@ -43,7 +42,6 @@ export type LayoutBounds = {
   maxY: number;
 };
 
-// Kept for older imports
 export type OrbitRing = {
   hubId: string;
   cx: number;
@@ -56,8 +54,6 @@ const PERSON = 96;
 const ROOT = 112;
 const HUB_W = 86;
 const HUB_H = 28;
-const GAP = 28;
-const ROW = 200;
 
 function idOf(v: string | GraphNode): string {
   return typeof v === "object" ? v.id : v;
@@ -71,8 +67,8 @@ function pin(n: GraphNode, x: number, y: number): void {
 }
 
 function half(n: GraphNode): { hw: number; hh: number } {
-  if (isHubNode(n)) return { hw: HUB_W / 2 + 10, hh: HUB_H / 2 + 10 };
-  return { hw: PERSON / 2 + 10, hh: PERSON / 2 + 10 };
+  if (isHubNode(n)) return { hw: HUB_W / 2 + 14, hh: HUB_H / 2 + 14 };
+  return { hw: PERSON / 2 + 16, hh: PERSON / 2 + 16 };
 }
 
 function boundsOf(nodes: GraphNode[]): LayoutBounds {
@@ -99,6 +95,7 @@ function hubTargets(
   const out: GraphNode[] = [];
   for (const e of edges) {
     if (idOf(e.source) !== hubId) continue;
+    if (e.propertyId === "HUB_SHARE") continue;
     const t = byId.get(idOf(e.target));
     if (t && !isHubNode(t)) out.push(t);
   }
@@ -115,8 +112,7 @@ function placeRow(people: GraphNode[], cx: number, y: number, pitch: number): vo
   }
 }
 
-/** Pack people in a horizontal row centered at cx. */
-function packRow(people: GraphNode[], cx: number, y: number, gap = GAP): void {
+function packRow(people: GraphNode[], cx: number, y: number, gap: number): void {
   placeRow(people, cx, y, PERSON + gap);
 }
 
@@ -142,7 +138,6 @@ function buildPetals(
         claimedKids.add(kid.id);
       }
     }
-    // Also check raw mother/father if co-parent not yet present
     if (!kids.length) {
       for (const e of edges) {
         const s = idOf(e.source);
@@ -164,14 +159,25 @@ function buildPetals(
     if (kids.length) petals.push({ spouse: sp, children: kids });
   }
 
+  if (spouses.length === 1 && children.length && petals.length === 0) {
+    return {
+      petals: [{ spouse: spouses[0]!, children: [...children] }],
+      soloSpouses: [],
+      soloChildren: [],
+    };
+  }
+
+  // Multi-spouse focus: each spouse with any of focus's kids → petal;
+  // remaining spouses stay on the side. Also nestle when COPARENT was folded away
+  // but spouse↔child still exists as plain mother/father (handled above).
   const petalSpouseIds = new Set(petals.map((p) => p.spouse.id));
   const soloSpouses = spouses.filter((s) => !petalSpouseIds.has(s.id));
   const soloChildren = children.filter((c) => !claimedKids.has(c.id));
   return { petals, soloSpouses, soloChildren };
 }
 
-function deoverlap(nodes: GraphNode[], rootId: string): void {
-  for (let pass = 0; pass < 20; pass++) {
+function deoverlap(nodes: GraphNode[], rootId: string, minGap = 12): void {
+  for (let pass = 0; pass < 28; pass++) {
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i + 1; j < nodes.length; j++) {
         const a = nodes[i]!;
@@ -180,8 +186,8 @@ function deoverlap(nodes: GraphNode[], rootId: string): void {
         const bs = half(b);
         const dx = (b.x ?? 0) - (a.x ?? 0);
         const dy = (b.y ?? 0) - (a.y ?? 0);
-        const minX = as.hw + bs.hw;
-        const minY = as.hh + bs.hh;
+        const minX = as.hw + bs.hw + minGap;
+        const minY = as.hh + bs.hh + minGap;
         if (Math.abs(dx) >= minX || Math.abs(dy) >= minY) continue;
 
         const ox = minX - Math.abs(dx);
@@ -191,21 +197,20 @@ function deoverlap(nodes: GraphNode[], rootId: string): void {
         const preferX = ox <= oy;
 
         if (a.id === rootId) {
-          if (preferX) pin(b, (b.x ?? 0) + (ox + 6) * sx, b.y ?? 0);
-          else pin(b, b.x ?? 0, (b.y ?? 0) + (oy + 6) * sy);
+          if (preferX) pin(b, (b.x ?? 0) + (ox + 8) * sx, b.y ?? 0);
+          else pin(b, b.x ?? 0, (b.y ?? 0) + (oy + 8) * sy);
           continue;
         }
         if (b.id === rootId) {
-          if (preferX) pin(a, (a.x ?? 0) - (ox + 6) * sx, a.y ?? 0);
-          else pin(a, a.x ?? 0, (a.y ?? 0) - (oy + 6) * sy);
+          if (preferX) pin(a, (a.x ?? 0) - (ox + 8) * sx, a.y ?? 0);
+          else pin(a, a.x ?? 0, (a.y ?? 0) - (oy + 8) * sy);
           continue;
         }
 
-        // Prefer moving non-hubs; hubs nudge less
         const aHub = isHubNode(a);
         const bHub = isHubNode(b);
         if (preferX) {
-          const push = ox / 2 + 4;
+          const push = ox / 2 + 6;
           if (!aHub) pin(a, (a.x ?? 0) - push * sx, a.y ?? 0);
           if (!bHub) pin(b, (b.x ?? 0) + push * sx, b.y ?? 0);
           if (aHub && bHub) {
@@ -213,7 +218,7 @@ function deoverlap(nodes: GraphNode[], rootId: string): void {
             pin(b, (b.x ?? 0) + push * sx, b.y ?? 0);
           }
         } else {
-          const push = oy / 2 + 4;
+          const push = oy / 2 + 6;
           if (!aHub) pin(a, a.x ?? 0, (a.y ?? 0) - push * sy);
           if (!bHub) pin(b, b.x ?? 0, (b.y ?? 0) + push * sy);
           if (aHub && bHub) {
@@ -227,60 +232,127 @@ function deoverlap(nodes: GraphNode[], rootId: string): void {
 }
 
 /**
- * Place remaining people in generation rows, centered under their
- * nearest already-placed neighbor.
+ * Hop 2–3: grow satellite clusters around already-placed anchors,
+ * pushed further from the focus so they don't sit on the ring-1 orbit.
  */
 function placeExtended(
   nodes: GraphNode[],
   edges: GraphEdge[],
   rootId: string,
-  gens: Map<string, number>,
   placed: Set<string>,
   cx: number,
   cy: number,
-  pitch: number,
+  gap: number,
+  satelliteReach: number,
 ): void {
   const byId = new Map(nodes.map((n) => [n.id, n]));
-  const leftover = nodes.filter((n) => !isHubNode(n) && !placed.has(n.id));
-  if (!leftover.length) return;
-
-  // Group by rounded generation
-  const byGen = new Map<number, GraphNode[]>();
-  for (const n of leftover) {
-    const g = Math.round(gens.get(n.id) ?? 0);
-    if (!byGen.has(g)) byGen.set(g, []);
-    byGen.get(g)!.push(n);
+  const adj = new Map<string, string[]>();
+  const addAdj = (a: string, b: string) => {
+    if (!adj.has(a)) adj.set(a, []);
+    adj.get(a)!.push(b);
+  };
+  for (const e of edges) {
+    const s = idOf(e.source);
+    const t = idOf(e.target);
+    if (isHubNode(byId.get(s)!) || isHubNode(byId.get(t)!)) continue;
+    addAdj(s, t);
+    addAdj(t, s);
   }
 
-  const gensSorted = [...byGen.keys()].sort((a, b) => a - b);
-  for (const g of gensSorted) {
-    const row = byGen.get(g)!;
-    row.sort((a, b) => a.label.localeCompare(b.label));
+  const pitch = PERSON + gap;
+  let guard = 0;
+  while (guard++ < 24) {
+    const leftover = nodes.filter((n) => !isHubNode(n) && !placed.has(n.id));
+    if (!leftover.length) break;
 
-    // Anchor X: average of connected placed people, else focus
-    const xs: number[] = [];
-    for (const n of row) {
-      for (const e of edges) {
-        const s = idOf(e.source);
-        const t = idOf(e.target);
-        const other = s === n.id ? t : t === n.id ? s : null;
-        if (!other || !placed.has(other)) continue;
-        const o = byId.get(other);
-        if (o?.x != null) xs.push(o.x);
+    // Group unplaced people by their best placed anchor
+    const byAnchor = new Map<string, GraphNode[]>();
+    const stranded: GraphNode[] = [];
+
+    for (const n of leftover) {
+      const neighbors = adj.get(n.id) ?? [];
+      let best: GraphNode | null = null;
+      let bestDist = Infinity;
+      for (const oid of neighbors) {
+        if (!placed.has(oid)) continue;
+        const o = byId.get(oid);
+        if (!o || o.x == null) continue;
+        const d =
+          (o.x - cx) * (o.x - cx) + (o.y! - cy) * (o.y! - cy);
+        // Prefer anchors farther from focus (outer ring-1), stable tie-break by id
+        const score = -d;
+        if (!best || score < bestDist || (score === bestDist && oid < best.id)) {
+          best = o;
+          bestDist = score;
+        }
+      }
+      if (!best) {
+        stranded.push(n);
+        continue;
+      }
+      if (!byAnchor.has(best.id)) byAnchor.set(best.id, []);
+      byAnchor.get(best.id)!.push(n);
+    }
+
+    if (!byAnchor.size) {
+      // True isolates: park in a far outer arc so they're visible, not on the hub
+      if (stranded.length) {
+        const r = satelliteReach * 2.2;
+        const start = -Math.PI / 2;
+        stranded.forEach((n, i) => {
+          const a = start + (i / Math.max(stranded.length, 1)) * Math.PI * 1.6;
+          pin(n, cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+          placed.add(n.id);
+        });
+      }
+      break;
+    }
+
+    for (const [anchorId, group] of byAnchor) {
+      const anchor = byId.get(anchorId)!;
+      const ax = anchor.x ?? cx;
+      const ay = anchor.y ?? cy;
+      let dx = ax - cx;
+      let dy = ay - cy;
+      const len = Math.hypot(dx, dy) || 1;
+      dx /= len;
+      dy /= len;
+      // Outward from focus through the anchor
+      const clusterCx = ax + dx * satelliteReach;
+      const clusterCy = ay + dy * satelliteReach;
+
+      group.sort((a, b) => a.label.localeCompare(b.label));
+
+      if (group.length === 1) {
+        pin(group[0]!, clusterCx, clusterCy);
+        placed.add(group[0]!.id);
+        continue;
+      }
+
+      // Fan along a line perpendicular to the outward ray (readable cluster)
+      const px = -dy;
+      const py = dx;
+      const total = (group.length - 1) * pitch;
+      for (let i = 0; i < group.length; i++) {
+        const t = -total / 2 + i * pitch;
+        // Slight arc so multi-child clusters feel organic
+        const bulge = Math.sin((i / Math.max(group.length - 1, 1)) * Math.PI) * (gap * 0.35);
+        pin(
+          group[i]!,
+          clusterCx + px * t + dx * bulge,
+          clusterCy + py * t + dy * bulge,
+        );
+        placed.add(group[i]!.id);
       }
     }
-    const rowCx = xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : cx;
-    const y = cy + g * ROW;
-    packRow(row, rowCx, y, pitch - PERSON);
-    for (const n of row) placed.add(n.id);
   }
 }
 
 export type FamilyLayoutOpts = {
-  /** Extra horizontal gap */
   wide?: boolean;
-  /** Swap sibling (left) and spouse (right) sides */
   mirror?: boolean;
+  /** Extra scale for arms / satellites (auto-arrange cycles this) */
+  spread?: number;
 };
 
 /**
@@ -295,6 +367,8 @@ export function layoutFamilyTree(
   H: number,
   opts: FamilyLayoutOpts = {},
 ): LayoutBounds {
+  void gens;
+  const spread = opts.spread ?? (opts.wide ? 1.45 : 1);
   const cx = W / 2;
   const cy = H / 2;
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -306,9 +380,11 @@ export function layoutFamilyTree(
     n.fy = undefined;
   }
 
-  const pitch = PERSON + (opts.wide ? GAP + 20 : GAP);
-  const arm = opts.wide ? 200 : 170;
-  const outer = arm + 150;
+  const gap = Math.round((opts.wide ? 72 : 52) * spread);
+  const arm = Math.round((opts.wide ? 260 : 210) * spread);
+  const outer = arm + Math.round(180 * spread);
+  const satelliteReach = Math.round((opts.wide ? 220 : 170) * spread);
+  const pitch = PERSON + gap;
 
   const hubs = hubsForOwner(nodes, rootId);
   const parents = hubs.has("parent") ? hubTargets(hubs.get("parent")!.id, edges, byId) : [];
@@ -324,26 +400,22 @@ export function layoutFamilyTree(
   pin(root, cx, cy);
   const placed = new Set<string>([rootId]);
 
-  // ── Parents (↑) ────────────────────────────────────────────────────────
   const parentHub = hubs.get("parent");
   if (parentHub) {
     pin(parentHub, cx, cy - arm);
     placed.add(parentHub.id);
   }
   if (parents.length) {
-    packRow(parents, cx, cy - outer, pitch - PERSON);
+    packRow(parents, cx, cy - outer, gap);
     for (const p of parents) placed.add(p.id);
-    // If parents are spouses of each other, keep them close (already in a row)
   }
 
-  // ── Siblings (← or →) ──────────────────────────────────────────────────
   const siblingHub = hubs.get("sibling");
   if (siblingHub) {
     pin(siblingHub, cx + sibSide * arm, cy);
     placed.add(siblingHub.id);
   }
   if (siblings.length) {
-    // Vertical stack on the sibling side
     const total = siblings.length * pitch;
     let y = cy - total / 2 + pitch / 2;
     const x = cx + sibSide * outer;
@@ -354,7 +426,6 @@ export function layoutFamilyTree(
     }
   }
 
-  // ── Childless spouses on spouse side ───────────────────────────────────
   const spouseHub = hubs.get("spouse");
   if (spouseHub) {
     pin(spouseHub, cx + spoSide * arm, cy);
@@ -371,14 +442,12 @@ export function layoutFamilyTree(
     }
   }
 
-  // ── Children + family petals (↓) ───────────────────────────────────────
   const childHub = hubs.get("child");
   if (childHub) {
     pin(childHub, cx, cy + arm);
     placed.add(childHub.id);
   }
 
-  // Build ordered units along the child arc/row: petal (spouse above child) then solos
   type Unit = { kind: "petal"; petal: Petal } | { kind: "child"; node: GraphNode };
   const units: Unit[] = [
     ...petals.map((p) => ({ kind: "petal" as const, petal: p })),
@@ -386,17 +455,16 @@ export function layoutFamilyTree(
   ];
 
   if (units.length) {
-    const unitPitch = pitch + (petals.length ? 36 : 0);
+    const unitPitch = pitch + (petals.length ? 48 : 0);
     const total = units.length * unitPitch;
     let x = cx - total / 2 + unitPitch / 2;
     const childY = cy + outer;
-    const spouseY = cy + outer - (PERSON + 36);
+    const spouseY = cy + outer - (PERSON + gap * 0.85);
 
     for (const u of units) {
       if (u.kind === "petal") {
         const kids = u.petal.children;
-        packRow(kids, x, childY, pitch - PERSON);
-        // Co-parent centered above their kids
+        packRow(kids, x, childY, gap);
         const kx = kids.reduce((s, k) => s + (k.x ?? x), 0) / kids.length;
         pin(u.petal.spouse, kx, spouseY);
         placed.add(u.petal.spouse.id);
@@ -409,37 +477,32 @@ export function layoutFamilyTree(
     }
   }
 
-  // Reposition spouse hub toward average of all spouses
   if (spouseHub && spouses.length) {
     const ax = spouses.reduce((s, p) => s + (p.x ?? cx), 0) / spouses.length;
     const ay = spouses.reduce((s, p) => s + (p.y ?? cy), 0) / spouses.length;
-    pin(spouseHub, cx * 0.4 + ax * 0.6, cy * 0.4 + ay * 0.6);
+    pin(spouseHub, cx * 0.35 + ax * 0.65, cy * 0.35 + ay * 0.65);
   }
-  // Child hub toward children
   if (childHub && children.length) {
     const ax = children.reduce((s, p) => s + (p.x ?? cx), 0) / children.length;
     const ay = children.reduce((s, p) => s + (p.y ?? cy), 0) / children.length;
-    pin(childHub, cx * 0.35 + ax * 0.65, cy * 0.35 + ay * 0.65);
+    pin(childHub, cx * 0.3 + ax * 0.7, cy * 0.3 + ay * 0.7);
   }
 
-  // ── Extended family (depth 2–3) ─────────────────────────────────────────
-  placeExtended(nodes, edges, rootId, gens, placed, cx, cy, pitch);
+  placeExtended(nodes, edges, rootId, placed, cx, cy, gap, satelliteReach);
 
-  // Any leftover hubs (shouldn't happen with focus-only)
   for (const n of nodes) {
     if (!isHubNode(n) || placed.has(n.id)) continue;
     const h = n as HubGraphNode;
     const owner = h.hubOf ? byId.get(h.hubOf) : undefined;
     if (!owner) continue;
-    pin(h, (owner.x ?? cx), (owner.y ?? cy) - 80);
+    pin(h, owner.x ?? cx, (owner.y ?? cy) - 80);
     placed.add(h.id);
   }
 
-  deoverlap(nodes, rootId);
+  deoverlap(nodes, rootId, Math.round(10 * spread));
   return boundsOf(nodes);
 }
 
-/** @deprecated name — maps to family tree layout */
 export function layoutCompass(
   nodes: GraphNode[],
   edges: GraphEdge[],
@@ -461,7 +524,7 @@ export function layoutPedigree(
   W: number,
   H: number,
 ): LayoutBounds {
-  return layoutFamilyTree(nodes, edges, rootId, gens, W, H, { wide: true });
+  return layoutFamilyTree(nodes, edges, rootId, gens, W, H, { wide: true, spread: 1.45 });
 }
 
 export function layoutRadial(
@@ -474,7 +537,7 @@ export function layoutRadial(
   _orbitPhase = 0,
 ): LayoutBounds {
   void _orbitPhase;
-  return layoutFamilyTree(nodes, edges, rootId, gens, W, H, { mirror: true });
+  return layoutFamilyTree(nodes, edges, rootId, gens, W, H, { mirror: true, spread: 1.2 });
 }
 
 export function applyArrangeMode(
@@ -489,15 +552,20 @@ export function applyArrangeMode(
 ): LayoutBounds {
   void _orbitPhase;
   if (mode === "wide" || mode === "pedigree") {
-    return layoutFamilyTree(nodes, edges, rootId, gens, W, H, { wide: true });
+    return layoutFamilyTree(nodes, edges, rootId, gens, W, H, {
+      wide: true,
+      spread: 1.55,
+    });
   }
   if (mode === "mirror" || mode === "radial") {
-    return layoutFamilyTree(nodes, edges, rootId, gens, W, H, { mirror: true });
+    return layoutFamilyTree(nodes, edges, rootId, gens, W, H, {
+      mirror: true,
+      spread: 1.25,
+    });
   }
-  return layoutFamilyTree(nodes, edges, rootId, gens, W, H, {});
+  return layoutFamilyTree(nodes, edges, rootId, gens, W, H, { spread: 1 });
 }
 
-/** Stub for older ring drawing — focus layout does not use dashed rings. */
 export function getOrbitRings(_nodes: GraphNode[], _edges: GraphEdge[]): OrbitRing[] {
   void _nodes;
   void _edges;
@@ -506,5 +574,6 @@ export function getOrbitRings(_nodes: GraphNode[], _edges: GraphEdge[]): OrbitRi
 
 export function orbitRadiusForCount(count: number): number {
   if (count <= 1) return 90;
-  return Math.max(90, (PERSON + GAP) / (2 * Math.sin(Math.PI / count)));
+  const gap = 52;
+  return Math.max(90, (PERSON + gap) / (2 * Math.sin(Math.PI / count)));
 }

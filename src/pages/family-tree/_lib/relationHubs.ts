@@ -2,13 +2,18 @@
  * Focus-only relation hubs (presentation).
  *
  * Design:
- *   root → [Parent]  → parents
- *   root → [Child]   → children
+ *   root → [Parent]  → parents (+ anyone who shares those parents)
+ *   root → [Child]   → children (+ sole spouse, when only one)
  *   root → [Spouse]  → spouses
  *   root → [Sibling] → siblings
  *
- * Shared kids (Amit↔Ruma, Sumit↔Leena) become soft COPARENT arcs —
- * no nested hubs on every person (that made depth 2–3 unreadable).
+ * Edge minimization (focus + hop 2–3 extended family):
+ *   - Shared focus parents → Parent hub; drop father/mother.
+ *   - Focus sole spouse → Child hub; drop per-child mother/father.
+ *   - Focus multi-spouse → COPARENT arcs.
+ *   - Anywhere in the graph: sibling edges implied by shared parents → drop.
+ *   - Anywhere: sole co-parent of a person's kids → drop mother/father fan;
+ *     multi co-parent → COPARENT arcs.
  */
 
 import type { GraphNode, GraphEdge } from "@/lib/wikidata/types.ts";
@@ -35,6 +40,10 @@ export function isHubId(id: string): boolean {
 
 export function isCoParentEdge(e: GraphEdge): boolean {
   return e.propertyId === "COPARENT";
+}
+
+export function isHubShareEdge(e: GraphEdge): boolean {
+  return e.propertyId === "HUB_SHARE";
 }
 
 function isParentLabel(lbl: string): boolean {
@@ -99,17 +108,14 @@ function addHub(
     });
   }
 
-  // Child hub already groups siblings — drop pairwise sibling edges among them
   if (relation === "child" && targets.size > 1) {
     consumeSiblingEdgesAmong(new Set(targets.keys()), allEdges, consumed);
   }
-  // Sibling hub: edges among those siblings are also redundant
   if (relation === "sibling" && targets.size > 1) {
     consumeSiblingEdgesAmong(new Set(targets.keys()), allEdges, consumed);
   }
 }
 
-/** Sibling–sibling edges are noise when a Child/Sibling hub already groups them. */
 function consumeSiblingEdgesAmong(
   personIds: Set<string>,
   allEdges: GraphEdge[],
@@ -157,7 +163,6 @@ function collectRoot(
     }
   }
 
-  // Infer siblings via shared parents
   const parentIds = [...parents.keys()];
   if (parentIds.length) {
     for (const e of edges) {
@@ -179,9 +184,139 @@ function collectRoot(
   return { parents, children, spouses, siblings };
 }
 
-/** Soft mother/father arc when a spouse shares a child with the focus. */
-function addCoParentLinks(
+/** Anyone who shares focus parents → Parent hub; drop father/mother. */
+function linkSharedParentsToParentHub(
   rootId: string,
+  parents: Map<string, GraphEdge | null>,
+  allEdges: GraphEdge[],
+  nodeIds: Set<string>,
+  outNodes: HubGraphNode[],
+  outEdges: GraphEdge[],
+  consumed: Set<string>,
+): void {
+  if (!parents.size) return;
+  const parentHubId = `hub:${rootId}:parent`;
+  if (!outNodes.some((n) => n.id === parentHubId)) return;
+  const parentIds = new Set(parents.keys());
+
+  for (const personId of nodeIds) {
+    if (personId === rootId || parentIds.has(personId)) continue;
+
+    let shares = false;
+    for (const e of allEdges) {
+      if (consumed.has(e.id)) continue;
+      const s = idOf(e.source);
+      const t = idOf(e.target);
+      const lbl = e.label.toLowerCase();
+
+      if (isParentLabel(lbl) && s === personId && parentIds.has(t)) {
+        shares = true;
+        consumed.add(e.id);
+      } else if (lbl === "child" && parentIds.has(s) && t === personId) {
+        shares = true;
+        consumed.add(e.id);
+      }
+    }
+    if (!shares) continue;
+
+    const edgeId = `${parentHubId}->${personId}:share`;
+    if (!outEdges.some((x) => x.id === edgeId)) {
+      outEdges.push({
+        id: edgeId,
+        source: parentHubId,
+        target: personId,
+        label: "",
+        propertyId: "HUB_SHARE",
+      });
+    }
+  }
+}
+
+/** Focus: one spouse + children → Child hub; drop per-child mother/father. */
+function linkSoleSpouseToChildHub(
+  rootId: string,
+  spouses: Map<string, GraphEdge | null>,
+  children: Map<string, GraphEdge | null>,
+  allEdges: GraphEdge[],
+  outNodes: HubGraphNode[],
+  outEdges: GraphEdge[],
+  consumed: Set<string>,
+): void {
+  if (spouses.size !== 1 || !children.size) return;
+  const spouseId = [...spouses.keys()][0]!;
+  const childHubId = `hub:${rootId}:child`;
+  if (!outNodes.some((n) => n.id === childHubId)) return;
+  const childIds = new Set(children.keys());
+
+  for (const e of allEdges) {
+    if (consumed.has(e.id)) continue;
+    const s = idOf(e.source);
+    const t = idOf(e.target);
+    const lbl = e.label.toLowerCase();
+    if (isParentLabel(lbl) && t === spouseId && childIds.has(s)) {
+      consumed.add(e.id);
+    } else if (lbl === "child" && s === spouseId && childIds.has(t)) {
+      consumed.add(e.id);
+    }
+  }
+
+  const edgeId = `${childHubId}->${spouseId}:share`;
+  if (!outEdges.some((x) => x.id === edgeId)) {
+    outEdges.push({
+      id: edgeId,
+      source: childHubId,
+      target: spouseId,
+      label: "",
+      propertyId: "HUB_SHARE",
+    });
+  }
+}
+
+function foldCoParentEdges(
+  spouseId: string,
+  childIds: Set<string>,
+  allEdges: GraphEdge[],
+  outEdges: GraphEdge[],
+  consumed: Set<string>,
+  nodes: GraphNode[],
+): void {
+  for (const e of allEdges) {
+    if (consumed.has(e.id)) continue;
+    const s = idOf(e.source);
+    const t = idOf(e.target);
+    const lbl = e.label.toLowerCase();
+    let parentId: string | null = null;
+    let childId: string | null = null;
+    if (isParentLabel(lbl) && t === spouseId && childIds.has(s)) {
+      parentId = spouseId;
+      childId = s;
+    } else if (lbl === "child" && s === spouseId && childIds.has(t)) {
+      parentId = spouseId;
+      childId = t;
+    }
+    if (!parentId || !childId) continue;
+
+    consumed.add(e.id);
+    const parent = nodes.find((n) => n.id === parentId);
+    const label =
+      parent?.gender === "female" ? "mother"
+      : parent?.gender === "male" ? "father"
+      : "parent";
+    const edgeId = `coparent:${parentId}:${childId}`;
+    if (!outEdges.some((x) => x.id === edgeId)) {
+      outEdges.push({
+        id: edgeId,
+        source: parentId,
+        target: childId,
+        label,
+        propertyId: "COPARENT",
+      });
+    }
+  }
+}
+
+/** Focus multi-spouse → COPARENT arcs. */
+function addFocusCoParentLinks(
   spouses: Map<string, GraphEdge | null>,
   children: Map<string, GraphEdge | null>,
   allEdges: GraphEdge[],
@@ -189,47 +324,188 @@ function addCoParentLinks(
   consumed: Set<string>,
   nodes: GraphNode[],
 ): void {
+  if (spouses.size <= 1) return;
   const childIds = new Set(children.keys());
   for (const spouseId of spouses.keys()) {
-    for (const e of allEdges) {
-      if (consumed.has(e.id)) continue;
-      const s = idOf(e.source);
-      const t = idOf(e.target);
-      const lbl = e.label.toLowerCase();
-      // child → mother/father → spouse, or spouse → child → child
-      let parentId: string | null = null;
-      let childId: string | null = null;
-      if (isParentLabel(lbl) && t === spouseId && childIds.has(s)) {
-        parentId = spouseId;
-        childId = s;
-      } else if (lbl === "child" && s === spouseId && childIds.has(t)) {
-        parentId = spouseId;
-        childId = t;
-      }
-      if (!parentId || !childId) continue;
+    foldCoParentEdges(spouseId, childIds, allEdges, outEdges, consumed, nodes);
+  }
+}
 
-      consumed.add(e.id);
-      const parent = nodes.find((n) => n.id === parentId);
-      const label =
-        parent?.gender === "female" ? "mother"
-        : parent?.gender === "male" ? "father"
-        : "parent";
-      const edgeId = `coparent:${parentId}:${childId}`;
-      if (!outEdges.some((x) => x.id === edgeId)) {
-        outEdges.push({
-          id: edgeId,
-          source: parentId,
-          target: childId,
-          label,
-          propertyId: "COPARENT",
-        });
+/** Collect parent / child / spouse maps for every person from remaining edges. */
+function buildFamilyIndex(
+  allEdges: GraphEdge[],
+  consumed: Set<string>,
+  nodeIds: Set<string>,
+): {
+  parentsOf: Map<string, Set<string>>;
+  childrenOf: Map<string, Set<string>>;
+  spousesOf: Map<string, Set<string>>;
+} {
+  const parentsOf = new Map<string, Set<string>>();
+  const childrenOf = new Map<string, Set<string>>();
+  const spousesOf = new Map<string, Set<string>>();
+
+  const add = (map: Map<string, Set<string>>, key: string, val: string) => {
+    if (!nodeIds.has(key) || !nodeIds.has(val)) return;
+    let set = map.get(key);
+    if (!set) {
+      set = new Set();
+      map.set(key, set);
+    }
+    set.add(val);
+  };
+
+  for (const e of allEdges) {
+    if (consumed.has(e.id)) continue;
+    const s = idOf(e.source);
+    const t = idOf(e.target);
+    const lbl = e.label.toLowerCase();
+
+    if (isParentLabel(lbl)) {
+      add(parentsOf, s, t);
+      add(childrenOf, t, s);
+    } else if (lbl === "child") {
+      add(childrenOf, s, t);
+      add(parentsOf, t, s);
+    } else if (lbl === "spouse") {
+      add(spousesOf, s, t);
+      add(spousesOf, t, s);
+    }
+  }
+
+  return { parentsOf, childrenOf, spousesOf };
+}
+
+/**
+ * Hop 2–3: same rules as focus, without nesting hubs on every person.
+ * - Drop sibling edges when parents are already known.
+ * - Sole co-parent: drop mother/father fan (kids keep link to the other parent).
+ * - Multi co-parent: COPARENT arcs.
+ */
+function minimizeExtendedFamilyEdges(
+  rootId: string,
+  allEdges: GraphEdge[],
+  nodeIds: Set<string>,
+  outEdges: GraphEdge[],
+  consumed: Set<string>,
+  nodes: GraphNode[],
+): void {
+  const { parentsOf, childrenOf, spousesOf } = buildFamilyIndex(
+    allEdges,
+    consumed,
+    nodeIds,
+  );
+
+  // Sibling edges implied by shared parents
+  for (const e of allEdges) {
+    if (consumed.has(e.id)) continue;
+    if (e.label.toLowerCase() !== "sibling") continue;
+    const a = idOf(e.source);
+    const b = idOf(e.target);
+    const pa = parentsOf.get(a);
+    const pb = parentsOf.get(b);
+    if (!pa?.size || !pb?.size) continue;
+    for (const p of pa) {
+      if (pb.has(p)) {
+        consumed.add(e.id);
+        break;
+      }
+    }
+  }
+
+  // Siblings among children of the same parent
+  for (const kids of childrenOf.values()) {
+    if (kids.size > 1) consumeSiblingEdgesAmong(kids, allEdges, consumed);
+  }
+
+  // Co-parent folds for every non-focus person
+  for (const personId of nodeIds) {
+    if (personId === rootId) continue;
+    const kids = childrenOf.get(personId);
+    if (!kids?.size) continue;
+    const spouses = spousesOf.get(personId);
+    if (!spouses?.size) continue;
+
+    if (spouses.size === 1) {
+      const spouseId = [...spouses][0]!;
+      for (const e of allEdges) {
+        if (consumed.has(e.id)) continue;
+        const s = idOf(e.source);
+        const t = idOf(e.target);
+        const lbl = e.label.toLowerCase();
+        // Only drop co-parent fan when the kid still links to `personId`
+        const kidId =
+          isParentLabel(lbl) && t === spouseId && kids.has(s) ? s
+          : lbl === "child" && s === spouseId && kids.has(t) ? t
+          : null;
+        if (!kidId) continue;
+        if (!parentsOf.get(kidId)?.has(personId)) continue;
+        consumed.add(e.id);
+      }
+    } else {
+      // Multi-spouse: soft COPARENT only for the spouse↔kid edges,
+      // never consume the kid→personId parent edge (would isolate kids).
+      for (const spouseId of spouses) {
+        if (spouseId === personId) continue;
+        const spouseKids = new Set<string>();
+        for (const kid of kids) {
+          const kp = parentsOf.get(kid);
+          if (kp?.has(spouseId)) spouseKids.add(kid);
+        }
+        if (!spouseKids.size) {
+          for (const e of allEdges) {
+            if (consumed.has(e.id)) continue;
+            const s = idOf(e.source);
+            const t = idOf(e.target);
+            const lbl = e.label.toLowerCase();
+            if (lbl === "child" && s === spouseId && kids.has(t)) spouseKids.add(t);
+            if (isParentLabel(lbl) && t === spouseId && kids.has(s)) spouseKids.add(s);
+          }
+        }
+        if (spouseKids.size) {
+          foldCoParentEdges(spouseId, spouseKids, allEdges, outEdges, consumed, nodes);
+        }
       }
     }
   }
 }
 
+/** Ensure every person keeps at least one edge (repair over-aggressive prunes). */
+function reconnectOrphans(
+  nodes: GraphNode[],
+  allEdges: GraphEdge[],
+  outEdges: GraphEdge[],
+  consumed: Set<string>,
+): void {
+  const linked = new Set<string>();
+  for (const e of outEdges) {
+    linked.add(idOf(e.source));
+    linked.add(idOf(e.target));
+  }
+
+  for (const n of nodes) {
+    if (isHubNode(n)) continue;
+    if (linked.has(n.id)) continue;
+
+    // Restore the first original family edge involving this person
+    for (const e of allEdges) {
+      const s = idOf(e.source);
+      const t = idOf(e.target);
+      if (s !== n.id && t !== n.id) continue;
+      if (e.propertyId === "HUB" || e.propertyId === "HUB_SHARE") continue;
+      consumed.delete(e.id);
+      if (!outEdges.some((x) => x.id === e.id)) {
+        outEdges.push(e);
+        linked.add(s);
+        linked.add(t);
+      }
+      break;
+    }
+  }
+}
+
 /**
- * Focus-only hubs + co-parent arcs. Extended family keeps direct edges.
+ * Focus hubs + shared-parent / sole-spouse folds + hop 2–3 edge minimization.
  */
 export function toRelationHubs(
   nodes: GraphNode[],
@@ -248,11 +524,25 @@ export function toRelationHubs(
   addHub("spouse", rootId, spouses, edges, outNodes, outEdges, consumed);
   addHub("sibling", rootId, siblings, edges, outNodes, outEdges, consumed);
 
-  addCoParentLinks(rootId, spouses, children, edges, outEdges, consumed, nodes);
+  linkSharedParentsToParentHub(
+    rootId,
+    parents,
+    edges,
+    nodeIds,
+    outNodes,
+    outEdges,
+    consumed,
+  );
+  linkSoleSpouseToChildHub(rootId, spouses, children, edges, outNodes, outEdges, consumed);
+  addFocusCoParentLinks(spouses, children, edges, outEdges, consumed, nodes);
+
+  minimizeExtendedFamilyEdges(rootId, edges, nodeIds, outEdges, consumed, nodes);
 
   for (const e of edges) {
     if (!consumed.has(e.id)) outEdges.push(e);
   }
+
+  reconnectOrphans(nodes, edges, outEdges, consumed);
 
   return { nodes: outNodes, edges: outEdges };
 }
