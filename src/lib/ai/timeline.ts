@@ -602,23 +602,108 @@ function asKind(v: unknown): TimelineKind {
 
 /**
  * Creative long-form copy for a clicked timeline moment.
- * Grounded in entity facts + era context — no API required.
+ * Grounded in entity facts + era + Wikipedia — used by the depth flyout.
  */
 export function expandMomentDetail(
   entity: EntitySummary,
   event: TimelineEvent,
   era?: TimelineEra | (TimelineEra & { start?: number; end?: number }),
   allEvents: TimelineEvent[] = [],
-): { story: string; whyItMatters: string; scene: string; related: TimelineEvent[] } {
+): {
+  story: string;
+  whyItMatters: string;
+  scene: string;
+  related: TimelineEvent[];
+  sameYear: TimelineEvent[];
+  neighbors: { prev?: TimelineEvent; next?: TimelineEvent };
+  contextNotes: string[];
+  wikiExcerpts: Array<{ title: string; excerpt: string }>;
+  eraSummary?: string;
+} {
   const name = entity.label;
   const occupations = factValues(entity, "P106", 4).map((v) => v.label);
   const birthPlace = factLabel(entity, "P19");
   const genre = factValues(entity, "P136", 3).map((v) => v.label);
   const eraTitle = era?.title ?? "this chapter";
   const eraYears = era?.years ?? event.year;
+  const y = yearFrom(event.year) ?? yearFrom(event.sortKey);
+
+  const sorted = [...allEvents].sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+  const idx = sorted.findIndex(
+    (e) => e.sortKey === event.sortKey && e.title === event.title,
+  );
+  const neighbors = {
+    prev: idx > 0 ? sorted[idx - 1] : undefined,
+    next: idx >= 0 && idx < sorted.length - 1 ? sorted[idx + 1] : undefined,
+  };
+
   const related = allEvents
     .filter((e) => e.eraId === event.eraId && e.sortKey !== event.sortKey)
+    .slice(0, 6);
+
+  const sameYear = allEvents
+    .filter(
+      (e) =>
+        (yearFrom(e.year) ?? yearFrom(e.sortKey)) === y &&
+        !(e.sortKey === event.sortKey && e.title === event.title),
+    )
+    .slice(0, 8);
+
+  const contextNotes: string[] = [];
+  if (era?.summary) contextNotes.push(era.summary);
+  if (occupations.length) {
+    contextNotes.push(`${name} is recorded as ${occupations.slice(0, 3).join(", ")}.`);
+  }
+  if (birthPlace) contextNotes.push(`Place of birth: ${birthPlace}.`);
+  const deathPlace = factLabel(entity, "P20");
+  if (deathPlace) contextNotes.push(`Place of death: ${deathPlace}.`);
+  for (const spouse of factValues(entity, "P26", 3)) {
+    contextNotes.push(
+      spouse.year
+        ? `Spouse: ${spouse.label} (${spouse.year}).`
+        : `Spouse: ${spouse.label}.`,
+    );
+  }
+  for (const a of factValues(entity, "P166", 4)) {
+    if (a.year != null && y != null && Math.abs(a.year - y) <= 2) {
+      contextNotes.push(`Nearby award: ${a.label}${a.year ? ` (${a.year})` : ""}.`);
+    }
+  }
+  if (event.highlights?.length) {
+    for (const h of event.highlights.slice(0, 4)) {
+      if (h.trim() && !contextNotes.includes(h.trim())) contextNotes.push(h.trim());
+    }
+  }
+
+  // Pull Wikipedia sentences that mention this year (or title keywords)
+  const wikiExcerpts: Array<{ title: string; excerpt: string }> = [];
+  const titleBits = event.title
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length > 3)
     .slice(0, 4);
+  const lead = entity.wikipedia?.lead ?? entity.wikipediaSummary ?? "";
+  const sections = [
+    { title: "Lead", content: lead },
+    ...(entity.wikipedia?.sections ?? []).slice(0, 16),
+  ];
+  for (const sec of sections) {
+    if (wikiExcerpts.length >= 4) break;
+    const sentences = sec.content
+      .split(/(?<=[.!?])\s+/)
+      .map((s) => s.replace(/\s+/g, " ").trim())
+      .filter((s) => s.length > 40 && s.length < 420);
+    for (const sent of sentences) {
+      if (wikiExcerpts.length >= 4) break;
+      const yearHit = y != null && sent.includes(String(y));
+      const titleHit =
+        titleBits.length > 0 &&
+        titleBits.some((b) => sent.toLowerCase().includes(b));
+      if (!yearHit && !titleHit) continue;
+      if (wikiExcerpts.some((w) => w.excerpt === sent)) continue;
+      wikiExcerpts.push({ title: sec.title, excerpt: sent });
+    }
+  }
 
   let story = event.detail || event.summary;
   let whyItMatters = event.whyItMatters || "";
@@ -629,22 +714,36 @@ export function expandMomentDetail(
       event.detail ||
       `In ${event.year}, ${name} enters the record${birthPlace ? ` in ${birthPlace}` : ""}. ` +
         `The years ahead will fold ${occupations.slice(0, 2).join(" and ") || "a public craft"} into one of the most recognizable arcs in the field. ` +
-        `This is the quiet beginning of ${eraTitle.toLowerCase()} (${eraYears}).`;
+        `This is the quiet beginning of ${eraTitle.toLowerCase()} (${eraYears}). ` +
+        (neighbors.next
+          ? `What follows next on the spine is “${neighbors.next.title}” (${neighbors.next.year}).`
+          : "");
     whyItMatters =
       whyItMatters ||
       `Without this origin point, the later songs, films, and awards have no stage to stand on.`;
     scene = birthPlace ? `Dawn in ${birthPlace}` : `A life begins`;
   } else if (event.kind === "life" && /died|death/i.test(event.title)) {
-    const deathPlace = factLabel(entity, "P20");
     story =
       event.detail ||
       `${event.year} closes the living chapter${deathPlace ? ` in ${deathPlace}` : ""}. ` +
-        `What remains is the catalogue — the voice, the screen presence, the awards — already woven through ${eraTitle.toLowerCase()}.`;
+        `What remains is the catalogue — the voice, the screen presence, the awards — already woven through ${eraTitle.toLowerCase()}. ` +
+        (neighbors.prev
+          ? `The beat just before was “${neighbors.prev.title}” (${neighbors.prev.year}).`
+          : "");
     whyItMatters =
       whyItMatters ||
       `An ending that freezes a legend in public memory rather than ending the work’s afterlife.`;
     scene = `Curtain · ${event.year}`;
-  } else if (event.kind === "career" && /career|begins|start/i.test(event.title)) {
+  } else if (event.kind === "life" && /marri/i.test(event.title)) {
+    story =
+      event.detail ||
+      `In ${event.year}, personal life intersects the public arc: ${event.title}. ` +
+        `Inside ${eraTitle} (${eraYears}), private choices sit beside the professional catalogue and help explain the pace of the years around them.`;
+    whyItMatters =
+      whyItMatters ||
+      `Family beats are not footnotes — they reshape where someone works, lives, and is remembered.`;
+    scene = `Private life · ${event.year}`;
+  } else if (event.kind === "career" && /career|begins|start|move into/i.test(event.title)) {
     story =
       event.detail ||
       `Around ${event.year}, ${name} steps into professional light` +
@@ -658,7 +757,10 @@ export function expandMomentDetail(
     story =
       event.detail ||
       `${event.year}: ${name} is marked with “${event.title}”. ` +
-        `In the atmosphere of ${eraTitle}, recognition arrives not as a surprise bolt but as the industry’s way of saying the work had already changed the room.`;
+        `In the atmosphere of ${eraTitle}, recognition arrives not as a surprise bolt but as the industry’s way of saying the work had already changed the room. ` +
+        (sameYear.length
+          ? `The same year also carries ${sameYear.map((e) => e.title).slice(0, 3).join("; ")}.`
+          : "");
     whyItMatters =
       whyItMatters ||
       `Awards freeze a moment of consensus — useful for history, even when the art was already ahead of the trophy.`;
@@ -684,7 +786,22 @@ export function expandMomentDetail(
       `Small documented beats keep the chronology honest when myth wants to smooth everything into legend.`;
   }
 
-  return { story, whyItMatters, scene, related };
+  // Lengthen story when we have wiki excerpts
+  if (wikiExcerpts[0] && !(event.detail && event.detail.length > 180)) {
+    story = `${story} Wikipedia notes: ${wikiExcerpts[0].excerpt}`;
+  }
+
+  return {
+    story,
+    whyItMatters,
+    scene,
+    related,
+    sameYear,
+    neighbors,
+    contextNotes: [...new Set(contextNotes)].slice(0, 10),
+    wikiExcerpts,
+    eraSummary: era?.summary,
+  };
 }
 
 /** Coerce messy model JSON into a safe NarrativeTimeline. */

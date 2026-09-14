@@ -621,9 +621,9 @@ export default function EntityPage() {
     )?.url;
 
   return (
-    <div className="min-h-screen bg-[#0b1220]">
-      {/* Top nav */}
-      <header className="sticky top-0 z-30 border-b border-white/10 bg-[#0b1220]/95 backdrop-blur-md">
+    <div className="min-h-screen bg-[#f4f7fb]">
+      {/* Top nav — dark chrome over light page */}
+      <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-[#0b1220]/96 backdrop-blur-md">
         <div className="mx-auto flex max-w-[1600px] items-center gap-3 px-5 py-2.5">
           <button
             onClick={() => navigate("/")}
@@ -726,20 +726,19 @@ export default function EntityPage() {
 
       {pageLoading && (
         <div className="mx-auto max-w-[1600px] px-5 py-8 space-y-6">
-          <Skeleton className="h-64 w-full rounded-2xl bg-white/10" />
-          <div className="grid lg:grid-cols-[200px_1fr_260px] gap-5">
-            <Skeleton className="h-72 hidden lg:block rounded-xl bg-white/10" />
-            <Skeleton className="h-96 rounded-xl bg-white/10" />
-            <Skeleton className="h-72 hidden lg:block rounded-xl bg-white/10" />
+          <Skeleton className="h-48 w-full rounded-2xl bg-slate-200/80" />
+          <div className="grid lg:grid-cols-[200px_1fr] gap-5">
+            <Skeleton className="h-72 hidden lg:block rounded-xl bg-slate-200/80" />
+            <Skeleton className="h-96 rounded-xl bg-slate-200/80" />
           </div>
         </div>
       )}
 
       {!pageLoading && !qid && (
         <div className="flex flex-col items-center justify-center py-24 text-center gap-3">
-          <HelpCircle className="size-5 text-red-400" />
-          <p className="text-white font-medium">Could not find this entity</p>
-          <button onClick={() => navigate("/")} className="mt-2 text-cyan-300 text-sm hover:underline cursor-pointer">
+          <HelpCircle className="size-5 text-red-500" />
+          <p className="text-slate-900 font-medium">Could not find this entity</p>
+          <button onClick={() => navigate("/")} className="mt-2 text-teal-700 text-sm hover:underline cursor-pointer">
             Back to search
           </button>
         </div>
@@ -747,9 +746,9 @@ export default function EntityPage() {
 
       {error && (
         <div className="flex flex-col items-center justify-center py-24 text-center gap-3">
-          <HelpCircle className="size-5 text-red-400" />
-          <p className="text-white font-medium">Could not load this entity</p>
-          <button onClick={() => navigate("/")} className="mt-2 text-cyan-300 text-sm hover:underline cursor-pointer">
+          <HelpCircle className="size-5 text-red-500" />
+          <p className="text-slate-900 font-medium">Could not load this entity</p>
+          <button onClick={() => navigate("/")} className="mt-2 text-teal-700 text-sm hover:underline cursor-pointer">
             Back to search
           </button>
         </div>
@@ -773,17 +772,111 @@ export default function EntityPage() {
             quickFacts={quickFacts}
           />
 
+          {/* Primary surfaces — directly under hero */}
+          <nav
+            aria-label="Explore this entity"
+            className="sticky top-[3.25rem] z-20 border-b border-slate-200/80 bg-[#f4f7fb]/95 backdrop-blur-md"
+          >
+            <div className="mx-auto max-w-[1600px] px-5 py-2.5">
+              <div className="flex gap-1.5 overflow-x-auto pb-0.5 -mx-1 px-1">
+                {(
+                  [
+                    {
+                      id: "timeline" as const,
+                      label: "Timeline",
+                      hint: "Year-by-year",
+                      icon: Sparkles,
+                      action: () => setActiveTab("timeline"),
+                      selected: activeTab === "timeline",
+                    },
+                    {
+                      id: "overview" as const,
+                      label: "Overview",
+                      hint: "Full biography",
+                      icon: BookOpen,
+                      action: () => setActiveTab("overview"),
+                      selected: activeTab === "overview",
+                    },
+                    {
+                      id: "graph" as const,
+                      label: "Knowledge graph",
+                      hint: "Relations map",
+                      icon: Network,
+                      action: () => navigate(`/graph/${qid}`),
+                      selected: false,
+                    },
+                    ...(entity.type === "person"
+                      ? [
+                          {
+                            id: "family-tree" as const,
+                            label: "Family tree",
+                            hint: "Kinship links",
+                            icon: GitBranch,
+                            action: () => navigate(`/family-tree/${qid}`),
+                            selected: false,
+                          },
+                        ]
+                      : []),
+                    {
+                      id: "compare" as const,
+                      label: "Compare",
+                      hint: "Side-by-side",
+                      icon: GitCompareArrows,
+                      action: () => navigate(`/compare/${qid}`),
+                      selected: false,
+                    },
+                  ] as const
+                ).map((item) => {
+                  const ItemIcon = item.icon;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={item.action}
+                      className={cn(
+                        "inline-flex shrink-0 items-center gap-2 rounded-xl border px-3.5 py-2 text-left cursor-pointer transition-all",
+                        item.selected
+                          ? "border-teal-600 bg-teal-600 text-white shadow-sm shadow-teal-600/20"
+                          : "border-slate-200 bg-white text-slate-700 hover:border-teal-300 hover:bg-teal-50/60",
+                      )}
+                    >
+                      <ItemIcon
+                        className={cn(
+                          "size-4 shrink-0",
+                          item.selected ? "text-white" : "text-teal-600",
+                        )}
+                      />
+                      <span className="min-w-0">
+                        <span className="block text-[13px] font-semibold leading-tight">
+                          {item.label}
+                        </span>
+                        <span
+                          className={cn(
+                            "hidden sm:block text-[11px] leading-tight",
+                            item.selected ? "text-teal-100" : "text-slate-500",
+                          )}
+                        >
+                          {item.hint}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </nav>
+
           {/* ═══════════════ BODY (light) ═══════════════ */}
           <section
             id="entity-main"
-            className="entity-body bg-[#f4f7fb] text-slate-800 min-h-[70vh] scroll-mt-24"
+            className="entity-body bg-[#f4f7fb] text-slate-800 min-h-[70vh] scroll-mt-28"
           >
             <div className="mx-auto max-w-[1600px] px-5 py-6 md:py-8 pb-24">
               {resolvingLink && (
                 <p className="mb-3 text-xs text-cyan-700 animate-pulse">Opening linked entity…</p>
               )}
 
-              {/* Section contents only — explore modes live in the top header */}
+              {/* Mobile TOC / section pills */}
               <nav className="lg:hidden mb-4 -mx-1 overflow-x-auto px-1">
                 <div className="flex min-w-max gap-1.5 pb-1">
                   {activeTab === "overview" && wiki?.toc && wiki.toc.length > 0
@@ -827,8 +920,16 @@ export default function EntityPage() {
                 </div>
               </nav>
 
-              {/* TOC + full-bleed content (no cramped right rail) */}
-              <div className="grid gap-5 lg:grid-cols-[220px_minmax(0,1fr)] items-start">
+              {/* TOC + content — Timeline is full width (no left Contents) */}
+              <div
+                className={cn(
+                  "grid gap-5 items-start",
+                  activeTab === "timeline"
+                    ? "grid-cols-1"
+                    : "lg:grid-cols-[220px_minmax(0,1fr)]",
+                )}
+              >
+                {activeTab !== "timeline" && (
                 <div className="hidden lg:block sticky top-[4.5rem] space-y-3">
                   {activeTab === "overview" && wiki?.toc && wiki.toc.length > 0 ? (
                     <WikiTocNav toc={wiki.toc} readingMins={readingMins} />
@@ -895,6 +996,7 @@ export default function EntityPage() {
                     </div>
                   )}
                 </div>
+                )}
 
                 <div className="min-w-0 w-full rounded-2xl border border-slate-200/80 bg-white shadow-sm shadow-slate-200/40">
                   <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-5 sm:px-8 py-3.5 bg-gradient-to-r from-slate-50 to-cyan-50/40 rounded-t-2xl">
