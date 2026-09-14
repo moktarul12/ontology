@@ -16,7 +16,7 @@ import { Skeleton } from "@/components/ui/skeleton.tsx";
 import {
   Network, ArrowLeft, ChevronRight, ChevronLeft, GitBranch, Sparkles,
   User, MapPin, Building2, Lightbulb, Calendar, HelpCircle,
-  BookOpen, Copy, Check, Share2, ExternalLink,
+  BookOpen, Copy, Check, Share2, ExternalLink, GitCompareArrows,
   Image as ImageIcon, Link2, Clock, Film, Languages,
   Briefcase, Heart, Tag, GraduationCap, Landmark, Star, FlaskConical,
   List, Quote, ShieldCheck, Users, Globe2, Factory, Award, Layers,
@@ -206,11 +206,11 @@ function buildQuickFacts(entity: EntitySummary): QuickFact[] {
         });
       }
     }
-    pushFact(items, FlaskConical, "Field", f("P101"), { tone: "violet", limit: 2 });
-    pushFact(items, GraduationCap, "Education", f("P69"), { tone: "cyan", limit: 2 });
-    pushFact(items, Award, "Awards", f("P166"), { tone: "amber", limit: 2 });
-    pushFact(items, Briefcase, "Employer", f("P108"), { tone: "emerald", limit: 2 });
-    pushFact(items, Heart, "Spouse", f("P26"), { tone: "rose", limit: 2 });
+    pushFact(items, FlaskConical, "Field", f("P101"), { tone: "violet", limit: 4 });
+    pushFact(items, GraduationCap, "Education", f("P69"), { tone: "cyan", limit: 4 });
+    pushFact(items, Award, "Awards", f("P166"), { tone: "amber", limit: 8 });
+    pushFact(items, Briefcase, "Employer", f("P108"), { tone: "emerald", limit: 4 });
+    pushFact(items, Heart, "Spouse", f("P26"), { tone: "rose", limit: 4 });
   } else if (entity.type === "place") {
     pushFact(items, Globe2, "Country", f("P17"), { tone: "cyan", limit: 2 });
     pushFact(items, MapPin, "Located in", f("P131"), { tone: "emerald", limit: 2 });
@@ -238,8 +238,8 @@ function buildQuickFacts(entity: EntitySummary): QuickFact[] {
     pushFact(items, Calendar, "Inception", f("P571"), { tone: "amber", transform: compactDate, limit: 1 });
   }
 
-  // Fill remaining slots from high-signal leftover facts
-  if (items.length < 6) {
+  // Fill with leftover high-signal facts — keep room to grow, do not truncate hard
+  {
     const used = new Set(
       ["P569", "P570", "P19", "P20", "P571", "P112", "P159", "P17", "P452", "P169", "P106", "P101", "P800", "P1449", "P39", "P69", "P166", "P108", "P26", "P27", "P31", "P1056", "P749", "P1128", "P131", "P1082", "P36", "P577", "P50", "P57", "P136", "P495", "P161", "P585", "P580", "P276", "P710", "P279"]
     );
@@ -256,23 +256,21 @@ function buildQuickFacts(entity: EntitySummary): QuickFact[] {
       ["P740", MapPin, "Location of formation", "emerald"],
     ];
     for (const [pid, icon, label, tone] of fillers) {
-      if (items.length >= 7) break;
       if (used.has(pid)) continue;
       const fact = f(pid);
       if (!fact) continue;
-      pushFact(items, icon, label, fact, { tone, limit: 2 });
+      if (items.some((i) => i.label.toLowerCase() === label.toLowerCase())) continue;
+      pushFact(items, icon, label, fact, { tone, limit: 4 });
     }
-    // last resort: any remaining non-identifier facts
     for (const fact of entity.facts) {
-      if (items.length >= 7) break;
       if (IMAGE_PROPERTY_IDS.has(fact.propertyId)) continue;
       if (IDENTIFIER_PROPERTY_IDS.has(fact.propertyId)) continue;
       if (items.some((i) => i.label.toLowerCase() === fact.property.toLowerCase())) continue;
-      pushFact(items, Tag, fact.property, fact, { tone: "cyan", limit: 2 });
+      pushFact(items, Tag, fact.property, fact, { tone: "cyan", limit: 4 });
     }
   }
 
-  return items.slice(0, 7);
+  return items;
 }
 
 type HeroKpi = {
@@ -380,7 +378,7 @@ export default function EntityPage() {
   const { id: rawParam } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [copied, setCopied] = useState(false);
-  const [activeTab, setActiveTab] = useState("overview");
+  const [activeTab, setActiveTab] = useState("timeline");
   const [resolvingLink, setResolvingLink] = useState(false);
 
   const parsed = useMemo(() => parseEntityParam(rawParam ?? ""), [rawParam]);
@@ -476,7 +474,7 @@ export default function EntityPage() {
         seen.add(k);
         return true;
       })
-      .slice(0, 8);
+      .slice(0, 16);
   }, [entity]);
 
   const quickFacts = useMemo(() => (entity ? buildQuickFacts(entity) : []), [entity]);
@@ -486,7 +484,16 @@ export default function EntityPage() {
   const categories = useMemo((): CategoryTab[] => {
     if (!entity) return [];
 
-    const tabs: CategoryTab[] = [{ id: "overview", title: "Overview", kind: "overview" }];
+    // Default order: Timeline → Overview → fact sections → media…
+    const tabs: CategoryTab[] = [
+      {
+        id: "timeline",
+        title: "AI Timeline",
+        count: entity.timeline.length || undefined,
+        kind: "timeline",
+      },
+      { id: "overview", title: "Overview", kind: "overview" },
+    ];
 
     const order = sectionOrderForType(entity.type);
     const buckets = new Map<SectionId, EntityFact[]>();
@@ -508,13 +515,6 @@ export default function EntityPage() {
       tabs.push({ id: sid, title: SECTION_TITLES[sid], count: facts.length, kind: "facts", facts });
     }
 
-    // Always offer Timeline — AI enrichment / seed milestones live here
-    tabs.push({
-      id: "timeline",
-      title: "AI Timeline",
-      count: entity.timeline.length || undefined,
-      kind: "timeline",
-    });
     if (entity.images.length) {
       tabs.push({ id: "media", title: "Related Images", count: entity.images.length, kind: "media" });
     }
@@ -541,8 +541,15 @@ export default function EntityPage() {
   }, [entity]);
 
   useEffect(() => {
+    setActiveTab("timeline");
+  }, [qid]);
+
+  useEffect(() => {
     if (!categories.length) return;
-    if (!categories.some((c) => c.id === activeTab)) setActiveTab(categories[0].id);
+    if (!categories.some((c) => c.id === activeTab)) {
+      const prefer = categories.find((c) => c.id === "timeline") ?? categories[0];
+      setActiveTab(prefer.id);
+    }
   }, [categories, activeTab]);
 
   const activeIdx = Math.max(0, categories.findIndex((c) => c.id === activeTab));
@@ -718,38 +725,68 @@ export default function EntityPage() {
             marketing={marketing}
             wikiInfobox={wikiInfobox}
             quickFacts={quickFacts}
+            activeSurface={
+              activeTab === "overview" || activeTab === "timeline"
+                ? activeTab
+                : null
+            }
+            onSelectSurface={(surface) => {
+              setActiveTab(surface);
+              requestAnimationFrame(() => {
+                document
+                  .getElementById("entity-main")
+                  ?.scrollIntoView({ behavior: "smooth", block: "start" });
+              });
+            }}
           />
 
           {/* ═══════════════ BODY (light) ═══════════════ */}
-          <section className="entity-body bg-[#f4f7fb] text-slate-800 min-h-[70vh]">
+          <section
+            id="entity-main"
+            className="entity-body bg-[#f4f7fb] text-slate-800 min-h-[70vh] scroll-mt-24"
+          >
             <div className="mx-auto max-w-[1600px] px-5 py-6 md:py-8 pb-24">
               {resolvingLink && (
                 <p className="mb-3 text-xs text-cyan-700 animate-pulse">Opening linked entity…</p>
               )}
 
-              {/* Top: Graph / Family / Compare + AI Timeline only */}
-              <nav className="mb-5 sticky top-[3.75rem] z-20 -mx-1 px-1 space-y-2">
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              {/* Sticky: Timeline → Overview → Graph / Family */}
+              <nav className="mb-5 sticky top-[3.75rem] z-20 -mx-1 px-1">
+                <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200/90 bg-white/95 p-1.5 shadow-sm backdrop-blur">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("timeline")}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-[13px] font-semibold cursor-pointer transition-all",
+                      activeTab === "timeline"
+                        ? "bg-teal-600 text-white shadow-sm"
+                        : "text-slate-600 hover:bg-slate-50 hover:text-slate-900",
+                    )}
+                  >
+                    <Sparkles className="size-3.5 shrink-0" />
+                    Timeline
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("overview")}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-[13px] font-semibold cursor-pointer transition-all",
+                      activeTab === "overview"
+                        ? "bg-teal-600 text-white shadow-sm"
+                        : "text-slate-600 hover:bg-slate-50 hover:text-slate-900",
+                    )}
+                  >
+                    <BookOpen className="size-3.5 shrink-0" />
+                    Overview
+                  </button>
+                  <span className="hidden sm:block h-6 w-px bg-slate-200 mx-0.5" aria-hidden />
                   <ExploreAtlasPills
                     qid={qid!}
                     entityType={entity.type}
                     entityLabel={entity.label}
                     active="entity"
+                    className="!border-0 !bg-transparent !shadow-none !p-0"
                   />
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab("timeline")}
-                    className={cn(
-                      "inline-flex items-center gap-2 rounded-xl border px-3.5 py-2 text-[13px] font-semibold cursor-pointer transition-all shadow-sm",
-                      activeTab === "timeline"
-                        ? "border-cyan-500 bg-gradient-to-r from-cyan-600 to-sky-600 text-white shadow-cyan-500/25"
-                        : "border-cyan-200/80 bg-white text-cyan-900 hover:border-cyan-400 hover:bg-cyan-50",
-                    )}
-                  >
-                    <Sparkles className="size-3.5 shrink-0" />
-                    AI Timeline
-                    <Clock className="size-3.5 shrink-0 opacity-70" />
-                  </button>
                 </div>
               </nav>
 
