@@ -345,7 +345,7 @@ export function EntityHero({
                 At a glance · {vitals.reduce((n, g) => n + g.values.length, 0)} facts
               </p>
             </div>
-            <dl className="grid grid-cols-1 xs:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-px bg-white/[0.04]">
+            <dl className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-px bg-white/[0.04]">
               {vitals.map((g) => (
                 <div
                   key={g.label}

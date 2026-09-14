@@ -36,7 +36,6 @@ import {
 import { WikiTocNav } from "@/pages/entity/_components/WikiTocNav.tsx";
 import { WikiArticleWithMainEmbeds } from "@/pages/entity/_components/MainArticlePanels.tsx";
 import { EntityHero } from "@/pages/entity/_components/EntityHero.tsx";
-import { ExploreAtlasPills } from "@/components/ExploreAtlas.tsx";
 
 const TYPE_ICONS: Record<EntityType, ComponentType<{ className?: string }>> = {
   person: User,
@@ -645,27 +644,74 @@ export default function EntityPage() {
             <SearchBox size="md" />
           </div>
           {qid && entity && (
-            <div className="hidden sm:flex items-center gap-1.5 shrink-0">
+            <div className="flex items-center gap-0.5 sm:gap-1 shrink-0 overflow-x-auto max-w-[55vw] sm:max-w-none">
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab("timeline");
+                  requestAnimationFrame(() =>
+                    document.getElementById("entity-main")?.scrollIntoView({ behavior: "smooth", block: "start" }),
+                  );
+                }}
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-lg px-2 sm:px-2.5 py-1.5 text-[11px] sm:text-[12px] font-medium cursor-pointer transition-colors",
+                  activeTab === "timeline"
+                    ? "bg-teal-400 text-slate-950"
+                    : "border border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/[0.08] hover:text-white",
+                )}
+                title="AI Timeline"
+              >
+                <Sparkles className="size-3.5 shrink-0" />
+                <span className="hidden md:inline">Timeline</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab("overview");
+                  requestAnimationFrame(() =>
+                    document.getElementById("entity-main")?.scrollIntoView({ behavior: "smooth", block: "start" }),
+                  );
+                }}
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-lg px-2 sm:px-2.5 py-1.5 text-[11px] sm:text-[12px] font-medium cursor-pointer transition-colors",
+                  activeTab === "overview"
+                    ? "bg-teal-400 text-slate-950"
+                    : "border border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/[0.08] hover:text-white",
+                )}
+                title="Overview"
+              >
+                <BookOpen className="size-3.5 shrink-0" />
+                <span className="hidden md:inline">Overview</span>
+              </button>
               <button
                 type="button"
                 onClick={() => navigate(`/graph/${qid}`)}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[12px] font-medium text-slate-300 hover:bg-white/[0.08] hover:text-white transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 sm:px-2.5 py-1.5 text-[11px] sm:text-[12px] font-medium text-slate-300 hover:bg-white/[0.08] hover:text-white transition-colors cursor-pointer"
                 title="Knowledge graph"
               >
-                <Network className="size-3.5 text-cyan-300" />
-                <span className="hidden md:inline">Graph</span>
+                <Network className="size-3.5 text-teal-300 shrink-0" />
+                <span className="hidden lg:inline">Graph</span>
               </button>
               {entity.type === "person" && (
                 <button
                   type="button"
                   onClick={() => navigate(`/family-tree/${qid}`)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[12px] font-medium text-slate-300 hover:bg-white/[0.08] hover:text-white transition-colors cursor-pointer"
+                  className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 sm:px-2.5 py-1.5 text-[11px] sm:text-[12px] font-medium text-slate-300 hover:bg-white/[0.08] hover:text-white transition-colors cursor-pointer"
                   title="Family tree"
                 >
-                  <GitBranch className="size-3.5 text-cyan-300" />
-                  <span className="hidden md:inline">Family</span>
+                  <GitBranch className="size-3.5 text-teal-300 shrink-0" />
+                  <span className="hidden lg:inline">Family</span>
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() => navigate(`/compare/${qid}`)}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 sm:px-2.5 py-1.5 text-[11px] sm:text-[12px] font-medium text-slate-300 hover:bg-white/[0.08] hover:text-white transition-colors cursor-pointer"
+                title="Compare"
+              >
+                <GitCompareArrows className="size-3.5 text-teal-300 shrink-0" />
+                <span className="hidden lg:inline">Compare</span>
+              </button>
             </div>
           )}
           <button
@@ -725,19 +771,6 @@ export default function EntityPage() {
             marketing={marketing}
             wikiInfobox={wikiInfobox}
             quickFacts={quickFacts}
-            activeSurface={
-              activeTab === "overview" || activeTab === "timeline"
-                ? activeTab
-                : null
-            }
-            onSelectSurface={(surface) => {
-              setActiveTab(surface);
-              requestAnimationFrame(() => {
-                document
-                  .getElementById("entity-main")
-                  ?.scrollIntoView({ behavior: "smooth", block: "start" });
-              });
-            }}
           />
 
           {/* ═══════════════ BODY (light) ═══════════════ */}
@@ -750,47 +783,7 @@ export default function EntityPage() {
                 <p className="mb-3 text-xs text-cyan-700 animate-pulse">Opening linked entity…</p>
               )}
 
-              {/* Sticky: Timeline → Overview → Graph / Family */}
-              <nav className="mb-5 sticky top-[3.75rem] z-20 -mx-1 px-1">
-                <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200/90 bg-white/95 p-1.5 shadow-sm backdrop-blur">
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab("timeline")}
-                    className={cn(
-                      "inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-[13px] font-semibold cursor-pointer transition-all",
-                      activeTab === "timeline"
-                        ? "bg-teal-600 text-white shadow-sm"
-                        : "text-slate-600 hover:bg-slate-50 hover:text-slate-900",
-                    )}
-                  >
-                    <Sparkles className="size-3.5 shrink-0" />
-                    Timeline
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab("overview")}
-                    className={cn(
-                      "inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-[13px] font-semibold cursor-pointer transition-all",
-                      activeTab === "overview"
-                        ? "bg-teal-600 text-white shadow-sm"
-                        : "text-slate-600 hover:bg-slate-50 hover:text-slate-900",
-                    )}
-                  >
-                    <BookOpen className="size-3.5 shrink-0" />
-                    Overview
-                  </button>
-                  <span className="hidden sm:block h-6 w-px bg-slate-200 mx-0.5" aria-hidden />
-                  <ExploreAtlasPills
-                    qid={qid!}
-                    entityType={entity.type}
-                    entityLabel={entity.label}
-                    active="entity"
-                    className="!border-0 !bg-transparent !shadow-none !p-0"
-                  />
-                </div>
-              </nav>
-
-              {/* Mobile TOC pills */}
+              {/* Section contents only — explore modes live in the top header */}
               <nav className="lg:hidden mb-4 -mx-1 overflow-x-auto px-1">
                 <div className="flex min-w-max gap-1.5 pb-1">
                   {activeTab === "overview" && wiki?.toc && wiki.toc.length > 0
@@ -836,7 +829,7 @@ export default function EntityPage() {
 
               {/* TOC + full-bleed content (no cramped right rail) */}
               <div className="grid gap-5 lg:grid-cols-[220px_minmax(0,1fr)] items-start">
-                <div className="hidden lg:block sticky top-[8.5rem] space-y-3">
+                <div className="hidden lg:block sticky top-[4.5rem] space-y-3">
                   {activeTab === "overview" && wiki?.toc && wiki.toc.length > 0 ? (
                     <WikiTocNav toc={wiki.toc} readingMins={readingMins} />
                   ) : (
