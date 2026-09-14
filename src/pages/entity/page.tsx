@@ -23,6 +23,7 @@ import {
   TrendingUp, DollarSign, BarChart3,
 } from "lucide-react";
 import SearchBox from "@/components/search/SearchBox.tsx";
+import { SearchNamePeers } from "@/components/search/SearchNamePeers.tsx";
 import { cn } from "@/lib/utils.ts";
 import type { EntityType, EntityFact, EntitySummary, WikipediaArticle } from "@/lib/wikidata/types.ts";
 import { useMemo, useState, useCallback, useEffect, type MouseEvent, type ComponentType } from "react";
@@ -237,10 +238,10 @@ function buildQuickFacts(entity: EntitySummary): QuickFact[] {
     pushFact(items, Calendar, "Inception", f("P571"), { tone: "amber", transform: compactDate, limit: 1 });
   }
 
-  // Fill with leftover high-signal facts — keep room to grow, do not truncate hard
+  // Curated fillers only — never dump every Wikidata claim into At a glance
   {
     const used = new Set(
-      ["P569", "P570", "P19", "P20", "P571", "P112", "P159", "P17", "P452", "P169", "P106", "P101", "P800", "P1449", "P39", "P69", "P166", "P108", "P26", "P27", "P31", "P1056", "P749", "P1128", "P131", "P1082", "P36", "P577", "P50", "P57", "P136", "P495", "P161", "P585", "P580", "P276", "P710", "P279"]
+      ["P569", "P570", "P19", "P20", "P571", "P112", "P159", "P17", "P452", "P169", "P106", "P101", "P800", "P1449", "P39", "P69", "P166", "P108", "P26", "P27", "P31", "P1056", "P749", "P1128", "P131", "P1082", "P36", "P577", "P50", "P57", "P136", "P495", "P161", "P585", "P580", "P276", "P710", "P279", "P140", "P1412", "P856", "P1454", "P127", "P414", "P937", "P463", "P138", "P740"],
     );
     const fillers: Array<[string, ComponentType<{ className?: string }>, string, QuickFact["tone"]]> = [
       ["P856", Globe2, "Website", "cyan"],
@@ -261,15 +262,9 @@ function buildQuickFacts(entity: EntitySummary): QuickFact[] {
       if (items.some((i) => i.label.toLowerCase() === label.toLowerCase())) continue;
       pushFact(items, icon, label, fact, { tone, limit: 4 });
     }
-    for (const fact of entity.facts) {
-      if (IMAGE_PROPERTY_IDS.has(fact.propertyId)) continue;
-      if (IDENTIFIER_PROPERTY_IDS.has(fact.propertyId)) continue;
-      if (items.some((i) => i.label.toLowerCase() === fact.property.toLowerCase())) continue;
-      pushFact(items, Tag, fact.property, fact, { tone: "cyan", limit: 4 });
-    }
   }
 
-  return items;
+  return items.slice(0, 14);
 }
 
 type HeroKpi = {
@@ -435,10 +430,8 @@ export default function EntityPage() {
 
   const leadSnippet = useMemo(() => {
     if (!entity) return "";
-    const raw = entity.wikipedia?.lead || entity.wikipediaSummary || entity.description || "";
-    // ~4-sentence AI-style summary for the hero
-    const sentences = raw.split(/(?<=\.)\s+/).filter(Boolean);
-    return sentences.slice(0, 4).join(" ").trim();
+    // Full Wikipedia lead for hero about fallback (AI may replace with richer prose)
+    return (entity.wikipedia?.lead || entity.wikipediaSummary || entity.description || "").trim();
   }, [entity]);
 
   const tags = useMemo(() => {
@@ -640,8 +633,13 @@ export default function EntityPage() {
           >
             <ArrowLeft className="size-4" />
           </button>
-          <div className="flex-1 min-w-0">
-            <SearchBox size="md" />
+          <div className="flex-1 min-w-0 flex items-center gap-1.5">
+            <div className="flex-1 min-w-0">
+              <SearchBox size="md" />
+            </div>
+            {qid && entity && (
+              <SearchNamePeers name={entity.label} currentId={qid} />
+            )}
           </div>
           {qid && entity && (
             <div className="flex items-center gap-0.5 sm:gap-1 shrink-0 overflow-x-auto max-w-[55vw] sm:max-w-none">

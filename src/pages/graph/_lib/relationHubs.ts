@@ -49,13 +49,49 @@ export const FAMILY_GRAPH_PROPERTIES = new Set([
   "P1038", // relative
 ]);
 
+/**
+ * Person graphs: family + birth/death place + citizenship.
+ * Hidden (unchecked) by default; optional canvas filter to enable.
+ */
+export const PERSON_LIFE_FAMILY_OPT_IN: Array<{
+  id: string;
+  label: string;
+  hint: string;
+  propertyIds: string[];
+}> = [
+  { id: "parents", label: "Parents", hint: "Father · Mother", propertyIds: ["P22", "P25"] },
+  { id: "children", label: "Children", hint: "Child", propertyIds: ["P40"] },
+  { id: "spouse", label: "Spouse", hint: "Marriage", propertyIds: ["P26"] },
+  { id: "siblings", label: "Siblings", hint: "Brother · Sister", propertyIds: ["P3373"] },
+  { id: "relatives", label: "Relatives", hint: "Other kin", propertyIds: ["P1038"] },
+  { id: "birthplace", label: "Place of birth", hint: "Born in", propertyIds: ["P19"] },
+  { id: "deathplace", label: "Place of death", hint: "Died in", propertyIds: ["P20"] },
+  { id: "citizenship", label: "Citizenship", hint: "Nationality", propertyIds: ["P27"] },
+];
+
+export const PERSON_LIFE_FAMILY_PIDS = new Set(
+  PERSON_LIFE_FAMILY_OPT_IN.flatMap((g) => g.propertyIds),
+);
+
 export function isFamilyRelation(propertyId: string): boolean {
   return FAMILY_GRAPH_PROPERTIES.has(propertyId);
 }
 
-/** Initial visible targets under a hub (family starts collapsed). */
-export function defaultHubPageSize(propertyId: string): number {
-  return isFamilyRelation(propertyId) ? 0 : HUB_PAGE_SIZE;
+export function isPersonLifeFamilyPid(propertyId: string): boolean {
+  return PERSON_LIFE_FAMILY_PIDS.has(propertyId);
+}
+
+/** Initial visible targets under a hub — always collapsed (relation only). */
+export function defaultHubPageSize(_propertyId?: string): number {
+  return 0;
+}
+
+/** Relation hub with no linked entities revealed yet. */
+export function isCollapsedRelationHub(
+  hubShown: number | undefined,
+  isMore = false,
+): boolean {
+  return !isMore && (hubShown ?? 0) === 0;
 }
 
 /** Stable arm order: creative roles, then bio / people / place, then alpha. */
@@ -106,6 +142,35 @@ export function defaultHiddenRelations(
     if (!IMPORTANT_GRAPH_PROPERTIES.has(e.propertyId)) hidden.add(e.propertyId);
   }
   return hidden;
+}
+
+/**
+ * Property IDs for family / life arms present on this person graph.
+ */
+export function presentLifeFamilyPids(
+  edges: GraphEdge[],
+  rootId: string,
+): Set<string> {
+  const present = new Set<string>();
+  for (const e of edges) {
+    if (!e.propertyId || e.propertyId === "HUB") continue;
+    const s = typeof e.source === "object" ? e.source.id : e.source;
+    const t = typeof e.target === "object" ? e.target.id : e.target;
+    if (s !== rootId && t !== rootId) continue;
+    if (PERSON_LIFE_FAMILY_PIDS.has(e.propertyId)) present.add(e.propertyId);
+  }
+  return present;
+}
+
+/** Groups that exist on this person graph. */
+export function personLifeFamilyGroupsPresent(
+  edges: GraphEdge[],
+  rootId: string,
+): typeof PERSON_LIFE_FAMILY_OPT_IN {
+  const present = presentLifeFamilyPids(edges, rootId);
+  return PERSON_LIFE_FAMILY_OPT_IN.filter((g) =>
+    g.propertyIds.some((pid) => present.has(pid)),
+  );
 }
 
 const HUB_COLORS: Record<string, string> = {
@@ -174,7 +239,8 @@ export function focusHubs(nodes: GraphNode[], rootId: string): GraphNode[] {
 /**
  * Presentation transform: hubs only on the focus root.
  * Edges that touch the root are folded through property hubs;
- * hop-2+ edges stay as direct labeled links.
+ * further hops grow only when attached to that rooted tree.
+ * Disconnected components are dropped.
  */
 export function toKnowledgeHubs(
   nodes: GraphNode[],
@@ -289,7 +355,7 @@ export function toKnowledgeHubs(
       consumed.add(edge.id);
     }
 
-    if (remaining > 0) {
+    if (remaining > 0 && shown > 0) {
       const moreId = `khub-more:${rootId}:${pid}`;
       const step = Math.min(HUB_PAGE_SIZE, remaining);
       outNodes.push({
@@ -315,24 +381,61 @@ export function toKnowledgeHubs(
     }
   }
 
-  // Hop-2+ (and any non-root) edges stay direct
-  for (const e of edges) {
-    if (consumed.has(e.id)) continue;
-    if (HIDDEN_GRAPH_PROPERTIES.has(e.propertyId)) continue;
-    outEdges.push(e);
+  // Grow outward from the rooted hub tree only — never show floating components.
+  const rooted = new Set<string>([rootId]);
+  for (const n of outNodes) {
+    if (isKnowledgeHub(n)) rooted.add(n.id);
   }
-
-  const linked = new Set<string>([rootId]);
   for (const e of outEdges) {
-    linked.add(idOf(e.source));
-    linked.add(idOf(e.target));
+    rooted.add(idOf(e.source));
+    rooted.add(idOf(e.target));
   }
 
-  const finalNodes = outNodes.filter((n) => isKnowledgeHub(n) || linked.has(n.id));
+  const candidates = edges.filter(
+    (e) =>
+      !consumed.has(e.id) &&
+      !HIDDEN_GRAPH_PROPERTIES.has(e.propertyId) &&
+      e.propertyId !== "HUB",
+  );
+
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const e of candidates) {
+      if (consumed.has(e.id)) continue;
+      const s = idOf(e.source);
+      const t = idOf(e.target);
+      if (!nodeIds.has(s) || !nodeIds.has(t)) continue;
+      const sIn = rooted.has(s);
+      const tIn = rooted.has(t);
+      if (!sIn && !tIn) continue;
+      // Attach only when at least one end is already on the main-search tree
+      outEdges.push(e);
+      consumed.add(e.id);
+      if (!sIn) {
+        rooted.add(s);
+        grew = true;
+      }
+      if (!tIn) {
+        rooted.add(t);
+        grew = true;
+      }
+    }
+  }
+
+  // Drop anything not connected toward the main search node
+  const finalNodes = outNodes.filter(
+    (n) => n.id === rootId || isKnowledgeHub(n) || rooted.has(n.id),
+  );
+  const finalIds = new Set(finalNodes.map((n) => n.id));
+  const finalEdges = outEdges.filter(
+    (e) => finalIds.has(idOf(e.source)) && finalIds.has(idOf(e.target)),
+  );
+
   if (!finalNodes.some((n) => n.id === rootId)) {
     const root = entityNodes.find((n) => n.id === rootId);
     if (root) finalNodes.unshift({ ...root, kind: root.kind ?? "entity" });
   }
 
-  return { nodes: finalNodes, edges: outEdges };
+  return { nodes: finalNodes, edges: finalEdges };
 }

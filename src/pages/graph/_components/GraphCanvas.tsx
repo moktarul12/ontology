@@ -6,22 +6,22 @@ import {
   isKnowledgeHub,
   hubColorForProperty,
   isHubMoreNode,
-  isFamilyRelation,
+  isCollapsedRelationHub,
 } from "../_lib/relationHubs.ts";
 import { layoutKnowledgeGraph, type GraphArrangeMode } from "../_lib/knowledgeLayout.ts";
 import {
-  routeOrbitEdge,
-  routeLabelPoint,
-} from "@/pages/family-tree/_lib/orbitEdgeRouter.ts";
+  routeKnowledgeEdge,
+  knowledgeEdgeLabelPoint,
+} from "../_lib/knowledgeEdges.ts";
 
 type Props = {
   nodes: GraphNode[];
   edges: GraphEdge[];
   rootId: string;
+  /** Single click → details flyout */
   onNodeClick: (node: GraphNode) => void;
+  /** Double-click → expand neighbors / hub targets */
   onNodeExpand: (node: GraphNode) => void;
-  /** Open details without expanding (e.g. double-click) */
-  onNodeInspect?: (node: GraphNode) => void;
   expandingIds: Set<string>;
   arrangeMode?: GraphArrangeMode;
   /** Bump to force re-layout + fit after drag mess */
@@ -131,13 +131,102 @@ function rectEdgePoint(
   return { x: cx + dx / t, y: cy + dy / t };
 }
 
+function HoverExpandChip({
+  visible,
+  color,
+  x,
+  y,
+  busy,
+  onExpand,
+}: {
+  visible: boolean;
+  color: string;
+  x: number;
+  y: number;
+  busy?: boolean;
+  onExpand: () => void;
+}) {
+  if (!visible && !busy) return null;
+  return (
+    <g
+      transform={`translate(${x}, ${y})`}
+      style={{
+        cursor: busy ? "wait" : "pointer",
+        opacity: visible || busy ? 1 : 0,
+        transition: "opacity 0.15s ease, transform 0.18s ease",
+        transformOrigin: "0 0",
+      }}
+      className="kg-expand-chip"
+      onMouseDown={(e) => {
+        e.stopPropagation();
+        e.preventDefault();
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        if (!busy) onExpand();
+      }}
+    >
+      {/* Soft bloom */}
+      <circle r={18} fill={color} opacity={0.16} style={{ animation: "kg-pulse 1.6s ease-in-out infinite" }} />
+      <circle r={14} fill="#0B1220" stroke={color} strokeWidth={1.75} />
+      {/* Plus / branching mark */}
+      {!busy ? (
+        <>
+          <line x1={-5} y1={0} x2={5} y2={0} stroke="#F8FAFC" strokeWidth={2.1} strokeLinecap="round" />
+          <line x1={0} y1={-5} x2={0} y2={5} stroke="#F8FAFC" strokeWidth={2.1} strokeLinecap="round" />
+          <circle r={2.2} fill={color} cx={0} cy={0} opacity={0.95} />
+        </>
+      ) : (
+        <circle
+          r={6}
+          fill="none"
+          stroke={color}
+          strokeWidth={2}
+          strokeDasharray="8 5"
+          style={{ animation: "spin 0.8s linear infinite", transformOrigin: "0 0" }}
+        />
+      )}
+      {/* Caption pill */}
+      <g transform="translate(0, 22)">
+        <rect
+          x={-28}
+          y={-8}
+          width={56}
+          height={16}
+          rx={8}
+          fill="#0B1220"
+          stroke={color}
+          strokeWidth={1}
+          opacity={0.95}
+        />
+        <text
+          textAnchor="middle"
+          dominantBaseline="middle"
+          style={{
+            fontSize: "8px",
+            fontWeight: 700,
+            fill: "#F8FAFC",
+            fontFamily: "'Space Grotesk', sans-serif",
+            letterSpacing: "0.06em",
+            pointerEvents: "none",
+            userSelect: "none",
+            textTransform: "uppercase",
+          }}
+        >
+          {busy ? "…" : "Expand"}
+        </text>
+      </g>
+    </g>
+  );
+}
+
 export default function GraphCanvas({
   nodes,
   edges,
   rootId,
   onNodeClick,
   onNodeExpand,
-  onNodeInspect,
   expandingIds,
   arrangeMode = "orbit",
   arrangeNonce = 0,
@@ -149,7 +238,63 @@ export default function GraphCanvas({
   const draggedRef = useRef(false);
   const layoutKeyRef = useRef("");
   const arrangeNonceRef = useRef(arrangeNonce);
-  const [hoveredHubId, setHoveredHubId] = useState<string | null>(null);
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clickNodeIdRef = useRef<string | null>(null);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+
+  const handleNodePointerClick = useCallback(
+    (node: GraphNode) => {
+      if (draggedRef.current) {
+        draggedRef.current = false;
+        return;
+      }
+      if (clickTimerRef.current && clickNodeIdRef.current === node.id) {
+        // Second click within window — wait for dblclick
+        clearTimeout(clickTimerRef.current);
+        clickTimerRef.current = null;
+        clickNodeIdRef.current = null;
+        return;
+      }
+      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+      clickNodeIdRef.current = node.id;
+      clickTimerRef.current = setTimeout(() => {
+        clickTimerRef.current = null;
+        clickNodeIdRef.current = null;
+        onNodeClick(node);
+      }, 240);
+    },
+    [onNodeClick],
+  );
+
+  const handleNodePointerDblClick = useCallback(
+    (node: GraphNode) => {
+      if (clickTimerRef.current) {
+        clearTimeout(clickTimerRef.current);
+        clickTimerRef.current = null;
+        clickNodeIdRef.current = null;
+      }
+      onNodeExpand(node);
+    },
+    [onNodeExpand],
+  );
+
+  const handleExpandFromHover = useCallback(
+    (node: GraphNode) => {
+      if (clickTimerRef.current) {
+        clearTimeout(clickTimerRef.current);
+        clickTimerRef.current = null;
+        clickNodeIdRef.current = null;
+      }
+      onNodeExpand(node);
+    },
+    [onNodeExpand],
+  );
+
+  useEffect(() => {
+    return () => {
+      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
+    };
+  }, []);
 
   // Zoom behavior
   useEffect(() => {
@@ -329,19 +474,31 @@ export default function GraphCanvas({
             const p1 = rectEdgePoint(fx, fy, fromSz.w, fromSz.h, tx, ty);
             const p2 = rectEdgePoint(tx, ty, toSz.w, toSz.h, fx, fy, isHubEdge ? 2 : 4);
 
-            const skip = new Set([from.id, to.id]);
-            const pathD = routeOrbitEdge(p1.x, p1.y, p2.x, p2.y, nodes, skip, {
-              preferStraight: isHubEdge,
-              pad: 8,
-              rootId,
+            const fromIsRoot = from.id === rootId;
+            const toIsRoot = to.id === rootId;
+            const fromIsHub = isKnowledgeHub(from);
+            const toIsHub = isKnowledgeHub(to);
+            const edgeKind =
+              (fromIsRoot && toIsHub) || (toIsRoot && fromIsHub)
+                ? "spoke"
+                : fromIsHub || toIsHub
+                  ? "leaf"
+                  : "link";
+
+            const pathD = routeKnowledgeEdge(p1.x, p1.y, p2.x, p2.y, {
+              seed: edge.id,
+              kind: edgeKind,
             });
             const len = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
-            const { x: lx, y: ly } = routeLabelPoint(p1.x, p1.y, p2.x, p2.y, pathD);
+            const { x: lx, y: ly } = knowledgeEdgeLabelPoint(p1.x, p1.y, p2.x, p2.y, pathD);
 
             const hubNode = isKnowledgeHub(src) ? src : isKnowledgeHub(tgt) ? tgt : null;
             const stroke = hubNode?.hubPropertyId
-              ? `${hubColorForProperty(hubNode.hubPropertyId)}99`
-              : `${getEntityTypeConfig(to.type).hex}77`;
+              ? `${hubColorForProperty(hubNode.hubPropertyId)}aa`
+              : `${getEntityTypeConfig(to.type).hex}88`;
+            const glow = hubNode?.hubPropertyId
+              ? `${hubColorForProperty(hubNode.hubPropertyId)}28`
+              : `${getEntityTypeConfig(to.type).hex}22`;
 
             const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x) * (180 / Math.PI);
             const flipped = angle > 90 || angle < -90;
@@ -351,11 +508,22 @@ export default function GraphCanvas({
 
             return (
               <g key={edge.id}>
+                {/* Soft underglow — no hard corners */}
+                <path
+                  d={pathD}
+                  fill="none"
+                  stroke={glow}
+                  strokeWidth={isHubEdge ? 5.5 : 4.5}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
                 <path
                   d={pathD}
                   fill="none"
                   stroke={stroke}
-                  strokeWidth={isHubEdge ? 1.7 : 1.35}
+                  strokeWidth={isHubEdge ? 1.85 : 1.45}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
                   markerEnd={arrowMarker}
                 />
                 {!isHubEdge && edge.label && len > 80 && (
@@ -394,13 +562,9 @@ export default function GraphCanvas({
             if (isHub) {
               const color = hubColorForProperty(node.hubPropertyId ?? "");
               const isMore = isHubMoreNode(node);
-              const isFamilyCollapsed =
-                !isMore &&
-                isFamilyRelation(node.hubPropertyId ?? "") &&
-                (node.hubShown ?? 0) === 0;
-              const showExpandCue = isFamilyCollapsed && hoveredHubId === node.id;
+              const isCollapsed = isCollapsedRelationHub(node.hubShown, isMore);
               const countLabel =
-                isFamilyCollapsed && node.hubTotal != null
+                isCollapsed && node.hubTotal != null
                   ? `${node.hubTotal}`
                   : !isMore && node.hubTotal != null && node.hubShown != null && node.hubTotal > node.hubShown
                     ? `${node.hubShown}/${node.hubTotal}`
@@ -412,45 +576,42 @@ export default function GraphCanvas({
                   key={node.id}
                   ref={(el) => attachDrag(el, node)}
                   transform={`translate(${x},${y})`}
-                  style={{ cursor: isFamilyCollapsed ? "default" : "pointer" }}
-                  onMouseEnter={() => {
-                    if (isFamilyCollapsed) setHoveredHubId(node.id);
-                  }}
-                  onMouseLeave={() => {
-                    setHoveredHubId((cur) => (cur === node.id ? null : cur));
-                  }}
+                  style={{ cursor: "pointer" }}
+                  onMouseEnter={() => setHoveredId(node.id)}
+                  onMouseLeave={() =>
+                    setHoveredId((cur) => (cur === node.id ? null : cur))
+                  }
                   onClick={(e) => {
-                    if (draggedRef.current) {
-                      draggedRef.current = false;
-                      return;
-                    }
                     e.stopPropagation();
-                    if (isFamilyCollapsed) return;
-                    onNodeClick(node);
+                    handleNodePointerClick(node);
                   }}
                   onDoubleClick={(e) => {
+                    e.preventDefault();
                     e.stopPropagation();
-                    if (isFamilyCollapsed) {
-                      onNodeExpand(node);
-                      return;
-                    }
-                    onNodeExpand(node);
+                    handleNodePointerDblClick(node);
                   }}
                 >
                   {isExpanding && (
-                    <rect
-                      x={-sz.w / 2 - 5}
-                      y={-sz.h / 2 - 5}
-                      width={sz.w + 10}
-                      height={sz.h + 10}
-                      rx={sz.rx + 2}
-                      fill="none"
-                      stroke={color}
-                      strokeWidth={1.5}
-                      strokeDasharray="5 4"
-                      opacity={0.8}
-                      style={{ animation: "spin 1.2s linear infinite", transformOrigin: "0 0" }}
-                    />
+                    <g style={{ pointerEvents: "none" }}>
+                      <circle
+                        r={Math.max(sz.w, sz.h) / 2 + 10}
+                        fill="none"
+                        stroke={color}
+                        strokeWidth={2.25}
+                        strokeDasharray="10 8"
+                        opacity={0.85}
+                        style={{ animation: "spin 0.85s linear infinite", transformOrigin: "0 0" }}
+                      />
+                      <circle
+                        r={Math.max(sz.w, sz.h) / 2 + 4}
+                        fill="none"
+                        stroke={color}
+                        strokeWidth={1.25}
+                        strokeDasharray="4 6"
+                        opacity={0.45}
+                        style={{ animation: "spin 1.4s linear infinite reverse", transformOrigin: "0 0" }}
+                      />
+                    </g>
                   )}
                   <rect
                     x={-sz.w / 2}
@@ -460,9 +621,9 @@ export default function GraphCanvas({
                     rx={sz.rx}
                     fill={isMore ? "#FFFFFF" : color}
                     stroke={color}
-                    strokeWidth={isMore || isFamilyCollapsed ? 1.75 : 1}
-                    strokeDasharray={isMore || isFamilyCollapsed ? "4 3" : undefined}
-                    opacity={isFamilyCollapsed ? 0.92 : 1}
+                    strokeWidth={isMore || isCollapsed ? 1.75 : 1}
+                    strokeDasharray={isMore || isCollapsed ? "4 3" : undefined}
+                    opacity={isCollapsed ? 0.92 : 1}
                   />
                   <text
                     y={countLabel ? -5 : 0}
@@ -498,41 +659,14 @@ export default function GraphCanvas({
                       {countLabel}
                     </text>
                   )}
-                  {showExpandCue && (
-                    <g
-                      transform={`translate(0, ${sz.h / 2 + 18})`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onNodeExpand(node);
-                      }}
-                      style={{ cursor: "pointer" }}
-                    >
-                      <rect
-                        x={-34}
-                        y={-11}
-                        width={68}
-                        height={22}
-                        rx={11}
-                        fill="#0f172a"
-                        stroke={color}
-                        strokeWidth={1.25}
-                      />
-                      <text
-                        textAnchor="middle"
-                        dominantBaseline="middle"
-                        style={{
-                          fontSize: "10px",
-                          fill: "#FFFFFF",
-                          fontFamily: "'Space Grotesk', sans-serif",
-                          fontWeight: 700,
-                          pointerEvents: "none",
-                          userSelect: "none",
-                        }}
-                      >
-                        Expand
-                      </text>
-                    </g>
-                  )}
+                  <HoverExpandChip
+                    visible={hoveredId === node.id}
+                    color={color}
+                    x={sz.w / 2 + 2}
+                    y={-sz.h / 2 - 2}
+                    busy={isExpanding}
+                    onExpand={() => handleExpandFromHover(node)}
+                  />
                 </g>
               );
             }
@@ -546,18 +680,18 @@ export default function GraphCanvas({
                 ref={(el) => attachDrag(el, node)}
                 transform={`translate(${x},${y})`}
                 style={{ cursor: "pointer" }}
+                onMouseEnter={() => setHoveredId(node.id)}
+                onMouseLeave={() =>
+                  setHoveredId((cur) => (cur === node.id ? null : cur))
+                }
                 onClick={(e) => {
-                  if (draggedRef.current) {
-                    draggedRef.current = false;
-                    return;
-                  }
                   e.stopPropagation();
-                  onNodeClick(node);
+                  handleNodePointerClick(node);
                 }}
                 onDoubleClick={(e) => {
+                  e.preventDefault();
                   e.stopPropagation();
-                  if (onNodeInspect) onNodeInspect(node);
-                  else onNodeExpand(node);
+                  handleNodePointerDblClick(node);
                 }}
               >
                 {isRoot && (
@@ -575,19 +709,26 @@ export default function GraphCanvas({
                 )}
 
                 {isExpanding && (
-                  <rect
-                    x={-sz.w / 2 - 6}
-                    y={-sz.h / 2 - 6}
-                    width={sz.w + 12}
-                    height={sz.h + 12}
-                    rx={sz.rx + 4}
-                    fill="none"
-                    stroke={cfg.hex}
-                    strokeWidth={1.5}
-                    strokeDasharray="6 4"
-                    opacity={0.8}
-                    style={{ animation: "spin 1.2s linear infinite", transformOrigin: "0 0" }}
-                  />
+                  <g style={{ pointerEvents: "none" }}>
+                    <circle
+                      r={Math.max(sz.w, sz.h) / 2 + 12}
+                      fill="none"
+                      stroke={cfg.hex}
+                      strokeWidth={2.25}
+                      strokeDasharray="10 8"
+                      opacity={0.85}
+                      style={{ animation: "spin 0.85s linear infinite", transformOrigin: "0 0" }}
+                    />
+                    <circle
+                      r={Math.max(sz.w, sz.h) / 2 + 5}
+                      fill="none"
+                      stroke={cfg.hex}
+                      strokeWidth={1.25}
+                      strokeDasharray="4 6"
+                      opacity={0.4}
+                      style={{ animation: "spin 1.4s linear infinite reverse", transformOrigin: "0 0" }}
+                    />
+                  </g>
                 )}
 
                 <rect
@@ -641,6 +782,14 @@ export default function GraphCanvas({
                 >
                   {cfg.label}
                 </text>
+                <HoverExpandChip
+                  visible={hoveredId === node.id}
+                  color={cfg.hex}
+                  x={sz.w / 2 + 2}
+                  y={-sz.h / 2 - 2}
+                  busy={isExpanding}
+                  onExpand={() => handleExpandFromHover(node)}
+                />
               </g>
             );
           })}
@@ -649,6 +798,10 @@ export default function GraphCanvas({
 
       <style>{`
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        @keyframes kg-pulse {
+          0%, 100% { opacity: 0.12; transform: scale(0.92); }
+          50% { opacity: 0.3; transform: scale(1.12); }
+        }
       `}</style>
     </svg>
   );

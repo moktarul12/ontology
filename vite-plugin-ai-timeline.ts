@@ -14,7 +14,7 @@ import { loadEnv } from "vite";
 import { cacheGet, cacheSet, cacheStats, hashKey } from "./src/server/responseCache";
 
 /** Bump when prompts / response shape change to invalidate cached AI JSON. */
-const CACHE_PROMPT_VERSION = "ai-v3-gemini-dense";
+const CACHE_PROMPT_VERSION = "ai-v5-relation-story";
 
 type ProviderId = "groq" | "gemini" | "openai";
 
@@ -74,6 +74,47 @@ Rules:
 - For other sections: summary 3–5 sentences focused on that section.
 - paragraphs: optional deeper prose (no markdown headings).
 - fields: keep local.fields labels; lightly clarify values; do not add unsupported facts.
+- No markdown. Prefer complete valid JSON.`;
+
+const GLANCE_SYSTEM_PROMPT = `You write an "At a glance" SNAPSHOT for a knowledge explorer — NOT a Wikipedia infobox clone.
+Use only wikipediaLead, factsDigest, and local.*. Do NOT invent revenue, headcount, dates, CEOs, or products.
+
+Return ONLY JSON:
+{
+  "heading": string,
+  "pulse": string,
+  "metrics": [{ "label": string, "value": string, "note"?: string }],
+  "cards": [{ "label": string, "value": string, "tone"?: "hq"|"people"|"market"|"product"|"life"|"default" }],
+  "footnote"?: string
+}
+
+Rules:
+- pulse: 1–2 vivid briefing sentences (magazine tone). Never paste wiki parentheticals or citation junk.
+- Organizations: heading like "Company pulse". metrics = money/headcount/founded (3–5). cards = HQ, Leadership, Industry, Products, Listed — short clean values.
+- Persons: heading like "Life snapshot". metrics = lifespan / awards / works counts when known. cards = Born, Died, Craft, Family — concise.
+- Prefer local.metrics / local.cards structure; polish wording, drop duplicates, keep numbers faithful.
+- No markdown. Prefer complete valid JSON.`;
+
+const RELATION_STORY_SYSTEM_PROMPT = `You are a feature writer for a premium culture magazine inside a knowledge explorer.
+Write a FULL, vivid essay about ONE FACET of a person (relationLabel) — e.g. acting career, singing, directing, awards.
+Use ONLY wikipediaLead, linkedWorks, occupations, description, and local.*. Do NOT invent film/song titles, years, or awards absent from the inputs.
+
+Return ONLY JSON:
+{
+  "heading": string,
+  "kicker": string,
+  "summary": string,
+  "paragraphs": string[] (4–7 longform paragraphs),
+  "beats": string[] (5–10 short memorable beats or titles)
+}
+
+Rules:
+- If relationLabel / propertyId points to acting, cast, film, or actor: write an ACTING CAREER feature — comic timing, screen presence, notable roles from linkedWorks, how acting sits beside other crafts (e.g. singing) when occupations say so.
+- heading: magazine title (e.g. "Kishore Kumar on screen").
+- kicker: 3–7 word eyebrow.
+- summary: 2–3 sentence hook.
+- paragraphs: flowing literary prose, not bullet dumps; specific when linkedWorks allow; never paste Wikipedia citation junk.
+- beats: concrete titles or motifs from linkedWorks / lead.
 - No markdown. Prefer complete valid JSON.`;
 
 const WIKI_PAGE_ENRICH_PROMPT = `You present a Wikipedia MAIN ARTICLE (Discography / Filmography / Awards / similar) inside a biography overview.
@@ -575,21 +616,30 @@ async function handleRequest(
 
     if (isEnrich) {
       const section = String(payload.section ?? "");
-      const allowed = new Set(["overview", "life", "family", "career", "creative", "wikiPage"]);
+      const allowed = new Set([
+        "overview", "life", "family", "career", "creative", "wikiPage", "glance", "relationStory",
+      ]);
       if (!allowed.has(section)) {
         sendJson(res, 400, {
-          error: "section must be overview, life, family, career, creative, or wikiPage",
+          error: "section must be overview, life, family, career, creative, wikiPage, glance, or relationStory",
         });
         return;
       }
       const isWikiPage = section === "wikiPage";
+      const isGlance = section === "glance";
+      const isRelationStory = section === "relationStory";
       const userContent = isWikiPage
         ? compactWikiPagePayload(payload)
-        : compactEnrichPayload(payload);
+        : isGlance
+          ? compactGlancePayload(payload)
+          : isRelationStory
+            ? compactRelationStoryPayload(payload)
+            : compactEnrichPayload(payload);
       const cacheKey = `enrich:${CACHE_PROMPT_VERSION}:${hashKey([
         payload.id,
         section,
         isWikiPage ? String(payload.pageTitle ?? "") : "",
+        isRelationStory ? String(payload.relationLabel ?? "") + String(payload.propertyId ?? "") : "",
         payload.wikiRevisedAt ?? "",
         userContent,
       ])}`;
@@ -609,12 +659,29 @@ async function handleRequest(
         }
       }
 
+      const systemPrompt = isWikiPage
+        ? WIKI_PAGE_ENRICH_PROMPT
+        : isGlance
+          ? GLANCE_SYSTEM_PROMPT
+          : isRelationStory
+            ? RELATION_STORY_SYSTEM_PROMPT
+            : ENRICH_SYSTEM_PROMPT;
+      const validate = isGlance
+        ? (p: Record<string, unknown>) => typeof p.pulse === "string"
+        : isRelationStory
+          ? (p: Record<string, unknown>) =>
+              typeof p.summary === "string" && Array.isArray(p.paragraphs)
+          : (p: Record<string, unknown>) =>
+              typeof p.summary === "string" ||
+              typeof p.capsule === "string" ||
+              typeof p.intro === "string";
+
       const { parsed, provider, model } = await generateJson(
         providers,
         userContent,
-        isWikiPage ? WIKI_PAGE_ENRICH_PROMPT : ENRICH_SYSTEM_PROMPT,
-        (p) => typeof p.summary === "string" || typeof p.capsule === "string" || typeof p.intro === "string",
-        { maxTokens: isWikiPage ? 5120 : 4096 },
+        systemPrompt,
+        validate,
+        { maxTokens: isWikiPage ? 5120 : isRelationStory ? 6144 : isGlance ? 3072 : 4096 },
       );
       const body = { ...parsed, section, _meta: { provider, model } };
       const backends = await cacheSet(cacheKey, body);
@@ -733,6 +800,36 @@ function compactEnrichPayload(payload: Record<string, unknown>): string {
     wikiRevisedAt: payload.wikiRevisedAt ?? null,
     fields: payload.fields,
     local: payload.local,
+  });
+}
+
+function compactGlancePayload(payload: Record<string, unknown>): string {
+  return JSON.stringify({
+    section: "glance",
+    id: payload.id,
+    label: payload.label,
+    description: payload.description,
+    type: payload.type,
+    wikipediaLead: String(payload.wikipediaLead ?? "").slice(0, 900),
+    wikiRevisedAt: payload.wikiRevisedAt ?? null,
+    factsDigest: Array.isArray(payload.factsDigest) ? payload.factsDigest.slice(0, 14) : [],
+    local: payload.local ?? null,
+  });
+}
+
+function compactRelationStoryPayload(payload: Record<string, unknown>): string {
+  return JSON.stringify({
+    section: "relationStory",
+    id: payload.id,
+    label: payload.label,
+    description: payload.description,
+    relationLabel: payload.relationLabel,
+    propertyId: payload.propertyId ?? null,
+    wikipediaLead: String(payload.wikipediaLead ?? "").slice(0, 1200),
+    wikiRevisedAt: payload.wikiRevisedAt ?? null,
+    linkedWorks: Array.isArray(payload.linkedWorks) ? payload.linkedWorks.slice(0, 16) : [],
+    occupations: Array.isArray(payload.occupations) ? payload.occupations.slice(0, 8) : [],
+    local: payload.local ?? null,
   });
 }
 

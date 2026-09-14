@@ -168,10 +168,8 @@ function placeExtended(
   for (const e of edges) {
     const s = idOf(e.source);
     const t = idOf(e.target);
-    const sn = byId.get(s);
-    const tn = byId.get(t);
-    if (!sn || !tn) continue;
-    if (isKnowledgeHub(sn) || isKnowledgeHub(tn)) continue;
+    if (!byId.get(s) || !byId.get(t)) continue;
+    // Include hub links so expanded leaves stay oriented from the rooted tree
     addAdj(s, t);
     addAdj(t, s);
   }
@@ -209,12 +207,7 @@ function placeExtended(
     }
 
     if (!byAnchor.size && stranded.length) {
-      const n = stranded.length;
-      stranded.forEach((node, i) => {
-        const a = -Math.PI / 2 + (i / Math.max(n, 1)) * Math.PI * 2;
-        pin(node, cx + Math.cos(a) * (rings.more + 80), cy + Math.sin(a) * (rings.more + 80));
-        placed.add(node.id);
-      });
+      // Not attached to the rooted tree — omit (do not invent floating orbits)
       break;
     }
 
@@ -222,8 +215,12 @@ function placeExtended(
       const anchor = byId.get(anchorId)!;
       const ax = anchor.x ?? cx;
       const ay = anchor.y ?? cy;
+      // Always face outward from the main search node
       const ang = Math.atan2(ay - cy, ax - cx);
-      const reach = Math.hypot(ax - cx, ay - cy) + rings.satellite;
+      const reach = Math.max(
+        Math.hypot(ax - cx, ay - cy) + rings.satellite,
+        rings.satellite + 40,
+      );
       const span = Math.min(Math.PI / 3, (group.length - 1) * 0.22);
       group.sort((a, b) => a.label.localeCompare(b.label));
       group.forEach((node, i) => {
@@ -296,17 +293,14 @@ export function layoutKnowledgeGraph(
 
   placeExtended(nodes, edges, rootId, placed, cx, cy, rings);
 
-  // Any leftover hubs/nodes (shouldn't happen often)
-  for (const n of nodes) {
-    if (placed.has(n.id)) continue;
-    if (n.x == null || n.y == null) {
-      pin(n, cx + (Math.random() - 0.5) * 80, cy + (Math.random() - 0.5) * 80);
-    } else {
-      n.fx = n.x;
-      n.fy = n.y;
-    }
-    placed.add(n.id);
-  }
+  // Anything still unplaced but present should sit on an outer ray from root
+  // (connected data only — disconnected nodes are already pruned upstream)
+  const orphans = nodes.filter((n) => !placed.has(n.id));
+  orphans.forEach((node, i) => {
+    const a = -Math.PI / 2 + (i / Math.max(orphans.length, 1)) * Math.PI * 2;
+    pin(node, cx + Math.cos(a) * (rings.more + 40), cy + Math.sin(a) * (rings.more + 40));
+    placed.add(node.id);
+  });
 
   deoverlap(nodes, rootId);
   return boundsOf(nodes);
