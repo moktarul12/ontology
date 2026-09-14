@@ -1,0 +1,12 @@
+node_modules
+dist
+.git
+.gitignore
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+.cursor
+agent-transcripts
+deploy

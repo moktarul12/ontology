@@ -23,10 +23,22 @@ const ENTITY_W = 120;
 const ENTITY_H = 42;
 const HUB_W = 110;
 const HUB_H = 36;
-const HUB_RING = 160;
-const TARGET_RING = 280;
-const MORE_RING = 360;
-const SATELLITE_REACH = 150;
+
+export type GraphArrangeMode = "orbit" | "spread" | "wide";
+
+export const GRAPH_ARRANGE_MODES: GraphArrangeMode[] = ["orbit", "spread", "wide"];
+
+export const GRAPH_ARRANGE_LABEL: Record<GraphArrangeMode, string> = {
+  orbit: "Orbit (tight hubs)",
+  spread: "Spread (roomy wedges)",
+  wide: "Wide (max spacing)",
+};
+
+const RING: Record<GraphArrangeMode, { hub: number; target: number; more: number; satellite: number }> = {
+  orbit: { hub: 160, target: 280, more: 360, satellite: 150 },
+  spread: { hub: 200, target: 360, more: 460, satellite: 190 },
+  wide: { hub: 250, target: 450, more: 580, satellite: 230 },
+};
 
 function idOf(v: string | GraphNode): string {
   return typeof v === "object" ? v.id : v;
@@ -145,6 +157,7 @@ function placeExtended(
   placed: Set<string>,
   cx: number,
   cy: number,
+  rings: { more: number; satellite: number },
 ): void {
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const adj = new Map<string, string[]>();
@@ -199,7 +212,7 @@ function placeExtended(
       const n = stranded.length;
       stranded.forEach((node, i) => {
         const a = -Math.PI / 2 + (i / Math.max(n, 1)) * Math.PI * 2;
-        pin(node, cx + Math.cos(a) * (MORE_RING + 80), cy + Math.sin(a) * (MORE_RING + 80));
+        pin(node, cx + Math.cos(a) * (rings.more + 80), cy + Math.sin(a) * (rings.more + 80));
         placed.add(node.id);
       });
       break;
@@ -210,7 +223,7 @@ function placeExtended(
       const ax = anchor.x ?? cx;
       const ay = anchor.y ?? cy;
       const ang = Math.atan2(ay - cy, ax - cx);
-      const reach = Math.hypot(ax - cx, ay - cy) + SATELLITE_REACH;
+      const reach = Math.hypot(ax - cx, ay - cy) + rings.satellite;
       const span = Math.min(Math.PI / 3, (group.length - 1) * 0.22);
       group.sort((a, b) => a.label.localeCompare(b.label));
       group.forEach((node, i) => {
@@ -233,7 +246,9 @@ export function layoutKnowledgeGraph(
   rootId: string,
   width: number,
   height: number,
+  arrangeMode: GraphArrangeMode = "orbit",
 ): LayoutBounds {
+  const rings = RING[arrangeMode] ?? RING.orbit;
   const cx = width / 2;
   const cy = height / 2;
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -254,7 +269,7 @@ export function layoutKnowledgeGraph(
       nHubs === 1
         ? startAngle
         : startAngle + (i / nHubs) * Math.PI * 2;
-    pin(hub, cx + Math.cos(angle) * HUB_RING, cy + Math.sin(angle) * HUB_RING);
+    pin(hub, cx + Math.cos(angle) * rings.hub, cy + Math.sin(angle) * rings.hub);
     placed.add(hub.id);
 
     const targets = hubTargets(hub.id, edges, byId);
@@ -267,19 +282,19 @@ export function layoutKnowledgeGraph(
       const tNorm = count === 1 ? 0 : ti / (count - 1) - 0.5;
       const a = angle + tNorm * wedge;
       // Outer rows when many targets
-      const ring = count > 6 && Math.abs(tNorm) > 0.28 ? TARGET_RING + 70 : TARGET_RING;
+      const ring = count > 6 && Math.abs(tNorm) > 0.28 ? rings.target + 70 : rings.target;
       pin(t, cx + Math.cos(a) * ring, cy + Math.sin(a) * ring);
       placed.add(t.id);
     });
 
     const more = hubMoreNode(hub.id, edges, byId);
     if (more) {
-      pin(more, cx + Math.cos(angle) * MORE_RING, cy + Math.sin(angle) * MORE_RING);
+      pin(more, cx + Math.cos(angle) * rings.more, cy + Math.sin(angle) * rings.more);
       placed.add(more.id);
     }
   });
 
-  placeExtended(nodes, edges, rootId, placed, cx, cy);
+  placeExtended(nodes, edges, rootId, placed, cx, cy, rings);
 
   // Any leftover hubs/nodes (shouldn't happen often)
   for (const n of nodes) {

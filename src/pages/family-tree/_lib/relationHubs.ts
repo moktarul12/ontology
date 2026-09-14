@@ -22,7 +22,6 @@ import type { GraphNode, GraphEdge } from "@/lib/wikidata/types.ts";
 export type HubRelation = "parent" | "child" | "spouse" | "sibling";
 
 export type HubGraphNode = GraphNode & {
-  kind?: "person" | "hub";
   hubOf?: string;
   hubRelation?: HubRelation;
 };
@@ -661,7 +660,10 @@ export function toRelationHubs(
   rootId: string,
 ): { nodes: HubGraphNode[]; edges: GraphEdge[] } {
   const nodeIds = new Set(nodes.map((n) => n.id));
-  const outNodes: HubGraphNode[] = nodes.map((n) => ({ ...n, kind: "person" as const }));
+  const outNodes: HubGraphNode[] = nodes.map((n) => ({
+    ...n,
+    kind: "person" as const,
+  })) as HubGraphNode[];
   const outEdges: GraphEdge[] = [];
   const consumed = new Set<string>();
 

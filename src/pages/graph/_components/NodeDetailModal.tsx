@@ -27,11 +27,12 @@ type Props = {
 
 export default function NodeDetailModal({ node, onClose, onExpand, isExpanding }: Props) {
   const navigate = useNavigate();
+  const isWikidata = Boolean(node && /^Q\d+$/i.test(node.id));
 
   const { data: entity, isLoading } = useQuery({
     queryKey: ["entity", node?.id],
     queryFn: () => fetchEntitySummary(node!.id),
-    enabled: Boolean(node),
+    enabled: isWikidata,
     staleTime: 1000 * 60 * 10,
   });
 
@@ -86,7 +87,26 @@ export default function NodeDetailModal({ node, onClose, onExpand, isExpanding }
 
             {/* Body */}
             <div className="flex-1 p-4 space-y-4">
-              {isLoading ? (
+              {!isWikidata ? (
+                <>
+                  {node.description && (
+                    <p className="text-xs text-muted-foreground leading-relaxed">{node.description}</p>
+                  )}
+                  <p className="text-xs text-foreground/70 leading-relaxed">
+                    This release is linked from MusicBrainz and is not yet a Wikidata item.
+                  </p>
+                  {node.externalUrl && (
+                    <a
+                      href={node.externalUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-muted/30 px-2 py-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      <ExternalLink className="size-2.5" /> Open on MusicBrainz
+                    </a>
+                  )}
+                </>
+              ) : isLoading ? (
                 <div className="space-y-3">
                   <Skeleton className="h-32 w-full rounded-xl" />
                   <Skeleton className="h-4 w-3/4" />
@@ -154,25 +174,38 @@ export default function NodeDetailModal({ node, onClose, onExpand, isExpanding }
 
             {/* Footer actions */}
             <div className="p-4 border-t border-border/50 space-y-2">
-              <button
-                onClick={() => onExpand(node)}
-                disabled={isExpanding}
-                className={cn(
-                  "flex w-full items-center justify-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-semibold transition-all cursor-pointer",
-                  "border-primary/40 bg-primary/10 text-primary hover:bg-primary/20 disabled:opacity-50 disabled:cursor-not-allowed"
-                )}
-              >
-                <Plus className="size-3.5" />
-                {isExpanding ? "Expanding…" : "Expand from here"}
-              </button>
-              <div className="flex gap-2">
+              {isWikidata && (
                 <button
-                  onClick={() => navigate(entityPath(node.id, node.label))}
-                  className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-border/60 bg-muted/20 px-3 py-2 text-[10px] font-medium text-muted-foreground hover:text-foreground hover:border-border transition-colors cursor-pointer"
+                  onClick={() => onExpand(node)}
+                  disabled={isExpanding}
+                  className={cn(
+                    "flex w-full items-center justify-center gap-2 rounded-xl border px-4 py-2.5 text-xs font-semibold transition-all cursor-pointer",
+                    "border-primary/40 bg-primary/10 text-primary hover:bg-primary/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                  )}
                 >
-                  <Network className="size-3" /> Overview
+                  <Plus className="size-3.5" />
+                  {isExpanding ? "Expanding…" : "Expand from here"}
                 </button>
-                {node.type === "person" && (
+              )}
+              <div className="flex gap-2">
+                {isWikidata ? (
+                  <button
+                    onClick={() => navigate(entityPath(node.id, node.label))}
+                    className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-border/60 bg-muted/20 px-3 py-2 text-[10px] font-medium text-muted-foreground hover:text-foreground hover:border-border transition-colors cursor-pointer"
+                  >
+                    <Network className="size-3" /> Overview
+                  </button>
+                ) : node.externalUrl ? (
+                  <a
+                    href={node.externalUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-border/60 bg-muted/20 px-3 py-2 text-[10px] font-medium text-muted-foreground hover:text-foreground hover:border-border transition-colors"
+                  >
+                    <ExternalLink className="size-3" /> MusicBrainz
+                  </a>
+                ) : null}
+                {isWikidata && node.type === "person" && (
                   <button
                     onClick={() => navigate(`/family-tree/${node.id}`)}
                     className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-border/60 bg-muted/20 px-3 py-2 text-[10px] font-medium text-muted-foreground hover:text-foreground hover:border-border transition-colors cursor-pointer"

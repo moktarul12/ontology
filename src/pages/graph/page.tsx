@@ -1,10 +1,11 @@
 import { useParams, useNavigate } from "react-router-dom";
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, GitBranch, Share2, Minus, Plus, RotateCcw, Layers, Info, ChevronDown } from "lucide-react";
+import { ArrowLeft, Share2, Minus, Plus, RotateCcw, Layers, Info, ChevronDown, LayoutGrid } from "lucide-react";
 import { toast } from "sonner";
 import { motion } from "motion/react";
 import SearchBox from "@/components/search/SearchBox.tsx";
+import { ExploreAtlasPills } from "@/components/ExploreAtlas.tsx";
 import GraphCanvas from "./_components/GraphCanvas.tsx";
 import NodeDetailModal from "./_components/NodeDetailModal.tsx";
 import GraphLegend from "./_components/GraphLegend.tsx";
@@ -17,7 +18,12 @@ import {
 import type { GraphNode, GraphEdge } from "@/lib/wikidata/types.ts";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { cn } from "@/lib/utils.ts";
-import { toKnowledgeHubs, isKnowledgeHub, isHubMoreNode, HUB_PAGE_SIZE, HIDDEN_GRAPH_PROPERTIES, hubIdFor, defaultHiddenRelations, isImportantRelation } from "./_lib/relationHubs.ts";
+import { toKnowledgeHubs, isKnowledgeHub, isHubMoreNode, HUB_PAGE_SIZE, HIDDEN_GRAPH_PROPERTIES, hubIdFor, defaultHiddenRelations, isImportantRelation, isFamilyRelation, defaultHubPageSize } from "./_lib/relationHubs.ts";
+import {
+  GRAPH_ARRANGE_MODES,
+  GRAPH_ARRANGE_LABEL,
+  type GraphArrangeMode,
+} from "./_lib/knowledgeLayout.ts";
 import { entityPath } from "@/lib/entityPath.ts";
 
 function edgeEndpointId(v: string | GraphNode): string {
@@ -43,6 +49,8 @@ export default function GraphPage() {
   const relationsMenuRef = useRef<HTMLDivElement>(null);
   /** How many targets each hub shows (default HUB_PAGE_SIZE). */
   const [shownByHub, setShownByHub] = useState<Record<string, number>>({});
+  const [arrangeMode, setArrangeMode] = useState<GraphArrangeMode>("orbit");
+  const [arrangeNonce, setArrangeNonce] = useState(0);
 
   // ── Load root entity label ─────────────────────────────────────────────────
   const { data: rootEntity } = useQuery({
@@ -67,7 +75,8 @@ export default function GraphPage() {
         setNodes(data.nodes);
         setEdges(data.edges);
         setLoadedIds(new Set(data.nodes.map((n) => n.id)));
-        setHiddenRelations(defaultHiddenRelations(data.edges, id));
+        // Default: show every relation toward the searched entity
+        setHiddenRelations(new Set());
       })
       .catch(() => toast.error("Failed to load graph data"))
       .finally(() => setGraphLoading(false));
@@ -90,10 +99,13 @@ export default function GraphPage() {
   const revealHubMore = useCallback((node: GraphNode) => {
     if (!node.hubOf || !node.hubPropertyId) return;
     const hubId = hubIdFor(node.hubOf, node.hubPropertyId);
-    setShownByHub((prev) => ({
-      ...prev,
-      [hubId]: (prev[hubId] ?? HUB_PAGE_SIZE) + HUB_PAGE_SIZE,
-    }));
+    const pid = node.hubPropertyId;
+    setShownByHub((prev) => {
+      const current = prev[hubId] ?? defaultHubPageSize(pid);
+      // First reveal from collapsed family: open a full page; then +page more
+      const next = current === 0 ? HUB_PAGE_SIZE : current + HUB_PAGE_SIZE;
+      return { ...prev, [hubId]: next };
+    });
   }, []);
 
   const expandNode = useCallback(async (node: GraphNode) => {
@@ -104,10 +116,15 @@ export default function GraphPage() {
 
     if (isKnowledgeHub(node) && node.hubOf && node.hubPropertyId) {
       const hubId = hubIdFor(node.hubOf, node.hubPropertyId);
-      const shown = shownByHub[hubId] ?? HUB_PAGE_SIZE;
+      const shown = shownByHub[hubId] ?? defaultHubPageSize(node.hubPropertyId);
       const total = node.hubTotal ?? 0;
       if (total > shown) {
         revealHubMore(node);
+        return;
+      }
+      // Family hub already fully revealed — nothing more to fetch for non-creative
+      if (isFamilyRelation(node.hubPropertyId) || !isCreativeRoleProperty(node.hubPropertyId)) {
+        toast(`All ${node.hubRelation ?? node.label} items are shown`);
         return;
       }
     }
@@ -136,7 +153,7 @@ export default function GraphPage() {
         const hubId = hubIdFor(node.hubOf, node.hubPropertyId);
         setShownByHub((prev) => ({
           ...prev,
-          [hubId]: (prev[hubId] ?? HUB_PAGE_SIZE) + data.nodes.length,
+          [hubId]: (prev[hubId] ?? defaultHubPageSize(node.hubPropertyId!)) + data.nodes.length,
         }));
       } else {
         data = await fetchGraphData(node.id, 1, loadedIds);
@@ -235,7 +252,7 @@ export default function GraphPage() {
       setNodes(data.nodes);
       setEdges(data.edges);
       setLoadedIds(new Set(data.nodes.map((n) => n.id)));
-      setHiddenRelations(defaultHiddenRelations(data.edges, id));
+      setHiddenRelations(new Set());
     } catch {
       toast.error("Failed to reload graph");
     } finally {
@@ -252,6 +269,14 @@ export default function GraphPage() {
   const handleReset = () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (window as any).__graphResetZoom?.();
+  };
+
+  const handleAutoArrange = () => {
+    const idx = GRAPH_ARRANGE_MODES.indexOf(arrangeMode);
+    const next = GRAPH_ARRANGE_MODES[(idx + 1) % GRAPH_ARRANGE_MODES.length]!;
+    setArrangeMode(next);
+    setArrangeNonce((n) => n + 1);
+    toast.message(GRAPH_ARRANGE_LABEL[next]);
   };
 
   return (
@@ -275,6 +300,16 @@ export default function GraphPage() {
               </p>
             </div>
           </div>
+
+          {rootEntity && (
+            <ExploreAtlasPills
+              qid={id!}
+              entityType={rootEntity.type}
+              entityLabel={rootEntity.label}
+              active="graph"
+              className="hidden lg:inline-flex"
+            />
+          )}
 
           <div className="flex-1 hidden md:block max-w-sm">
             <SearchBox size="md" />
@@ -333,18 +368,22 @@ export default function GraphPage() {
                     <div className="flex gap-2">
                       <button
                         type="button"
+                        className={cn(
+                          "text-[10px] hover:underline cursor-pointer",
+                          hiddenRelations.size === 0 ? "text-primary font-semibold" : "text-primary",
+                        )}
+                        onClick={() => setHiddenRelations(new Set())}
+                        title="Show all relations toward the search item"
+                      >
+                        All
+                      </button>
+                      <button
+                        type="button"
                         className="text-[10px] text-primary hover:underline cursor-pointer"
                         onClick={() => setHiddenRelations(defaultHiddenRelations(edges, id!))}
                         title="Enable important relations only"
                       >
                         Important
-                      </button>
-                      <button
-                        type="button"
-                        className="text-[10px] text-primary hover:underline cursor-pointer"
-                        onClick={() => setHiddenRelations(new Set())}
-                      >
-                        All
                       </button>
                       <button
                         type="button"
@@ -383,6 +422,17 @@ export default function GraphPage() {
               )}
             </div>
 
+            {/* Auto arrange — cycles orbit / spread / wide */}
+            <button
+              onClick={handleAutoArrange}
+              disabled={graphLoading || nodes.length === 0}
+              className="flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-2.5 py-1.5 text-[11px] font-semibold text-primary hover:bg-primary/20 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              title={GRAPH_ARRANGE_LABEL[arrangeMode]}
+            >
+              <LayoutGrid className="size-3.5" />
+              <span className="hidden sm:inline">Auto arrange</span>
+            </button>
+
             {/* Legend toggle */}
             <button
               onClick={() => setShowLegend((v) => !v)}
@@ -403,15 +453,6 @@ export default function GraphPage() {
               <RotateCcw className="size-4" />
             </button>
 
-            {/* Family tree link */}
-            <button
-              onClick={() => navigate(`/family-tree/${id}`)}
-              className="hidden md:flex items-center gap-1.5 rounded-lg border border-border/60 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:border-border transition-colors cursor-pointer"
-            >
-              <GitBranch className="size-3.5" />
-              Family Tree
-            </button>
-
             {/* Share */}
             <button
               onClick={() => { navigator.clipboard.writeText(window.location.href); toast.success("Link copied!"); }}
@@ -422,7 +463,19 @@ export default function GraphPage() {
           </div>
         </div>
 
-        {/* Legend */}
+        {/* Mobile atlas + legend */}
+        {rootEntity && (
+          <div className="lg:hidden border-t border-border/40 px-4 py-2">
+            <ExploreAtlasPills
+              qid={id!}
+              entityType={rootEntity.type}
+              entityLabel={rootEntity.label}
+              active="graph"
+              className="w-full justify-center"
+            />
+          </div>
+        )}
+
         {showLegend && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
@@ -480,14 +533,24 @@ export default function GraphPage() {
             edges={viewEdges}
             rootId={id!}
             onNodeClick={(n) => {
-              if (isKnowledgeHub(n)) {
-                expandNode(n);
+              // Collapsed family hubs: wait for hover Expand / double-click
+              if (
+                isKnowledgeHub(n) &&
+                !isHubMoreNode(n) &&
+                isFamilyRelation(n.hubPropertyId ?? "") &&
+                (n.hubShown ?? 0) === 0
+              ) {
                 return;
               }
-              setSelectedNode(n);
+              expandNode(n);
             }}
             onNodeExpand={expandNode}
+            onNodeInspect={(n) => {
+              if (!isKnowledgeHub(n)) setSelectedNode(n);
+            }}
             expandingIds={expandingIds}
+            arrangeMode={arrangeMode}
+            arrangeNonce={arrangeNonce}
           />
         )}
 
@@ -514,7 +577,7 @@ export default function GraphPage() {
 
         {/* Mobile hint */}
         <div className="absolute bottom-4 right-4 rounded-lg border border-border/40 bg-card/70 backdrop-blur-sm px-3 py-1.5 text-[10px] text-muted-foreground/60 hidden sm:block pointer-events-none">
-          Click hub · +10 more · Double-click entity · expand · Reset re-centers
+          Family hubs stay collapsed · Hover or double-click to expand · Auto arrange cycles layout
         </div>
       </div>
     </div>

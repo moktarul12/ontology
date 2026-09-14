@@ -1,0 +1,25 @@
+# HTTPS via Let's Encrypt on sslip.io hostname (recommended)
+# Open: https://ontology.162.35.175.150.sslip.io
+ontology.162.35.175.150.sslip.io {
+	encode gzip
+	reverse_proxy ontology:4173
+}
+
+# Bare IP — HTTP still works; HTTPS on raw IP needs a real domain for a trusted cert
+http://162.35.175.150 {
+	encode gzip
+	reverse_proxy ontology:4173
+}
+
+# Optional: self-signed HTTPS on the IP (browser warning)
+# https://162.35.175.150 {
+# 	tls internal
+# 	encode gzip
+# 	reverse_proxy ontology:4173
+# }
+
+# --- Next app example ---
+# myapp.162.35.175.150.sslip.io {
+# 	encode gzip
+# 	reverse_proxy myapp:4173
+# }

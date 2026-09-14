@@ -16,6 +16,8 @@ import type {
   FactValue,
   WikipediaArticle,
   WikiSection,
+  WikiTocItem,
+  WikiMainArticle,
 } from "./types.ts";
 import { IMAGE_PROPERTY_IDS, LINK_PROPERTY_IDS, IDENTIFIER_PROPERTY_IDS } from "./propertyGroups.ts";
 
@@ -280,13 +282,14 @@ export async function fetchEntitySummary(id: string): Promise<EntitySummary> {
   }
   const type = detectTypeFromInstanceOf(instanceOf.map((i) => i.id));
 
-  // Images from Wikidata (P18 portrait preferred)
+  // Images from Wikidata (P18 portrait preferred; P109 signatures often SVG)
   const images: EntityImage[] = [];
   for (const pid of IMAGE_PROPERTY_IDS) {
     for (const claim of (claims[pid] as ClaimSnakValue[] | undefined) ?? []) {
       const filename = claim.mainsnak?.datavalue?.value;
       if (typeof filename !== "string") continue;
-      if (!isUsableMediaFilename(filename)) continue;
+      const allowSvg = pid === "P109" || pid === "P154" || pid === "P94" || pid === "P41";
+      if (!isUsableMediaFilename(filename, { allowSvg })) continue;
       images.push({
         propertyId: pid,
         property: propertyLabels[pid] ?? GRAPH_PROP_LABELS[pid] ?? pid,
@@ -300,9 +303,16 @@ export async function fetchEntitySummary(id: string): Promise<EntitySummary> {
   // Prefer Wikidata P18 (and other image props) for the hero — never let a
   // Wikipedia decorative/SVG gallery file overwrite the portrait.
   const p18 = images.find((i) => i.propertyId === "P18");
+  const nonSignatureRaster = images.find(
+    (i) =>
+      i.propertyId !== "P109" &&
+      !/signatur|autograph/i.test(i.filename) &&
+      /\.(jpe?g|png|webp)$/i.test(i.filename),
+  );
   let thumbnail: string | undefined =
     p18?.url ||
-    images[0]?.url ||
+    nonSignatureRaster?.url ||
+    images.find((i) => i.propertyId === "P154")?.url ||
     wikipedia?.thumbnail ||
     undefined;
 
@@ -400,6 +410,10 @@ export async function fetchEntitySummary(id: string): Promise<EntitySummary> {
       datatype: claimList[0]?.mainsnak?.datatype,
     });
   }
+
+  // Reverse filmography / discography is expensive (many SPARQL calls) and not
+  // needed for Overview. Load via fetchCreativeRolesForPerson() when the user
+  // opens Creative / related works tabs.
 
   // Sort facts: known labels first, then by property name
   facts.sort((a, b) => a.property.localeCompare(b.property));
@@ -583,7 +597,11 @@ function buildLinks(
 }
 
 function buildTimeline(facts: EntityFact[]): TimelineItem[] {
-  const dateProps = new Set(["P569", "P570", "P571", "P576", "P577", "P580", "P582", "P585", "P1619"]);
+  const dateProps = new Set([
+    "P569", "P570", "P571", "P576", "P577", "P580", "P582", "P585", "P1619", "P2031", "P2032",
+  ]);
+  const eventProps = new Set(["P166", "P39", "P793", "P607", "P1411", "P1344"]);
+  const creativeProps = new Set(["CR_SONG", "CR_ALBUM", "CR_FILM", "P800", "P175", "P161"]);
   const items: TimelineItem[] = [];
 
   for (const fact of facts) {
@@ -597,9 +615,11 @@ function buildTimeline(facts: EntityFact[]): TimelineItem[] {
         });
       }
     }
-    if (["P166", "P39", "P793", "P607"].includes(fact.propertyId)) {
+    if (eventProps.has(fact.propertyId)) {
       for (const v of fact.values) {
-        const timeQ = v.qualifiers?.find((q) => ["P580", "P582", "P585"].includes(q.propertyId));
+        const timeQ = v.qualifiers?.find((q) =>
+          ["P580", "P582", "P585", "P577"].includes(q.propertyId),
+        );
         items.push({
           date: timeQ?.label ?? "Date unknown",
           sortKey: timeQ?.label ?? "9999",
@@ -608,6 +628,23 @@ function buildTimeline(facts: EntityFact[]): TimelineItem[] {
           entityId: v.id,
         });
       }
+    }
+  }
+
+  // Career markers from reverse discography / filmography when years are sparse
+  for (const fact of facts) {
+    if (!creativeProps.has(fact.propertyId)) continue;
+    for (const v of fact.values.slice(0, 8)) {
+      const yearQ = v.qualifiers?.find((q) =>
+        ["P577", "P580", "P585"].includes(q.propertyId),
+      );
+      items.push({
+        date: yearQ?.label ?? "Career",
+        sortKey: yearQ?.label ?? "8888",
+        label: fact.property,
+        value: v.label,
+        entityId: v.id,
+      });
     }
   }
 
@@ -651,88 +688,279 @@ const GRAPH_PROPS = [
   "P50", "P170", "P175", "P162", "P800", "P127", "P749", "P355", "P166", "P39", "P452",
 ];
 
-/** Roles found on works pointing back to a person (filmography / discography). */
-export const CREATIVE_ROLE_QUERIES: Array<{ pid: string; label: string; limit: number }> = [
-  { pid: "P161", label: "Actor", limit: 10 },
-  { pid: "P57", label: "Director", limit: 10 },
-  { pid: "P162", label: "Producer", limit: 10 },
-  { pid: "P86", label: "Composer", limit: 10 },
-  { pid: "P175", label: "Performer", limit: 10 },
+/**
+ * Roles found on works pointing back to a person (filmography / discography).
+ * `pattern` is a SPARQL fragment that binds `?work`; use PERSON_ID for the focus Q-id.
+ * Typed Song / Album / Film hubs cover singers (e.g. Kumar Sanu) better than a flat Performer list.
+ */
+export type CreativeRoleQuery = {
+  pid: string;
+  label: string;
+  limit: number;
+  pattern?: string;
+};
+
+export const CREATIVE_ROLE_QUERIES: CreativeRoleQuery[] = [
+  { pid: "P161", label: "Actor", limit: 15 },
+  { pid: "P57", label: "Director", limit: 15 },
+  { pid: "P162", label: "Producer", limit: 15 },
+  { pid: "P86", label: "Composer", limit: 20 },
   { pid: "P58", label: "Screenwriter", limit: 10 },
+  {
+    pid: "CR_SONG",
+    label: "Song",
+    limit: 40,
+    // Direct P31 only — P279* is slow and often times out on WDQS
+    pattern: `?work wdt:P175 wd:PERSON_ID .
+      MINUS { ?work wdt:P31 wd:Q482994 }
+      MINUS { ?work wdt:P31 wd:Q11424 }`,
+  },
+  {
+    pid: "CR_ALBUM",
+    label: "Album",
+    limit: 40,
+    pattern: `?work wdt:P175 wd:PERSON_ID .
+      ?work wdt:P31 wd:Q482994 .`,
+  },
+  {
+    pid: "CR_FILM",
+    label: "Film",
+    limit: 30,
+    pattern: `{
+        ?work wdt:P175 wd:PERSON_ID .
+        ?work wdt:P31 wd:Q11424 .
+      } UNION {
+        ?song wdt:P175 wd:PERSON_ID .
+        ?song (wdt:P361|wdt:P1433|wdt:P179) ?work .
+        ?work wdt:P31 wd:Q11424 .
+      }`,
+  },
 ];
 
 export function isCreativeRoleProperty(propertyId: string): boolean {
   return CREATIVE_ROLE_QUERIES.some((r) => r.pid === propertyId);
 }
 
+export function creativeRoleLabel(propertyId: string): string | undefined {
+  return CREATIVE_ROLE_QUERIES.find((r) => r.pid === propertyId)?.label;
+}
+
 const SPARQL_ENDPOINT = "https://query.wikidata.org/sparql";
+const MUSICBRAINZ_API = "https://musicbrainz.org/ws/2";
+const MB_USER_AGENT = "OntaraKnowledgeExplorer/1.0 (educational; contact@ontara.local)";
+
+function rolePattern(role: CreativeRoleQuery, personId: string): string {
+  if (role.pattern) return role.pattern.replaceAll("PERSON_ID", personId);
+  return `?work wdt:${role.pid} wd:${personId} .`;
+}
+
+async function runSparql(
+  sparql: string,
+): Promise<Array<Record<string, { value?: string }>>> {
+  const url = `${SPARQL_ENDPOINT}?${new URLSearchParams({ format: "json", query: sparql })}`;
+  const headers = {
+    Accept: "application/sparql-results+json",
+    "User-Agent": MB_USER_AGENT,
+  };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(url, { headers });
+      if (res.status === 429 || res.status === 503) {
+        await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+        continue;
+      }
+      if (!res.ok) return [];
+      const data = await res.json() as {
+        results?: { bindings?: Array<Record<string, { value?: string }>> };
+      };
+      return data.results?.bindings ?? [];
+    } catch {
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 300));
+    }
+  }
+  return [];
+}
+
+export type CreativeRoleHit = {
+  qid: string;
+  pid: string;
+  label: string;
+  workLabel: string;
+  type: EntityType;
+  externalUrl?: string;
+};
 
 /**
- * Reverse-lookup works where `personId` appears as cast / director / producer / etc.
+ * Reverse-lookup works where `personId` appears as cast / director / producer / singer / etc.
  * Wikidata stores those claims on the work, so outbound expand alone misses filmography.
+ * Call this lazily (Creative tab) — not on Overview — to avoid many SPARQL round-trips.
  */
 export async function fetchCreativeRoles(
   personId: string,
   opts?: { propertyId?: string; existingIds?: Set<string>; limitPerRole?: number },
-): Promise<Array<{ qid: string; pid: string; label: string; workLabel: string; type: EntityType }>> {
+): Promise<CreativeRoleHit[]> {
   const roles = opts?.propertyId
     ? CREATIVE_ROLE_QUERIES.filter((r) => r.pid === opts.propertyId)
     : CREATIVE_ROLE_QUERIES;
   if (!roles.length) return [];
 
-  const unions = roles
-    .map(
-      (r) => `
-    {
-      SELECT ?work ?prop WHERE {
-        ?work wdt:${r.pid} wd:${personId} .
-        BIND("${r.pid}" AS ?prop)
-      } LIMIT ${opts?.limitPerRole ?? r.limit}
-    }`,
-    )
-    .join(" UNION ");
-
-  const sparql = `
-    SELECT ?work ?workLabel ?prop WHERE {
-      ${unions}
-      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
-    }
-  `;
-
-  try {
-    const res = await fetch(
-      `${SPARQL_ENDPOINT}?${new URLSearchParams({ format: "json", query: sparql })}`,
-      { headers: { Accept: "application/sparql-results+json" } },
+  const existing = opts?.existingIds ?? new Set<string>();
+  // Run in small waves so WDQS rate limits don't wipe song/album queries
+  const batches: Array<Array<{
+    qid: string | undefined;
+    workLabel: string | undefined;
+    pid: string;
+    label: string;
+  }>> = [];
+  for (let i = 0; i < roles.length; i += 3) {
+    const wave = roles.slice(i, i + 3);
+    const waveHits = await Promise.all(
+      wave.map(async (r) => {
+        const limit = opts?.limitPerRole ?? r.limit;
+        const sparql = `
+          SELECT ?work ?workLabel WHERE {
+            {
+              SELECT ?work WHERE {
+                ${rolePattern(r, personId)}
+              } LIMIT ${limit}
+            }
+            SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+          }
+        `;
+        const rows = await runSparql(sparql);
+        return rows.map((row) => ({
+          qid: row.work?.value?.split("/").pop(),
+          workLabel: row.workLabel?.value,
+          pid: r.pid,
+          label: r.label,
+        }));
+      }),
     );
+    batches.push(...waveHits);
+  }
+
+  const out: CreativeRoleHit[] = [];
+  const seen = new Set<string>();
+  for (const row of batches.flat()) {
+    const qid = row.qid;
+    if (!qid || existing.has(qid)) continue;
+    const key = `${row.pid}:${qid}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      qid,
+      pid: row.pid,
+      label: row.label,
+      workLabel: row.workLabel ?? qid,
+      type: "work",
+    });
+  }
+  return out;
+}
+
+/**
+ * Lazy filmography / discography for Creative tab (SPARQL + optional MusicBrainz).
+ * Kept out of Overview `fetchEntitySummary` to cut SPARQL fan-out.
+ */
+export async function fetchCreativeRolesForPerson(
+  personId: string,
+  claims?: Record<string, unknown[] | undefined>,
+): Promise<CreativeRoleHit[]> {
+  const roles = await fetchCreativeRoles(personId);
+  const mbid = claims
+    ? musicBrainzArtistIdFromClaims(claims as Record<string, ClaimSnakValue[] | undefined>)
+    : undefined;
+  const mbAlbums = mbid
+    ? await fetchMusicBrainzAlbums(mbid, {
+        existingIds: new Set(roles.map((r) => r.qid)),
+        limit: 40,
+      })
+    : [];
+  return [...roles, ...mbAlbums];
+}
+
+function roleLabelForProp(pid: string): string | undefined {
+  return creativeRoleLabel(pid);
+}
+
+/** Resolve MusicBrainz release-group MBIDs → Wikidata QIDs via P436. */
+async function resolveReleaseGroupsToWikidata(
+  mbids: string[],
+): Promise<Record<string, { qid: string; label: string }>> {
+  if (!mbids.length) return {};
+  // Chunk to keep VALUES clauses modest
+  const out: Record<string, { qid: string; label: string }> = {};
+  for (let i = 0; i < mbids.length; i += 40) {
+    const chunk = mbids.slice(i, i + 40);
+    const values = chunk.map((m) => `"${m}"`).join(" ");
+    const sparql = `
+      SELECT ?mbid ?work ?workLabel WHERE {
+        VALUES ?mbid { ${values} }
+        ?work wdt:P436 ?mbid .
+        SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+      }
+    `;
+    const rows = await runSparql(sparql);
+    for (const row of rows) {
+      const mbid = row.mbid?.value;
+      const qid = row.work?.value?.split("/").pop();
+      if (!mbid || !qid) continue;
+      out[mbid] = { qid, label: row.workLabel?.value ?? qid };
+    }
+  }
+  return out;
+}
+
+/**
+ * Albums / singles from MusicBrainz when the person has P434.
+ * Fills gaps Wikidata often has for playback singers (Kumar Sanu, etc.).
+ */
+export async function fetchMusicBrainzAlbums(
+  musicBrainzArtistId: string,
+  opts?: { existingIds?: Set<string>; limit?: number; offset?: number },
+): Promise<CreativeRoleHit[]> {
+  const limit = opts?.limit ?? 40;
+  const offset = opts?.offset ?? 0;
+  const existing = opts?.existingIds ?? new Set<string>();
+  try {
+    const url =
+      `${MUSICBRAINZ_API}/release-group?artist=${encodeURIComponent(musicBrainzArtistId)}` +
+      `&limit=${Math.min(limit, 100)}&offset=${offset}&fmt=json`;
+    const res = await fetch(url, {
+      headers: { Accept: "application/json", "User-Agent": MB_USER_AGENT },
+    });
     if (!res.ok) return [];
     const data = await res.json() as {
-      results?: { bindings?: Array<{
-        work?: { value?: string };
-        workLabel?: { value?: string };
-        prop?: { value?: string };
-      }> };
+      "release-groups"?: Array<{
+        id: string;
+        title: string;
+        "primary-type"?: string | null;
+      }>;
     };
+    const groups = (data["release-groups"] ?? []).filter((g) => {
+      const t = (g["primary-type"] ?? "").toLowerCase();
+      return !t || t === "album" || t === "ep" || t === "single";
+    });
+    if (!groups.length) return [];
 
-    const out: Array<{ qid: string; pid: string; label: string; workLabel: string; type: EntityType }> = [];
+    const resolved = await resolveReleaseGroupsToWikidata(groups.map((g) => g.id));
+    const out: CreativeRoleHit[] = [];
     const seen = new Set<string>();
-    const existing = opts?.existingIds ?? new Set<string>();
 
-    for (const row of data.results?.bindings ?? []) {
-      const uri = row.work?.value ?? "";
-      const qid = uri.split("/").pop();
-      const pid = row.prop?.value;
-      if (!qid || !pid || existing.has(qid)) continue;
-      const key = `${pid}:${qid}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const role = CREATIVE_ROLE_QUERIES.find((r) => r.pid === pid);
+    for (const g of groups) {
+      const wd = resolved[g.id];
+      const id = wd?.qid ?? `mb:rg:${g.id}`;
+      if (existing.has(id) || seen.has(id)) continue;
+      seen.add(id);
       out.push({
-        qid,
-        pid,
-        label: role?.label ?? GRAPH_PROP_LABELS[pid] ?? pid,
-        workLabel: row.workLabel?.value ?? qid,
+        qid: id,
+        pid: "CR_ALBUM",
+        label: "Album",
+        workLabel: wd?.label ?? g.title,
         type: "work",
+        externalUrl: `https://musicbrainz.org/release-group/${g.id}`,
       });
+      if (out.length >= limit) break;
     }
     return out;
   } catch {
@@ -740,8 +968,12 @@ export async function fetchCreativeRoles(
   }
 }
 
-function roleLabelForProp(pid: string): string | undefined {
-  return CREATIVE_ROLE_QUERIES.find((r) => r.pid === pid)?.label;
+function musicBrainzArtistIdFromClaims(
+  claims: Record<string, ClaimSnakValue[] | undefined> | undefined,
+): string | undefined {
+  const list = claims?.["P434"];
+  const val = list?.[0]?.mainsnak?.datavalue?.value;
+  return typeof val === "string" ? val : undefined;
 }
 
 /** Fetch more works for one creative role (hub expand). */
@@ -753,16 +985,51 @@ export async function fetchCreativeRoleExpansion(
   const roles = await fetchCreativeRoles(personId, {
     propertyId,
     existingIds,
-    limitPerRole: 20,
+    limitPerRole: 30,
   });
+
+  let extra: CreativeRoleHit[] = [];
+  if (propertyId === "CR_ALBUM") {
+    try {
+      const params = new URLSearchParams({
+        action: "wbgetentities",
+        ids: personId,
+        languages: "en",
+        format: "json",
+        origin: "*",
+        props: "claims",
+      });
+      const res = await fetch(`${WIKIDATA_API}?${params}`);
+      if (res.ok) {
+        const data = await res.json() as { entities?: Record<string, WikidataEntity> };
+        const mbid = musicBrainzArtistIdFromClaims(
+          data.entities?.[personId]?.claims as Record<string, ClaimSnakValue[] | undefined>,
+        );
+        if (mbid) {
+          const have = new Set([...existingIds, ...roles.map((r) => r.qid)]);
+          extra = await fetchMusicBrainzAlbums(mbid, {
+            existingIds: have,
+            limit: 30,
+            offset: Math.max(0, existingIds.size),
+          });
+        }
+      }
+    } catch {
+      /* ignore MB failures */
+    }
+  }
+
+  const all = [...roles, ...extra];
   const nodes: import("./types.ts").GraphNode[] = [];
   const edges: import("./types.ts").GraphEdge[] = [];
-  for (const r of roles) {
+  for (const r of all) {
     nodes.push({
       id: r.qid,
       label: r.workLabel,
       type: r.type,
       kind: "entity",
+      externalUrl: r.externalUrl,
+      description: r.externalUrl ? "MusicBrainz release group" : undefined,
     });
     edges.push({
       id: `${personId}-${r.pid}-${r.qid}`,
@@ -795,6 +1062,8 @@ async function expandNode(
   edges: import("./types.ts").GraphEdge[],
 ): Promise<void> {
   if (depth < 0) return;
+  // Synthetic / external nodes (e.g. MusicBrainz) are leaves
+  if (!/^Q\d+$/i.test(id)) return;
 
   const params = new URLSearchParams({
     action: "wbgetentities",
@@ -842,10 +1111,18 @@ async function expandNode(
 
   // Person filmography / discography via reverse claims on works
   if (type === "person") {
-    const roles = await fetchCreativeRoles(id, {
-      existingIds: new Set([...visited, ...nodes.keys()]),
-    });
-    for (const r of roles) {
+    const already = new Set([...visited, ...nodes.keys()]);
+    const roles = await fetchCreativeRoles(id, { existingIds: already });
+    const mbid = musicBrainzArtistIdFromClaims(
+      entity.claims as Record<string, ClaimSnakValue[] | undefined>,
+    );
+    const mbAlbums = mbid
+      ? await fetchMusicBrainzAlbums(mbid, {
+          existingIds: new Set([...already, ...roles.map((r) => r.qid)]),
+          limit: 40,
+        })
+      : [];
+    for (const r of [...roles, ...mbAlbums]) {
       neighbors.push({ qid: r.qid, pid: r.pid, edgeLabel: r.label });
       if (!nodes.has(r.qid)) {
         nodes.set(r.qid, {
@@ -853,6 +1130,8 @@ async function expandNode(
           label: r.workLabel,
           type: r.type,
           kind: "entity",
+          externalUrl: r.externalUrl,
+          description: r.externalUrl ? "MusicBrainz release group" : undefined,
         });
       }
     }
@@ -860,7 +1139,9 @@ async function expandNode(
 
   if (neighbors.length === 0) return;
 
-  const newQids = neighbors.map((n) => n.qid).filter((q) => !visited.has(q) && !nodes.has(q));
+  const newQids = neighbors
+    .map((n) => n.qid)
+    .filter((q) => /^Q\d+$/i.test(q) && !visited.has(q) && !nodes.has(q));
   const batchLabels = newQids.length > 0 ? await resolveLabels(newQids) : {};
   const batchTypes = newQids.length > 0 ? await fetchEntityTypes(newQids) : {};
 
@@ -883,7 +1164,7 @@ async function expandNode(
         propertyId: pid,
       });
     }
-    if (depth > 1 && !visited.has(qid)) {
+    if (depth > 1 && /^Q\d+$/i.test(qid) && !visited.has(qid)) {
       visited.add(qid);
       await expandNode(qid, depth - 1, visited, nodes, edges);
     }
@@ -1248,10 +1529,11 @@ async function fetchWikipediaThumbnail(title: string): Promise<string | undefine
 /** Complete in-app Wikipedia dossier: full HTML + text sections + gallery + extra languages */
 async function fetchWikipediaArticle(title: string): Promise<WikipediaArticle | undefined> {
   try {
-    const [parsed, textArticle, otherLanguages] = await Promise.all([
+    const [parsed, textArticle, otherLanguages, revisedAt] = await Promise.all([
       fetchWikipediaParsedHtml(title),
       fetchWikipediaPlainExtract(title),
       fetchOtherLanguageExtracts(title),
+      fetchWikipediaRevisedAt(title),
     ]);
 
     if (!parsed && !textArticle) {
@@ -1263,6 +1545,7 @@ async function fetchWikipediaArticle(title: string): Promise<WikipediaArticle | 
         lead: short,
         sections: [],
         otherLanguages,
+        revisedAt,
       };
     }
 
@@ -1275,16 +1558,71 @@ async function fetchWikipediaArticle(title: string): Promise<WikipediaArticle | 
       pickPortraitFromGallery(parsed?.gallery) ||
       parsed?.thumbnail;
 
+    let html = parsed?.html;
+    let toc: WikiTocItem[] | undefined;
+    let mainArticleHints: Array<{ parentSection: string; parentSectionId: string; title: string }> = [];
+
+    if (html) {
+      const enhanced = enhanceWikiHtmlWithAnchors(html);
+      html = enhanced.html;
+      toc = enhanced.toc.length ? enhanced.toc : undefined;
+      mainArticleHints = enhanced.mainArticles;
+    } else if (sections.length) {
+      toc = tocFromPlainSections(sections);
+    }
+
+    // Prefer hatnotes under Discography / Filmography / Awards (+ any main-article links found)
+    const prioritized = prioritizeMainArticleHints(mainArticleHints, sections);
+    const mainArticles = prioritized.length
+      ? await fetchMainArticles(prioritized)
+      : undefined;
+
+    // Attach mainArticleTitle onto matching TOC nodes
+    if (toc && mainArticles?.length) {
+      for (const art of mainArticles) {
+        annotateTocMainArticle(toc, art.parentSectionId, art.title);
+      }
+    }
+
     return {
       title: parsed?.title || textArticle?.title || title,
       url: wikiUrl(title),
       lead,
       sections, // keep ALL sections including references
-      html: parsed?.html,
+      html,
       thumbnail: portrait,
       gallery: parsed?.gallery ?? [],
       otherLanguages,
+      revisedAt,
+      infobox: parsed?.infobox,
+      toc,
+      mainArticles,
     };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Cheap MediaWiki revision timestamp for cache invalidation. */
+export async function fetchWikipediaRevisedAt(title: string): Promise<string | undefined> {
+  try {
+    const params = new URLSearchParams({
+      action: "query",
+      format: "json",
+      origin: "*",
+      prop: "revisions",
+      rvprop: "timestamp",
+      rvlimit: "1",
+      titles: title,
+      redirects: "1",
+    });
+    const res = await fetch(`${WIKIPEDIA_API}?${params}`);
+    if (!res.ok) return undefined;
+    const data = await res.json() as {
+      query?: { pages?: Record<string, { revisions?: Array<{ timestamp?: string }> }> };
+    };
+    const page = Object.values(data.query?.pages ?? {})[0];
+    return page?.revisions?.[0]?.timestamp;
   } catch {
     return undefined;
   }
@@ -1299,6 +1637,7 @@ async function fetchWikipediaParsedHtml(title: string): Promise<{
   html: string;
   thumbnail?: string;
   gallery: Array<{ filename: string; url: string; thumb: string }>;
+  infobox?: Array<{ label: string; value: string; valueHtml?: string }>;
 } | undefined> {
   const params = new URLSearchParams({
     action: "parse",
@@ -1323,6 +1662,7 @@ async function fetchWikipediaParsedHtml(title: string): Promise<{
   if (data.error || !data.parse?.text?.["*"]) return undefined;
 
   const rawHtml = data.parse.text["*"];
+  const infobox = extractWikipediaInfobox(rawHtml);
   const html = sanitizeWikiHtml(rawHtml);
   const imageNames = (data.parse.images ?? []).filter((name) => isUsableMediaFilename(name));
 
@@ -1337,7 +1677,139 @@ async function fetchWikipediaParsedHtml(title: string): Promise<{
     html,
     thumbnail: pickPortraitFromGallery(gallery),
     gallery,
+    infobox: infobox.length ? infobox : undefined,
   };
+}
+
+/** Parse Wikipedia right-rail infobox into labeled rows (Born, Died, Occupations, …). */
+function extractWikipediaInfobox(
+  html: string,
+): Array<{ kind?: "row" | "section"; label: string; value: string; valueHtml?: string }> {
+  const start = html.search(/<table[^>]*class="[^"]*\binfobox\b/i);
+  if (start < 0) return [];
+  // Balance nested <table> (musical career / module templates nest inside)
+  let depth = 0;
+  let end = -1;
+  const tagRe = /<\/?table\b[^>]*>/gi;
+  tagRe.lastIndex = start;
+  let tag: RegExpExecArray | null;
+  while ((tag = tagRe.exec(html)) !== null) {
+    if (tag[0].startsWith("</")) {
+      depth -= 1;
+      if (depth === 0) {
+        end = tag.index + tag[0].length;
+        break;
+      }
+    } else {
+      depth += 1;
+    }
+  }
+  if (end < 0) return [];
+  const table = html.slice(start, end);
+  const rows: Array<{ kind?: "row" | "section"; label: string; value: string; valueHtml?: string }> = [];
+
+  const rowRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = rowRe.exec(table)) !== null) {
+    const rowHtml = m[1];
+
+    // Section banners: "Musical career", etc.
+    const section =
+      rowHtml.match(
+        /<(?:th|td)[^>]*(?:infobox-header|infobox-full-data)[^>]*>([\s\S]*?)<\/(?:th|td)>/i,
+      ) ??
+      rowHtml.match(/<th[^>]*colspan\s*=\s*["']?2["']?[^>]*>([\s\S]*?)<\/th>/i);
+    const th = rowHtml.match(/<th[^>]*scope=["']row["'][^>]*>([\s\S]*?)<\/th>/i)
+      ?? rowHtml.match(/<th[^>]*class="[^"]*infobox-label[^"]*"[^>]*>([\s\S]*?)<\/th>/i)
+      ?? rowHtml.match(/<th[^>]*>([\s\S]*?)<\/th>/i);
+    const td = rowHtml.match(/<td[^>]*class="[^"]*infobox-data[^"]*"[^>]*>([\s\S]*?)<\/td>/i)
+      ?? rowHtml.match(/<td[^>]*>([\s\S]*?)<\/td>/i);
+
+    if (section && !td) {
+      const label = decodeHtmlEntities(stripHtmlToText(section[1]))
+        .replace(/\[\d+\]/g, "")
+        .trim();
+      if (
+        label &&
+        label.length < 60 &&
+        !/^(musical artist|signature|module|hide)$/i.test(label)
+      ) {
+        rows.push({ kind: "section", label, value: "" });
+      }
+      continue;
+    }
+
+    // Full-data row that is only a bold section title (no label th)
+    if (!th && td && /infobox-full-data/i.test(rowHtml)) {
+      const label = decodeHtmlEntities(stripHtmlToText(td[1]))
+        .replace(/\[\d+\]/g, "")
+        .trim();
+      if (
+        label &&
+        label.length < 60 &&
+        !/^(musical artist|signature|module|hide)$/i.test(label)
+      ) {
+        rows.push({ kind: "section", label, value: "" });
+      }
+      continue;
+    }
+
+    if (!th || !td) continue;
+    const label = decodeHtmlEntities(stripHtmlToText(th[1]))
+      .replace(/\[\d+\]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/:$/, "");
+    let valueHtml = td[1]
+      .replace(/<link[^>]*>/gi, "")
+      .replace(/<style[\s\S]*?<\/style>/gi, "")
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/<sup[^>]*>[\s\S]*?<\/sup>/gi, "")
+      .replace(/<div[^>]*class="[^"]*marriage-display-inline[^"]*"[^>]*>/gi, "\n")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/li>/gi, "\n")
+      .replace(/<li[^>]*>/gi, "")
+      .trim();
+    // Absolute wiki links for in-app display
+    valueHtml = valueHtml
+      .replace(/href="\/wiki\//gi, 'href="https://en.wikipedia.org/wiki/')
+      .replace(/href="\/w\//gi, 'href="https://en.wikipedia.org/w/');
+    const value = decodeHtmlEntities(
+      valueHtml
+        .replace(/<[^>]+>/g, " ")
+        .replace(/[^\S\n]+/g, " ")
+        .replace(/ *\n */g, "\n")
+        .replace(/\n{2,}/g, "\n")
+        .trim(),
+    )
+      .replace(/\[\d+\]/g, "")
+      .replace(/\u200b/g, "")
+      .trim();
+    if (!label || !value || label.length > 60 || value.length < 1) continue;
+    if (/^(image|signature|module)$/i.test(label)) continue;
+    if (/^https?:\/\//i.test(value) && value.length < 8) continue;
+    rows.push({ kind: "row", label, value, valueHtml });
+    if (rows.length >= 28) break;
+  }
+  return rows;
+}
+
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&#160;/g, " ")
+    .replace(/&#x0*a0;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&#91;/g, "[")
+    .replace(/&#93;/g, "]")
+    .replace(/&#(\d+);/g, (_, n) => {
+      const code = Number(n);
+      return Number.isFinite(code) ? String.fromCharCode(code) : _;
+    });
 }
 
 async function fetchWikipediaPlainExtract(title: string): Promise<{
@@ -1476,6 +1948,278 @@ function sanitizeWikiHtml(html: string): string {
   return out;
 }
 
+function wikiSectionSlug(title: string): string {
+  const base = title
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/['']/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
+  return `wiki-sec-${base || "section"}`;
+}
+
+const MAIN_ARTICLE_SECTION_RE =
+  /^(discography|filmography|awards|works|bibliography|publications|songs|albums)$/i;
+
+/**
+ * Ensure headings have stable scroll ids and extract TOC + Main article hatnotes.
+ */
+function enhanceWikiHtmlWithAnchors(html: string): {
+  html: string;
+  toc: WikiTocItem[];
+  mainArticles: Array<{ parentSection: string; parentSectionId: string; title: string }>;
+} {
+  const flat: Array<{ id: string; title: string; level: 2 | 3 | 4 }> = [];
+  const mainArticles: Array<{ parentSection: string; parentSectionId: string; title: string }> = [];
+  let currentSection = { title: "Lead", id: "wiki-sec-lead" };
+  const usedIds = new Set<string>();
+
+  const uniqueId = (raw: string) => {
+    let id = raw;
+    let n = 2;
+    while (usedIds.has(id)) {
+      id = `${raw}-${n++}`;
+    }
+    usedIds.add(id);
+    return id;
+  };
+
+  // Rewrite h2–h4 (and mw-headline spans) with data-wiki-sec anchors
+  let out = html.replace(
+    /<(h[2-4])([^>]*)>([\s\S]*?)<\/\1>/gi,
+    (full, tag: string, attrs: string, inner: string) => {
+      const level = Number(tag[1]) as 2 | 3 | 4;
+      const headline =
+        inner.match(/class="[^"]*mw-headline[^"]*"[^>]*>([\s\S]*?)<\/span>/i)?.[1] ??
+        inner;
+      const title = stripHtmlToText(headline)
+        .replace(/\[\s*edit\s*\]/gi, "")
+        .trim();
+      if (!title || title.length > 120) return full;
+
+      const existingId =
+        attrs.match(/\bid=["']([^"']+)["']/i)?.[1] ||
+        inner.match(/class="[^"]*mw-headline[^"]*"[^>]*\bid=["']([^"']+)["']/i)?.[1];
+      const id = uniqueId(
+        existingId?.startsWith("wiki-sec-")
+          ? existingId
+          : wikiSectionSlug(existingId?.replace(/_/g, " ") || title),
+      );
+
+      flat.push({ id, title, level });
+      currentSection = { title, id };
+
+      let nextAttrs = attrs;
+      if (/\bid=/i.test(nextAttrs)) {
+        nextAttrs = nextAttrs.replace(/\bid=["'][^"']*["']/i, `id="${id}"`);
+      } else {
+        nextAttrs += ` id="${id}"`;
+      }
+      nextAttrs += ` data-wiki-sec="${id}"`;
+      return `<${tag}${nextAttrs}>${inner}</${tag}>`;
+    },
+  );
+
+  // Walk hatnotes in document order relative to headings via sequential scan
+  const pieceRe =
+    /<(h[2-4])\b[^>]*\bid=["']([^"']+)["'][^>]*>[\s\S]*?<\/\1>|<div[^>]*class="[^"]*\bhatnote\b[^"]*"[^>]*>([\s\S]*?)<\/div>/gi;
+  let current = { title: "Lead", id: "wiki-sec-lead" };
+  let pm: RegExpExecArray | null;
+  while ((pm = pieceRe.exec(out)) !== null) {
+    if (pm[1] && pm[2]) {
+      const found = flat.find((f) => f.id === pm![2]);
+      if (found) current = { title: found.title, id: found.id };
+      continue;
+    }
+    const hatHtml = pm[3] ?? "";
+    const text = stripHtmlToText(hatHtml);
+    if (!/main\s+articles?:/i.test(text) && !/see\s+also:/i.test(text) && !/^for\s+/i.test(text)) {
+      // Still accept classic "Main article:" only
+      if (!/main\s+article/i.test(text)) continue;
+    }
+    if (!/main\s+article/i.test(text)) continue;
+
+    const titles: string[] = [];
+    const linkRe = /data-wiki-title="([^"]+)"|href="#wiki:([^"]+)"/gi;
+    let lm: RegExpExecArray | null;
+    while ((lm = linkRe.exec(hatHtml)) !== null) {
+      const t = (lm[1] || lm[2] || "").trim();
+      if (t) titles.push(t);
+    }
+    // Fallback: plain /wiki/ before sanitize rewrite (shouldn't happen post-sanitize)
+    if (!titles.length) {
+      const raw = hatHtml.match(/\/wiki\/([^"#<\s]+)/);
+      if (raw?.[1]) titles.push(decodeURIComponent(raw[1].replace(/_/g, " ")));
+    }
+    for (const t of titles.slice(0, 2)) {
+      if (mainArticles.some((a) => a.title === t && a.parentSectionId === current.id)) continue;
+      mainArticles.push({
+        parentSection: current.title,
+        parentSectionId: current.id,
+        title: t,
+      });
+    }
+  }
+
+  // Also scan plain sections for "Main article:" lines if no hatnotes found
+  return {
+    html: out,
+    toc: nestTocItems(flat),
+    mainArticles,
+  };
+}
+
+function nestTocItems(
+  flat: Array<{ id: string; title: string; level: 2 | 3 | 4 }>,
+): WikiTocItem[] {
+  const roots: WikiTocItem[] = [];
+  let lastL2: WikiTocItem | null = null;
+  let lastL3: WikiTocItem | null = null;
+
+  for (const item of flat) {
+    const node: WikiTocItem = { id: item.id, title: item.title, level: item.level };
+    if (item.level === 2) {
+      roots.push(node);
+      lastL2 = node;
+      lastL3 = null;
+    } else if (item.level === 3 && lastL2) {
+      lastL2.children = lastL2.children ?? [];
+      lastL2.children.push(node);
+      lastL3 = node;
+    } else if (item.level === 4 && lastL3) {
+      lastL3.children = lastL3.children ?? [];
+      lastL3.children.push(node);
+    } else if (item.level === 4 && lastL2) {
+      lastL2.children = lastL2.children ?? [];
+      lastL2.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+  return roots;
+}
+
+function tocFromPlainSections(sections: WikiSection[]): WikiTocItem[] {
+  const flat = sections
+    .filter((s) => s.level >= 2 && s.level <= 4)
+    .map((s) => ({
+      id: wikiSectionSlug(s.title),
+      title: s.title,
+      level: Math.min(4, Math.max(2, s.level)) as 2 | 3 | 4,
+    }));
+  return nestTocItems(flat);
+}
+
+function annotateTocMainArticle(toc: WikiTocItem[], sectionId: string, title: string) {
+  for (const item of toc) {
+    if (item.id === sectionId) {
+      item.mainArticleTitle = title;
+      return;
+    }
+    if (item.children) annotateTocMainArticle(item.children, sectionId, title);
+  }
+}
+
+function prioritizeMainArticleHints(
+  hints: Array<{ parentSection: string; parentSectionId: string; title: string }>,
+  sections: WikiSection[],
+): Array<{ parentSection: string; parentSectionId: string; title: string }> {
+  const fromHints = [...hints];
+
+  // Fallback: plain-text sections that look like lists with "Main article:" in content
+  if (!fromHints.length) {
+    for (const s of sections) {
+      if (!MAIN_ARTICLE_SECTION_RE.test(s.title) && !/discography|filmography|awards/i.test(s.title)) {
+        continue;
+      }
+      const m = s.content.match(/Main article:\s*(.+)/i);
+      if (!m) continue;
+      const title = m[1].split("\n")[0]?.replace(/\[\[|\]\]/g, "").trim();
+      if (!title) continue;
+      fromHints.push({
+        parentSection: s.title,
+        parentSectionId: wikiSectionSlug(s.title),
+        title,
+      });
+    }
+  }
+
+  const preferred = fromHints.filter((h) =>
+    MAIN_ARTICLE_SECTION_RE.test(h.parentSection) ||
+    /discography|filmography|award|song|works/i.test(h.parentSection) ||
+    /discography|filmography|award|song|list of/i.test(h.title),
+  );
+  const pool = preferred.length ? preferred : fromHints;
+  const seen = new Set<string>();
+  const out: typeof pool = [];
+  for (const h of pool) {
+    const key = h.title.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(h);
+    if (out.length >= 5) break;
+  }
+  return out;
+}
+
+async function fetchMainArticles(
+  hints: Array<{ parentSection: string; parentSectionId: string; title: string }>,
+): Promise<WikiMainArticle[]> {
+  const results = await Promise.all(
+    hints.map(async (h) => {
+      try {
+        const [text, parsed, revisedAt] = await Promise.all([
+          fetchWikipediaPlainExtract(h.title),
+          fetchWikipediaParsedHtml(h.title),
+          fetchWikipediaRevisedAt(h.title),
+        ]);
+        const lead =
+          (text?.lead || "").slice(0, 2000) ||
+          stripHtmlToText(parsed?.html ?? "").slice(0, 1200);
+        if (!lead && !text?.sections?.length && !parsed?.html) return null;
+        // Keep a usable digest — skip pure References
+        const sections = (text?.sections ?? [])
+          .filter((s) => !/^(references|notes|external links|see also|further reading|sources)$/i.test(s.title))
+          .slice(0, 16)
+          .map((s) => ({
+            ...s,
+            content: s.content.slice(0, 1800),
+          }));
+        const html = parsed?.html
+          ? trimMainArticleHtml(parsed.html)
+          : undefined;
+        return {
+          title: parsed?.title || text?.title || h.title,
+          url: wikiUrl(h.title),
+          parentSection: h.parentSection,
+          parentSectionId: h.parentSectionId,
+          lead,
+          sections,
+          html,
+          revisedAt,
+        } satisfies WikiMainArticle;
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return results.filter((r): r is NonNullable<typeof r> => r != null);
+}
+
+/** Drop trailing reference chrome from list / awards pages; keep the body. */
+function trimMainArticleHtml(html: string): string {
+  let out = html;
+  // Cut from common end-matter headings onward
+  out = out.replace(
+    /<h[2-4]\b[^>]*>[\s\S]*?\b(References|Notes|External links|See also|Further reading|Sources|Bibliography|Navigation)\b[\s\S]*$/i,
+    "",
+  );
+  // Soft size guard — keep the page usable in the entity view
+  if (out.length > 350_000) out = out.slice(0, 350_000);
+  return out.trim();
+}
+
 function stripHtmlToText(html: string): string {
   return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
@@ -1551,8 +2295,17 @@ function getCommonsThumbUrl(filename: string, width: number): string {
 }
 
 /** Skip icons, audio, and decorative wiki chrome — keep real photos/illustrations */
-function isUsableMediaFilename(filename: string): boolean {
-  if (!/\.(jpe?g|png|gif|webp)$/i.test(filename)) return false;
+function isUsableMediaFilename(
+  filename: string,
+  opts?: { allowSvg?: boolean },
+): boolean {
+  // Autographs / logos are commonly SVG on Commons (e.g. P109 signatures)
+  const allowSvg =
+    opts?.allowSvg === true || /signatur|autograph/i.test(filename);
+  const extOk = allowSvg
+    ? /\.(jpe?g|png|gif|webp|svg)$/i.test(filename)
+    : /\.(jpe?g|png|gif|webp)$/i.test(filename);
+  if (!extOk) return false;
   return !/semi-protection|ambox|edit|icon|logo_of_wikimedia|question_book|padlock|symbol_|commons-logo|wiki_letter|red_pencil|increase2|decrease2|sound-icon|speaker_icon|nuvola|crystal_clear|ogg|opus/i.test(
     filename
   );

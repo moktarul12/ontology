@@ -14,19 +14,29 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import {
-  Network, GitBranch, ArrowLeft, ChevronRight, ChevronLeft,
+  Network, ArrowLeft, ChevronRight, ChevronLeft, GitBranch, Sparkles,
   User, MapPin, Building2, Lightbulb, Calendar, HelpCircle,
   BookOpen, Copy, Check, Share2, ExternalLink,
-  Image as ImageIcon, Link2, Clock, Sparkles, Film, Languages,
+  Image as ImageIcon, Link2, Clock, Film, Languages,
   Briefcase, Heart, Tag, GraduationCap, Landmark, Star, FlaskConical,
   List, Quote, ShieldCheck, Users, Globe2, Factory, Award, Layers,
-  TrendingUp, DollarSign, BarChart3, Package,
+  TrendingUp, DollarSign, BarChart3,
 } from "lucide-react";
 import SearchBox from "@/components/search/SearchBox.tsx";
 import { cn } from "@/lib/utils.ts";
 import type { EntityType, EntityFact, EntitySummary, WikipediaArticle } from "@/lib/wikidata/types.ts";
-import { useMemo, useState, useCallback, useEffect, type MouseEvent, type ComponentType, type ReactNode } from "react";
+import { useMemo, useState, useCallback, useEffect, type MouseEvent, type ComponentType } from "react";
 import { toast } from "sonner";
+import TimelinePanel from "@/pages/entity/_components/TimelinePanel.tsx";
+import {
+  OverviewCapsuleBlock,
+  FactsBriefBlock,
+  maybeFactsEnrichSection,
+} from "@/pages/entity/_components/SectionEnrichment.tsx";
+import { WikiTocNav } from "@/pages/entity/_components/WikiTocNav.tsx";
+import { WikiArticleWithMainEmbeds } from "@/pages/entity/_components/MainArticlePanels.tsx";
+import { EntityHero } from "@/pages/entity/_components/EntityHero.tsx";
+import { ExploreAtlasPills } from "@/components/ExploreAtlas.tsx";
 
 const TYPE_ICONS: Record<EntityType, ComponentType<{ className?: string }>> = {
   person: User,
@@ -38,25 +48,6 @@ const TYPE_ICONS: Record<EntityType, ComponentType<{ className?: string }>> = {
   unknown: HelpCircle,
 };
 
-const TYPE_BREADCRUMB: Record<EntityType, string> = {
-  person: "People",
-  place: "Places",
-  organization: "Organizations",
-  concept: "Concepts",
-  event: "Events",
-  work: "Works",
-  unknown: "Entities",
-};
-
-const GLANCE_IDS: Record<EntityType, string[]> = {
-  person: ["P735", "P734", "P569", "P570", "P19", "P20", "P27", "P106", "P69", "P166", "P140", "P39", "P108", "P800", "P1412"],
-  place: ["P17", "P131", "P1082", "P36", "P625", "P37", "P6", "P421", "P571", "P138"],
-  organization: ["P571", "P112", "P159", "P17", "P452", "P169", "P1128", "P1056", "P749", "P127", "P1454", "P856", "P414", "P2403", "P2139"],
-  event: ["P585", "P580", "P582", "P276", "P17", "P710", "P664", "P1542"],
-  concept: ["P31", "P279", "P361", "P495", "P527", "P138"],
-  work: ["P577", "P50", "P57", "P136", "P495", "P161", "P170", "P86", "P123"],
-  unknown: ["P31", "P17", "P571", "P131", "P276"],
-};
 
 type QuickFact = {
   icon: ComponentType<{ className?: string }>;
@@ -64,8 +55,6 @@ type QuickFact = {
   lines: Array<{ text: string; id?: string }>;
   tone?: "cyan" | "violet" | "amber" | "emerald" | "rose";
 };
-
-type QuickMetric = { label: string; value: string };
 
 const SECTION_ICONS: Record<string, ComponentType<{ className?: string }>> = {
   overview: BookOpen,
@@ -286,40 +275,6 @@ function buildQuickFacts(entity: EntitySummary): QuickFact[] {
   return items.slice(0, 7);
 }
 
-function buildQuickMetrics(entity: EntitySummary): QuickMetric[] {
-  const metrics: QuickMetric[] = [];
-  const yearFrom = (pid: string) => {
-    const raw = factOf(entity, pid)?.values[0]?.label ?? "";
-    const m = raw.match(/\b(\d{4})\b/);
-    return m?.[1];
-  };
-
-  if (entity.type === "organization") {
-    const y = yearFrom("P571");
-    if (y) metrics.push({ label: "Since", value: y });
-    const emp = factOf(entity, "P1128")?.values[0]?.label;
-    if (emp) metrics.push({ label: "Staff", value: emp.replace(/\s+/g, " ").slice(0, 12) });
-    const industry = factOf(entity, "P452")?.values.length;
-    if (industry) metrics.push({ label: "Industries", value: String(industry) });
-  } else if (entity.type === "person") {
-    if (entity.lifespan) metrics.push({ label: "Lifespan", value: entity.lifespan.replace(/\s/g, "") });
-    const awards = factOf(entity, "P166")?.values.length;
-    if (awards) metrics.push({ label: "Awards", value: String(awards) });
-    const works = factOf(entity, "P800")?.values.length;
-    if (works) metrics.push({ label: "Works", value: String(works) });
-  } else if (entity.type === "place") {
-    const pop = factOf(entity, "P1082")?.values[0]?.label;
-    if (pop) metrics.push({ label: "Pop.", value: pop.split(" ")[0] });
-    const y = yearFrom("P571");
-    if (y) metrics.push({ label: "Since", value: y });
-  }
-
-  if (metrics.length < 3) metrics.push({ label: "Facts", value: String(entity.facts.length) });
-  if (metrics.length < 3 && entity.related.length) metrics.push({ label: "Links", value: String(entity.related.length) });
-  if (metrics.length < 3 && entity.images.length) metrics.push({ label: "Media", value: String(entity.images.length) });
-  return metrics.slice(0, 3);
-}
-
 type HeroKpi = {
   icon: ComponentType<{ className?: string }>;
   label: string;
@@ -445,7 +400,7 @@ export default function EntityPage() {
   const qid = parsed.qid ?? slugQid ?? undefined;
 
   const { data: entity, isLoading, error } = useQuery({
-    queryKey: ["entity", qid, "v10-biz-hero"],
+    queryKey: ["entity", qid, "v15-hero-main-full"],
     queryFn: () => fetchEntitySummary(qid!),
     enabled: Boolean(qid),
     staleTime: 1000 * 60 * 30,
@@ -484,8 +439,9 @@ export default function EntityPage() {
   const leadSnippet = useMemo(() => {
     if (!entity) return "";
     const raw = entity.wikipedia?.lead || entity.wikipediaSummary || entity.description || "";
-    const cut = raw.split(/(?<=\.)\s+/).slice(0, 3).join(" ");
-    return cut.length > 360 ? `${cut.slice(0, 340).trim()}…` : cut;
+    // ~4-sentence AI-style summary for the hero
+    const sentences = raw.split(/(?<=\.)\s+/).filter(Boolean);
+    return sentences.slice(0, 4).join(" ").trim();
   }, [entity]);
 
   const tags = useMemo(() => {
@@ -524,24 +480,8 @@ export default function EntityPage() {
   }, [entity]);
 
   const quickFacts = useMemo(() => (entity ? buildQuickFacts(entity) : []), [entity]);
-  const quickMetrics = useMemo(() => (entity ? buildQuickMetrics(entity) : []), [entity]);
+  const wikiInfobox = useMemo(() => entity?.wikipedia?.infobox ?? [], [entity]);
   const marketing = useMemo(() => (entity ? buildHeroMarketing(entity) : null), [entity]);
-
-  const glanceFacts = useMemo(() => {
-    if (!entity) return [] as EntityFact[];
-    const ids = GLANCE_IDS[entity.type] ?? GLANCE_IDS.unknown;
-    const picked = ids
-      .map((pid) => entity.facts.find((f) => f.propertyId === pid))
-      .filter((f): f is EntityFact => Boolean(f));
-    if (picked.length >= 6) return picked.slice(0, 12);
-    const extra = entity.facts.filter(
-      (f) =>
-        !IMAGE_PROPERTY_IDS.has(f.propertyId) &&
-        !IDENTIFIER_PROPERTY_IDS.has(f.propertyId) &&
-        !picked.some((p) => p.propertyId === f.propertyId)
-    );
-    return [...picked, ...extra].slice(0, 12);
-  }, [entity]);
 
   const categories = useMemo((): CategoryTab[] => {
     if (!entity) return [];
@@ -568,9 +508,13 @@ export default function EntityPage() {
       tabs.push({ id: sid, title: SECTION_TITLES[sid], count: facts.length, kind: "facts", facts });
     }
 
-    if (entity.timeline.length) {
-      tabs.push({ id: "timeline", title: "Timeline", count: entity.timeline.length, kind: "timeline" });
-    }
+    // Always offer Timeline — AI enrichment / seed milestones live here
+    tabs.push({
+      id: "timeline",
+      title: "AI Timeline",
+      count: entity.timeline.length || undefined,
+      kind: "timeline",
+    });
     if (entity.images.length) {
       tabs.push({ id: "media", title: "Related Images", count: entity.images.length, kind: "media" });
     }
@@ -653,6 +597,9 @@ export default function EntityPage() {
 
   const wiki = entity?.wikipedia;
   const breadcrumbMid = entity?.instanceOf[0]?.label || occupations[0] || cfg?.label;
+  const signatureUrl =
+    entity?.images.find((i) => i.propertyId === "P109")?.url ||
+    entity?.images.find((i) => /signatur|autograph/i.test(i.filename))?.url;
   const portraitUrl =
     (entity?.type === "organization"
       ? entity.images.find((i) => i.propertyId === "P154")?.url ||
@@ -660,7 +607,12 @@ export default function EntityPage() {
       : undefined) ||
     entity?.thumbnail ||
     entity?.images.find((i) => i.propertyId === "P18")?.url ||
-    entity?.images.find((i) => /\.(jpe?g|png|webp|svg)$/i.test(i.filename))?.url;
+    entity?.images.find(
+      (i) =>
+        i.propertyId !== "P109" &&
+        !/signatur|autograph/i.test(i.filename) &&
+        /\.(jpe?g|png|webp)$/i.test(i.filename),
+    )?.url;
 
   return (
     <div className="min-h-screen bg-[#0b1220]">
@@ -685,6 +637,30 @@ export default function EntityPage() {
           <div className="flex-1 min-w-0">
             <SearchBox size="md" />
           </div>
+          {qid && entity && (
+            <div className="hidden sm:flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => navigate(`/graph/${qid}`)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[12px] font-medium text-slate-300 hover:bg-white/[0.08] hover:text-white transition-colors cursor-pointer"
+                title="Knowledge graph"
+              >
+                <Network className="size-3.5 text-cyan-300" />
+                <span className="hidden md:inline">Graph</span>
+              </button>
+              {entity.type === "person" && (
+                <button
+                  type="button"
+                  onClick={() => navigate(`/family-tree/${qid}`)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1.5 text-[12px] font-medium text-slate-300 hover:bg-white/[0.08] hover:text-white transition-colors cursor-pointer"
+                  title="Family tree"
+                >
+                  <GitBranch className="size-3.5 text-cyan-300" />
+                  <span className="hidden md:inline">Family</span>
+                </button>
+              )}
+            </div>
+          )}
           <button
             onClick={handleShare}
             className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer"
@@ -728,251 +704,21 @@ export default function EntityPage() {
 
       {entity && cfg && Icon && (
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-          {/* ═══════════════ HERO — brand / marketing / business ═══════════════ */}
-          <section className="relative overflow-hidden border-b border-white/10">
-            <div
-              className="absolute inset-0"
-              style={{
-                background: `
-                  radial-gradient(ellipse 50% 80% at 0% 0%, ${cfg.color}28 0%, transparent 50%),
-                  radial-gradient(ellipse 45% 60% at 100% 100%, #22d3ee18 0%, transparent 45%),
-                  linear-gradient(165deg, #0a1628 0%, #0f1c33 42%, #0c1526 100%)
-                `,
-              }}
-            />
-            <div
-              className="pointer-events-none absolute inset-0 opacity-[0.07]"
-              style={{
-                backgroundImage: "linear-gradient(rgba(148,163,184,0.35) 1px, transparent 1px), linear-gradient(90deg, rgba(148,163,184,0.35) 1px, transparent 1px)",
-                backgroundSize: "48px 48px",
-              }}
-            />
-
-            <div className="relative mx-auto max-w-[1600px] px-5 py-7 md:py-10 space-y-5 md:space-y-6">
-              <div className="flex flex-col lg:flex-row gap-6 lg:gap-8 items-center lg:items-start">
-                <div className="relative shrink-0">
-                  {portraitUrl ? (
-                    <img
-                      src={portraitUrl}
-                      alt={entity.label}
-                      referrerPolicy="no-referrer"
-                      className={cn(
-                        "rounded-2xl border border-white/15 shadow-[0_24px_50px_-18px_rgba(0,0,0,0.7)] bg-slate-800 object-cover",
-                        entity.type === "organization"
-                          ? "size-28 sm:size-32 object-contain p-3 bg-white/95"
-                          : "size-36 sm:size-40 lg:size-44 object-top"
-                      )}
-                    />
-                  ) : (
-                    <div className={cn("size-32 sm:size-36 rounded-2xl border border-dashed flex items-center justify-center", cfg.borderClass, cfg.bgClass)}>
-                      <Icon className={cn("size-12 opacity-40", cfg.textClass)} />
-                    </div>
-                  )}
-                  {marketing?.stock && (
-                    <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-emerald-400/30 bg-emerald-500/15 px-2.5 py-0.5 text-[10px] font-mono font-semibold text-emerald-200 backdrop-blur-sm">
-                      {marketing.stock}
-                    </div>
-                  )}
-                </div>
-
-                <div className="min-w-0 flex-1 text-center lg:text-left">
-                  <nav className="mb-2 flex flex-wrap items-center justify-center lg:justify-start gap-1.5 text-[11px] text-slate-400">
-                    <button onClick={() => navigate("/")} className="hover:text-cyan-300 cursor-pointer">
-                      {TYPE_BREADCRUMB[entity.type]}
-                    </button>
-                    <ChevronRight className="size-3 opacity-50" />
-                    {breadcrumbMid && (
-                      <>
-                        <span className="text-slate-300">{breadcrumbMid}</span>
-                        <ChevronRight className="size-3 opacity-50" />
-                      </>
-                    )}
-                    <span className="text-white/85 font-medium truncate max-w-[220px]">{entity.label}</span>
-                  </nav>
-
-                  <div className="flex flex-wrap items-center justify-center lg:justify-start gap-2.5">
-                    <h1 className="font-serif text-[2rem] sm:text-4xl xl:text-[2.7rem] font-bold tracking-tight text-white leading-[1.05] text-balance">
-                      {entity.label}
-                    </h1>
-                    <span className={cn("rounded-full border px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider", cfg.bgClass, cfg.textClass, cfg.borderClass)}>
-                      {cfg.label}
-                    </span>
-                  </div>
-
-                  {(marketing?.tagline || rolesLine) && (
-                    <p className="mt-2 text-sm md:text-[15px] text-cyan-200/85 font-medium">
-                      {marketing?.tagline || rolesLine}
-                    </p>
-                  )}
-
-                  {leadSnippet && (
-                    <p className="mt-3 text-[14px] md:text-[15px] leading-relaxed text-slate-300/90 max-w-3xl mx-auto lg:mx-0">
-                      {leadSnippet}
-                    </p>
-                  )}
-
-                  <div className="mt-4 flex flex-wrap justify-center lg:justify-start gap-2">
-                    {(marketing?.industries.length ? marketing.industries : tags).slice(0, 6).map((t) => (
-                      <button
-                        key={`ind-${t.label}`}
-                        onClick={() => t.id && navigate(entityPath(t.id, t.label))}
-                        className={cn(
-                          "rounded-full border border-cyan-300/35 bg-cyan-400/10 px-3 py-1 text-xs font-medium text-cyan-100",
-                          t.id && "hover:bg-cyan-400/20 cursor-pointer"
-                        )}
-                      >
-                        {t.label}
-                      </button>
-                    ))}
-                    {marketing?.website && (
-                      <a
-                        href={marketing.website}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 rounded-full border border-white/20 bg-white/5 px-3 py-1 text-xs font-medium text-white/90 hover:bg-white/10"
-                      >
-                        <ExternalLink className="size-3" /> Official site
-                      </a>
-                    )}
-                  </div>
-
-                  {marketing && marketing.products.length > 0 && (
-                    <div className="mt-3.5">
-                      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500 flex items-center justify-center lg:justify-start gap-1.5">
-                        <Package className="size-3" /> Product & offering line
-                      </p>
-                      <div className="flex flex-wrap justify-center lg:justify-start gap-1.5">
-                        {marketing.products.map((p) => (
-                          <button
-                            key={p.label}
-                            onClick={() => p.id && navigate(entityPath(p.id, p.label))}
-                            className={cn(
-                              "rounded-lg border border-white/12 bg-white/[0.04] px-2.5 py-1 text-[12px] text-slate-200",
-                              p.id && "hover:border-cyan-400/40 hover:text-cyan-100 cursor-pointer"
-                            )}
-                          >
-                            {p.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {marketing && marketing.kpis.length > 0 && (
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
-                  {marketing.kpis.map((kpi) => {
-                    const KIcon = kpi.icon;
-                    const tone =
-                      kpi.tone === "emerald" ? "from-emerald-500/20 to-emerald-500/5 border-emerald-400/25 text-emerald-200"
-                      : kpi.tone === "amber" ? "from-amber-500/20 to-amber-500/5 border-amber-400/25 text-amber-200"
-                      : kpi.tone === "violet" ? "from-violet-500/20 to-violet-500/5 border-violet-400/25 text-violet-200"
-                      : kpi.tone === "rose" ? "from-rose-500/20 to-rose-500/5 border-rose-400/25 text-rose-200"
-                      : "from-cyan-500/20 to-cyan-500/5 border-cyan-400/25 text-cyan-200";
-                    return (
-                      <div
-                        key={kpi.label}
-                        className={cn("rounded-2xl border bg-gradient-to-br px-3.5 py-3 backdrop-blur-sm", tone)}
-                        title={kpi.hint}
-                      >
-                        <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider opacity-80">
-                          <KIcon className="size-3.5" />
-                          {kpi.label}
-                        </div>
-                        <p className="mt-1.5 text-lg sm:text-xl font-bold text-white leading-tight truncate">
-                          {kpi.value}
-                        </p>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px] xl:grid-cols-[minmax(0,1fr)_340px] items-start">
-                <div className="rounded-2xl border border-white/10 bg-white/[0.03] overflow-hidden">
-                  <div className="flex items-center justify-between gap-2 border-b border-white/8 px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <BarChart3 className="size-4 text-cyan-300" />
-                      <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-300">
-                        {entity.type === "organization" ? "Business intelligence" : "Profile intelligence"}
-                      </p>
-                    </div>
-                    <span className="text-[10px] font-mono text-slate-500">{entity.facts.length} signals</span>
-                  </div>
-                  <div className="grid sm:grid-cols-2 gap-px bg-white/5">
-                    {quickFacts.slice(0, 6).map((qf) => {
-                      const QIcon = qf.icon;
-                      return (
-                        <div key={qf.label} className="bg-[#0d1524] px-4 py-3.5 flex gap-3 min-h-[4.5rem]">
-                          <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-cyan-400/10 text-cyan-300">
-                            <QIcon className="size-4" />
-                          </span>
-                          <div className="min-w-0">
-                            <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{qf.label}</p>
-                            <div className="mt-1 flex flex-wrap gap-1">
-                              {qf.lines.slice(0, 3).map((line, i) =>
-                                line.id ? (
-                                  <button
-                                    key={`${line.text}-${i}`}
-                                    onClick={() => navigate(entityPath(line.id!, line.text))}
-                                    className="text-[13px] text-white/90 hover:text-cyan-300 hover:underline cursor-pointer text-left"
-                                  >
-                                    {line.text}{i < Math.min(qf.lines.length, 3) - 1 ? "," : ""}
-                                  </button>
-                                ) : (
-                                  <span key={`${line.text}-${i}`} className="text-[13px] text-white/90">
-                                    {line.text}{i < Math.min(qf.lines.length, 3) - 1 ? "," : ""}
-                                  </span>
-                                )
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <aside className="space-y-3">
-                  <div className="rounded-2xl border border-white/12 bg-gradient-to-b from-[#152238] to-[#0e1626] p-4">
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400 mb-3">Explore</p>
-                    <div className="grid grid-cols-1 gap-2.5">
-                      <ExploreBtn
-                        onClick={() => navigate(`/graph/${qid}`)}
-                        icon={<Network className="size-4 shrink-0" />}
-                        label="Knowledge Graph"
-                        primary
-                      />
-                      {entity.type === "person" ? (
-                        <ExploreBtn
-                          onClick={() => navigate(`/family-tree/${qid}`)}
-                          icon={<GitBranch className="size-4 shrink-0" />}
-                          label="Family Tree"
-                        />
-                      ) : (
-                        <ExploreBtn
-                          onClick={() => setActiveTab(categories.find((c) => c.id === "organization" || c.kind === "related")?.id ?? "overview")}
-                          icon={<Building2 className="size-4 shrink-0" />}
-                          label="Org details"
-                        />
-                      )}
-                    </div>
-                    {quickMetrics.length > 0 && (
-                      <div className="mt-4 grid grid-cols-3 gap-2">
-                        {quickMetrics.map((m) => (
-                          <div key={m.label} className="rounded-xl border border-white/10 bg-white/[0.04] px-2 py-2 text-center">
-                            <p className="text-sm font-bold text-white truncate">{m.value}</p>
-                            <p className="text-[9px] uppercase tracking-wider text-slate-500 mt-0.5">{m.label}</p>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </aside>
-              </div>
-            </div>
-          </section>
+          <EntityHero
+            entity={entity}
+            qid={qid!}
+            cfg={cfg}
+            Icon={Icon}
+            portraitUrl={portraitUrl}
+            signatureUrl={signatureUrl}
+            rolesLine={rolesLine}
+            leadSnippet={leadSnippet}
+            breadcrumbMid={breadcrumbMid}
+            tags={tags}
+            marketing={marketing}
+            wikiInfobox={wikiInfobox}
+            quickFacts={quickFacts}
+          />
 
           {/* ═══════════════ BODY (light) ═══════════════ */}
           <section className="entity-body bg-[#f4f7fb] text-slate-800 min-h-[70vh]">
@@ -981,74 +727,147 @@ export default function EntityPage() {
                 <p className="mb-3 text-xs text-cyan-700 animate-pulse">Opening linked entity…</p>
               )}
 
-              {/* Mobile TOC pills */}
-              <nav className="lg:hidden mb-4 -mx-1 overflow-x-auto px-1">
-                <div className="flex min-w-max gap-1.5 pb-1">
-                  {categories.map((cat, i) => {
-                    const selected = cat.id === activeTab;
-                    return (
-                      <button
-                        key={cat.id}
-                        onClick={() => setActiveTab(cat.id)}
-                        className={cn(
-                          "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium cursor-pointer transition-colors",
-                          selected
-                            ? "border-cyan-500/50 bg-cyan-50 text-cyan-800"
-                            : "border-slate-200 bg-white text-slate-600 hover:text-slate-900"
-                        )}
-                      >
-                        <span className="font-mono text-[10px] opacity-60">{i + 1}</span>
-                        {cat.title}
-                      </button>
-                    );
-                  })}
+              {/* Top: Graph / Family / Compare + AI Timeline only */}
+              <nav className="mb-5 sticky top-[3.75rem] z-20 -mx-1 px-1 space-y-2">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <ExploreAtlasPills
+                    qid={qid!}
+                    entityType={entity.type}
+                    entityLabel={entity.label}
+                    active="entity"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("timeline")}
+                    className={cn(
+                      "inline-flex items-center gap-2 rounded-xl border px-3.5 py-2 text-[13px] font-semibold cursor-pointer transition-all shadow-sm",
+                      activeTab === "timeline"
+                        ? "border-cyan-500 bg-gradient-to-r from-cyan-600 to-sky-600 text-white shadow-cyan-500/25"
+                        : "border-cyan-200/80 bg-white text-cyan-900 hover:border-cyan-400 hover:bg-cyan-50",
+                    )}
+                  >
+                    <Sparkles className="size-3.5 shrink-0" />
+                    AI Timeline
+                    <Clock className="size-3.5 shrink-0 opacity-70" />
+                  </button>
                 </div>
               </nav>
 
-              <div className="grid gap-4 lg:grid-cols-[180px_minmax(0,1fr)_240px] xl:grid-cols-[190px_minmax(0,1fr)_260px] items-start">
-                {/* Left TOC */}
-                <nav className="hidden lg:block sticky top-[4.25rem]">
-                  <div className="rounded-2xl border border-slate-200/80 bg-white shadow-sm shadow-slate-200/50 overflow-hidden">
-                    <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-100">
-                      <List className="size-4 text-cyan-600" />
-                      <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Table of Contents</p>
-                    </div>
-                    <ul className="p-2 space-y-0.5 max-h-[calc(100vh-10rem)] overflow-auto">
-                      {categories.map((cat, i) => {
+              {/* Mobile TOC pills */}
+              <nav className="lg:hidden mb-4 -mx-1 overflow-x-auto px-1">
+                <div className="flex min-w-max gap-1.5 pb-1">
+                  {activeTab === "overview" && wiki?.toc && wiki.toc.length > 0
+                    ? wiki.toc.map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => {
+                            const main = item.mainArticleTitle
+                              ? document.getElementById(`main-${item.id}`)
+                              : null;
+                            (main ?? document.getElementById(item.id))?.scrollIntoView({
+                              behavior: "smooth",
+                              block: "start",
+                            });
+                          }}
+                          className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-cyan-800 shadow-sm cursor-pointer"
+                        >
+                          {item.title}
+                        </button>
+                      ))
+                    : categories.map((cat) => {
                         const selected = cat.id === activeTab;
+                        const CatIcon = SECTION_ICONS[cat.id] ?? BookOpen;
                         return (
-                          <li key={cat.id}>
-                            <button
-                              onClick={() => setActiveTab(cat.id)}
-                              className={cn(
-                                "relative flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm cursor-pointer transition-colors",
-                                selected
-                                  ? "bg-cyan-50 text-cyan-900 font-semibold"
-                                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-                              )}
-                            >
-                              {selected && (
-                                <span className="absolute left-0 top-1/2 h-6 w-[3px] -translate-y-1/2 rounded-r-full bg-cyan-500" />
-                              )}
-                              <span className={cn("font-mono text-[10px] w-4 shrink-0", selected ? "text-cyan-600" : "text-slate-400")}>
-                                {i + 1}.
-                              </span>
-                              <span className="flex-1 truncate">{cat.title}</span>
-                            </button>
-                          </li>
+                          <button
+                            key={cat.id}
+                            onClick={() => setActiveTab(cat.id)}
+                            className={cn(
+                              "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium cursor-pointer transition-all",
+                              selected
+                                ? "border-transparent bg-gradient-to-r from-cyan-500 to-sky-500 text-white shadow-md shadow-cyan-500/25"
+                                : "border-slate-200 bg-white text-slate-600 hover:text-slate-900"
+                            )}
+                          >
+                            <CatIcon className={cn("size-3.5", selected ? "opacity-95" : "opacity-70")} />
+                            {cat.title}
+                          </button>
                         );
                       })}
-                    </ul>
-                    <div className="border-t border-slate-100 px-4 py-3 flex items-center gap-2 text-xs text-slate-500">
-                      <Clock className="size-3.5" />
-                      Reading time: {readingMins} min
-                    </div>
-                  </div>
-                </nav>
+                </div>
+              </nav>
 
-                {/* Center content */}
-                <div className="min-w-0 rounded-2xl border border-slate-200/80 bg-white shadow-sm shadow-slate-200/40 overflow-hidden">
-                  <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-4 sm:px-5 py-3 bg-slate-50/80">
+              {/* TOC + full-bleed content (no cramped right rail) */}
+              <div className="grid gap-5 lg:grid-cols-[220px_minmax(0,1fr)] items-start">
+                <div className="hidden lg:block sticky top-[8.5rem] space-y-3">
+                  {activeTab === "overview" && wiki?.toc && wiki.toc.length > 0 ? (
+                    <WikiTocNav toc={wiki.toc} readingMins={readingMins} />
+                  ) : (
+                    <nav className="rounded-2xl border border-slate-200/80 bg-white shadow-sm shadow-slate-200/50 overflow-hidden">
+                      <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-100">
+                        <List className="size-4 text-cyan-600" />
+                        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Contents</p>
+                      </div>
+                      <ul className="p-2 space-y-0.5 max-h-[calc(100vh-12rem)] overflow-auto">
+                        {categories.map((cat) => {
+                          const selected = cat.id === activeTab;
+                          const CatIcon = SECTION_ICONS[cat.id] ?? BookOpen;
+                          return (
+                            <li key={cat.id}>
+                              <button
+                                onClick={() => setActiveTab(cat.id)}
+                                className={cn(
+                                  "relative flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 pl-3.5 text-left text-sm cursor-pointer transition-all",
+                                  selected
+                                    ? "bg-gradient-to-r from-cyan-50 via-sky-50 to-white text-cyan-950 font-semibold shadow-sm ring-1 ring-cyan-200/90"
+                                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                                )}
+                              >
+                                {selected && (
+                                  <span className="absolute inset-y-1.5 left-1 w-1 rounded-full bg-gradient-to-b from-cyan-400 to-sky-600" />
+                                )}
+                                <span
+                                  className={cn(
+                                    "flex size-7 shrink-0 items-center justify-center rounded-lg",
+                                    selected
+                                      ? "bg-cyan-500 text-white"
+                                      : "bg-slate-100 text-slate-500",
+                                  )}
+                                >
+                                  <CatIcon className="size-3.5" />
+                                </span>
+                                <span className="flex-1 truncate">{cat.title}</span>
+                                {selected && (
+                                  <span className="size-1.5 shrink-0 rounded-full bg-cyan-500" />
+                                )}
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                      <div className="border-t border-slate-100 px-4 py-3 flex items-center gap-2 text-xs text-slate-500">
+                        <Clock className="size-3.5" />
+                        {readingMins} min read
+                      </div>
+                    </nav>
+                  )}
+                  {activeTab === "overview" && wiki?.toc && wiki.toc.length > 0 && (
+                    <div className="rounded-2xl border border-slate-200/80 bg-white/90 px-3 py-2.5 text-[11px] text-slate-500">
+                      <button
+                        type="button"
+                        className="font-medium text-cyan-800 hover:underline cursor-pointer"
+                        onClick={() => setActiveTab("timeline")}
+                      >
+                        More sections →
+                      </button>
+                      <span className="mx-1.5 text-slate-300">·</span>
+                      Facts, timeline, media
+                    </div>
+                  )}
+                </div>
+
+                <div className="min-w-0 w-full rounded-2xl border border-slate-200/80 bg-white shadow-sm shadow-slate-200/40">
+                  <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-5 sm:px-8 py-3.5 bg-gradient-to-r from-slate-50 to-cyan-50/40 rounded-t-2xl">
                     <div className="flex items-center gap-2 min-w-0">
                       <button
                         onClick={() => goTab(-1)}
@@ -1064,11 +883,11 @@ export default function EntityPage() {
                       >
                         <ChevronRight className="size-4" />
                       </button>
-                      <span className="text-xs text-slate-500 font-medium truncate">
-                        Section {activeIdx + 1} of {categories.length}
+                      <span className="text-sm text-slate-500 font-medium truncate">
+                        {activeIdx + 1} / {categories.length}
                       </span>
                     </div>
-                    <div className="hidden sm:block h-1.5 flex-1 max-w-[140px] rounded-full bg-slate-200 overflow-hidden">
+                    <div className="hidden sm:block h-1.5 flex-1 max-w-[200px] rounded-full bg-slate-200 overflow-hidden">
                       <div
                         className="h-full rounded-full bg-cyan-500 transition-all"
                         style={{ width: `${((activeIdx + 1) / Math.max(categories.length, 1)) * 100}%` }}
@@ -1076,31 +895,45 @@ export default function EntityPage() {
                     </div>
                   </div>
 
-                  <div className="px-4 sm:px-6 py-5 sm:py-6">
-                    <div className="flex items-center gap-2.5 mb-4">
-                      {(() => {
-                        const TabIcon = SECTION_ICONS[active?.id ?? "overview"] ?? BookOpen;
-                        return (
-                          <div className="flex size-9 items-center justify-center rounded-xl bg-cyan-50 text-cyan-700 border border-cyan-100">
-                            <TabIcon className="size-4" />
-                          </div>
-                        );
-                      })()}
-                      <h2 className="font-serif text-xl md:text-2xl font-bold text-slate-900 tracking-tight">
-                        {active?.title ?? "Overview"}
-                      </h2>
+                  <div className="px-5 sm:px-8 lg:px-10 py-7 sm:py-9">
+                    <div className="mb-8 flex flex-wrap items-end justify-between gap-4 border-b border-slate-100 pb-6">
+                      <div className="flex items-center gap-3.5 min-w-0">
+                        {(() => {
+                          const TabIcon = SECTION_ICONS[active?.id ?? "overview"] ?? BookOpen;
+                          return (
+                            <div className="flex size-12 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-50 to-slate-50 text-cyan-700 border border-cyan-100 shadow-sm">
+                              <TabIcon className="size-6" />
+                            </div>
+                          );
+                        })()}
+                        <div className="min-w-0">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-cyan-700/80 mb-1">
+                            {entity.label}
+                          </p>
+                          <h2 className="font-serif text-3xl md:text-4xl font-bold text-slate-900 tracking-tight">
+                            {active?.title ?? "Overview"}
+                          </h2>
+                        </div>
+                      </div>
+                      {active?.count != null && active.count > 0 && (
+                        <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-sm font-mono text-slate-600">
+                          {active.count} items
+                        </span>
+                      )}
                     </div>
 
                     <AnimatePresence mode="wait">
                       <motion.div
                         key={active?.id ?? "empty"}
-                        initial={{ opacity: 0, y: 8 }}
+                        initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -6 }}
-                        transition={{ duration: 0.18 }}
+                        transition={{ duration: 0.2 }}
+                        className="w-full"
                       >
                         {active?.kind === "overview" && (
                           <OverviewPanel
+                            entity={entity}
                             wiki={wiki}
                             hasArticle={Boolean(wiki?.html || wiki?.lead)}
                             onArticleClick={onArticleClick}
@@ -1109,43 +942,79 @@ export default function EntityPage() {
                           />
                         )}
 
-                        {active?.kind === "facts" && active.facts && (
-                          <div className="space-y-4">
-                            <KeyHighlights facts={active.facts.slice(0, 5)} onNavigate={navigate} />
-                            <FactsPanel facts={active.facts} onNavigate={navigate} light />
-                          </div>
-                        )}
+                        {active?.kind === "facts" && active.facts && (() => {
+                          const enrichSection = maybeFactsEnrichSection(active.id);
+                          return (
+                            <div className="space-y-8">
+                              {enrichSection && (
+                                <FactsBriefBlock
+                                  section={enrichSection}
+                                  entity={entity}
+                                  onNavigate={navigate}
+                                />
+                              )}
+                              <KeyHighlights facts={active.facts.slice(0, 6)} onNavigate={navigate} />
+                              <FactsPanel facts={active.facts} onNavigate={navigate} light />
+                            </div>
+                          );
+                        })()}
 
                         {active?.kind === "timeline" && (
-                          <TimelinePanel items={entity.timeline} color={cfg.color} onNavigate={navigate} />
+                          <TimelinePanel
+                            entity={entity}
+                            color={cfg.color}
+                            onNavigate={navigate}
+                            portraitUrl={portraitUrl}
+                          />
                         )}
 
                         {active?.kind === "media" && (
-                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                            {entity.images.map((img) => (
+                          <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4">
+                            {entity.images.map((img, i) => (
                               <a
                                 key={`${img.propertyId}-${img.filename}`}
                                 href={img.url}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="group block overflow-hidden rounded-xl border border-slate-200 bg-slate-50"
+                                className={cn(
+                                  "group relative block overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-sm",
+                                  i === 0 && "md:col-span-2 md:row-span-2"
+                                )}
                               >
-                                <img src={img.thumb} alt={img.property} className="aspect-square w-full object-cover transition-transform group-hover:scale-105" loading="lazy" />
-                                <p className="truncate px-2 py-1.5 text-[11px] text-slate-500">{img.property}</p>
+                                <img
+                                  src={img.thumb}
+                                  alt={img.property}
+                                  className={cn(
+                                    "w-full object-cover transition-transform duration-500 group-hover:scale-105",
+                                    i === 0 ? "aspect-[4/3] md:aspect-square md:h-full" : "aspect-square"
+                                  )}
+                                  loading="lazy"
+                                />
+                                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-900/70 to-transparent px-3 py-2.5">
+                                  <p className="truncate text-sm font-medium text-white">{img.property}</p>
+                                </div>
                               </a>
                             ))}
                           </div>
                         )}
 
                         {active?.kind === "languages" && wiki?.otherLanguages && (
-                          <div className="space-y-3">
+                          <div className="grid md:grid-cols-2 gap-5">
                             {wiki.otherLanguages.map((lang) => (
-                              <div key={lang.lang} className="rounded-xl border border-slate-200 bg-slate-50/80 p-4">
-                                <h3 className="font-serif text-base font-semibold text-slate-900 mb-1">
-                                  {lang.langName}
-                                  <span className="ml-2 font-sans text-xs font-normal text-slate-500">{lang.title}</span>
-                                </h3>
-                                <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">{lang.extract}</p>
+                              <div
+                                key={lang.lang}
+                                className="rounded-2xl border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-6 shadow-sm"
+                              >
+                                <div className="mb-3 flex items-center gap-2">
+                                  <Languages className="size-4 text-cyan-600" />
+                                  <h3 className="font-serif text-xl font-semibold text-slate-900">
+                                    {lang.langName}
+                                  </h3>
+                                </div>
+                                <p className="mb-3 text-sm font-medium text-slate-500">{lang.title}</p>
+                                <p className="whitespace-pre-wrap text-[15px] leading-[1.75] text-slate-700">
+                                  {lang.extract}
+                                </p>
                               </div>
                             ))}
                           </div>
@@ -1156,16 +1025,26 @@ export default function EntityPage() {
                         )}
 
                         {active?.kind === "related" && (
-                          <ul className="grid sm:grid-cols-2 gap-2">
+                          <ul className="grid sm:grid-cols-2 xl:grid-cols-3 gap-4">
                             {entity.related.map((r) => (
                               <li key={`${r.id}-${r.propertyId}`}>
                                 <button
                                   onClick={() => navigate(entityPath(r.id, r.label))}
-                                  className="w-full text-left rounded-xl border border-slate-200 bg-slate-50/50 px-3 py-2.5 hover:border-cyan-300 hover:bg-cyan-50/50 transition-colors cursor-pointer"
+                                  className="group flex h-full w-full flex-col rounded-2xl border border-slate-200 bg-gradient-to-br from-white to-cyan-50/30 p-5 text-left shadow-sm transition-all hover:border-cyan-300 hover:shadow-md cursor-pointer"
                                 >
-                                  <span className="block text-sm font-medium text-slate-900">{r.label}</span>
-                                  <span className="block text-[11px] text-slate-500 mt-0.5">
-                                    {r.relation}{r.description ? ` · ${r.description}` : ""}
+                                  <span className="mb-2 inline-flex w-fit rounded-full bg-cyan-50 px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-cyan-700">
+                                    {r.relation}
+                                  </span>
+                                  <span className="font-serif text-lg font-semibold text-slate-900 group-hover:text-cyan-800">
+                                    {r.label}
+                                  </span>
+                                  {r.description && (
+                                    <span className="mt-2 line-clamp-3 text-sm leading-relaxed text-slate-500">
+                                      {r.description}
+                                    </span>
+                                  )}
+                                  <span className="mt-auto pt-4 text-sm font-medium text-cyan-600 opacity-0 transition-opacity group-hover:opacity-100">
+                                    Open →
                                   </span>
                                 </button>
                               </li>
@@ -1176,105 +1055,6 @@ export default function EntityPage() {
                     </AnimatePresence>
                   </div>
                 </div>
-
-                {/* Right sidebar */}
-                <aside className="hidden lg:flex flex-col gap-4 sticky top-[4.25rem] max-h-[calc(100vh-5rem)] overflow-auto pb-4">
-                  <div className="rounded-2xl border border-slate-200/80 bg-white shadow-sm shadow-slate-200/50 overflow-hidden">
-                    <div className="px-4 py-3 border-b border-slate-100">
-                      <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">At a glance</p>
-                    </div>
-                    <dl className="divide-y divide-slate-100">
-                      <div className="flex gap-3 px-4 py-2.5">
-                        <User className="size-4 text-cyan-600 shrink-0 mt-0.5" />
-                        <div className="min-w-0">
-                          <dt className="text-[10px] uppercase tracking-wide text-slate-400">Full name</dt>
-                          <dd className="text-sm font-medium text-slate-800">{entity.label}</dd>
-                        </div>
-                      </div>
-                      {glanceFacts.map((fact) => {
-                        const FIcon =
-                          fact.propertyId === "P569" || fact.propertyId === "P570" ? Calendar
-                          : fact.propertyId === "P19" || fact.propertyId === "P20" || fact.propertyId === "P159" ? MapPin
-                          : fact.propertyId === "P106" || fact.propertyId === "P39" ? Briefcase
-                          : fact.propertyId === "P166" ? Star
-                          : fact.propertyId === "P27" ? Landmark
-                          : Tag;
-                        return (
-                          <div key={fact.propertyId} className="flex gap-3 px-4 py-2.5">
-                            <FIcon className="size-4 text-cyan-600 shrink-0 mt-0.5" />
-                            <div className="min-w-0">
-                              <dt className="text-[10px] uppercase tracking-wide text-slate-400">{fact.property}</dt>
-                              <dd className="text-sm font-medium text-slate-800 leading-snug">
-                                {fact.values.slice(0, 3).map((v, j) => (
-                                  <span key={j}>
-                                    {j > 0 && ", "}
-                                    {v.id ? (
-                                      <button onClick={() => navigate(entityPath(v.id!, v.label))} className="text-cyan-700 hover:underline cursor-pointer">
-                                        {v.label}
-                                      </button>
-                                    ) : v.label}
-                                  </span>
-                                ))}
-                                {fact.values.length > 3 && <span className="text-slate-400"> +{fact.values.length - 3}</span>}
-                              </dd>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </dl>
-                  </div>
-
-                  {entity.related.length > 0 && (
-                    <div className="rounded-2xl border border-slate-200/80 bg-white shadow-sm shadow-slate-200/50 overflow-hidden">
-                      <div className="px-4 py-3 border-b border-slate-100">
-                        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Related topics</p>
-                      </div>
-                      <ul className="p-2">
-                        {entity.related.slice(0, 6).map((r) => (
-                          <li key={`${r.id}-${r.propertyId}`}>
-                            <button
-                              onClick={() => navigate(entityPath(r.id, r.label))}
-                              className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm text-slate-700 hover:bg-cyan-50 hover:text-cyan-900 cursor-pointer transition-colors"
-                            >
-                              <span className="flex-1 truncate font-medium">{r.label}</span>
-                              <ChevronRight className="size-4 text-slate-300 shrink-0" />
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
-                  {entity.related.length > 3 && (
-                    <div className="rounded-2xl border border-slate-200/80 bg-white shadow-sm shadow-slate-200/50 overflow-hidden">
-                      <div className="px-4 py-3 border-b border-slate-100">
-                        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Explore more</p>
-                      </div>
-                      <ul className="p-2 space-y-1">
-                        {entity.related.slice(0, 4).map((r) => (
-                          <li key={`pop-${r.id}`}>
-                            <button
-                              onClick={() => navigate(entityPath(r.id, r.label))}
-                              className="flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left hover:bg-slate-50 cursor-pointer"
-                            >
-                              <div className="size-9 rounded-lg bg-gradient-to-br from-cyan-100 to-slate-100 border border-slate-200 flex items-center justify-center shrink-0">
-                                <Sparkles className="size-3.5 text-cyan-700" />
-                              </div>
-                              <div className="min-w-0">
-                                <p className="text-sm font-medium text-slate-800 truncate">{r.label}</p>
-                                <p className="text-[11px] text-slate-500 truncate">{r.relation}</p>
-                              </div>
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
-                  <p className="text-center text-[10px] text-slate-400 font-mono px-2">
-                    {qid} · {entity.facts.length} properties
-                  </p>
-                </aside>
               </div>
             </div>
           </section>
@@ -1284,97 +1064,87 @@ export default function EntityPage() {
   );
 }
 
-function ExploreBtn({
-  onClick,
-  icon,
-  label,
-  primary = false,
-}: {
-  onClick: () => void;
-  icon: ReactNode;
-  label: string;
-  primary?: boolean;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "inline-flex w-full items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-[13px] font-semibold transition-all cursor-pointer",
-        primary
-          ? "bg-cyan-400 text-slate-950 hover:bg-cyan-300 shadow-lg shadow-cyan-500/25"
-          : "border border-white/25 bg-transparent text-white/90 hover:bg-white/10"
-      )}
-    >
-      {icon}
-      <span className="truncate">{label}</span>
-    </button>
-  );
-}
-
 function OverviewPanel({
+  entity,
   wiki,
   hasArticle,
   onArticleClick,
   entityLabel,
   thumbnail,
 }: {
+  entity: EntitySummary;
   wiki?: WikipediaArticle;
   hasArticle: boolean;
   onArticleClick: (e: MouseEvent<HTMLElement>) => void;
   entityLabel: string;
   thumbnail?: string;
 }) {
-  if (!hasArticle) {
-    return (
-      <p className="text-sm text-slate-500">
-        No encyclopedia article found for {entityLabel}. Browse the table of contents for structured facts, timeline, and media.
-      </p>
-    );
-  }
-
   const quote = wiki?.lead?.split(/(?<=\.)\s+/).find((s) => s.length > 40 && s.length < 180);
 
   return (
     <div className="space-y-5">
-      {quote && (
-        <blockquote className="relative rounded-2xl border border-cyan-200/70 bg-cyan-50/70 px-5 py-4 pl-14">
-          <Quote className="absolute left-4 top-4 size-6 text-cyan-500/70" />
-          <p className="text-[15px] leading-relaxed text-slate-700 italic">{quote.trim()}</p>
-          <footer className="mt-3 flex items-center gap-2 text-xs text-slate-500">
-            {thumbnail && <img src={thumbnail} alt="" className="size-6 rounded-full object-cover object-top" />}
-            — {entityLabel}
-          </footer>
-        </blockquote>
-      )}
+      <OverviewCapsuleBlock entity={entity} />
 
-      {wiki?.html ? (
-        <article
-          className="wiki-article wiki-article-light max-w-none"
-          onClick={onArticleClick}
-          dangerouslySetInnerHTML={{ __html: wiki.html }}
-        />
+      {!hasArticle ? (
+        <p className="text-sm text-slate-500">
+          No encyclopedia article found for {entityLabel}. Browse the table of contents for structured facts, timeline, and media.
+        </p>
       ) : (
-        <div className="space-y-4">
-          {wiki?.lead && (
-            <div className="space-y-3">
-              {wiki.lead.split(/\n{2,}/).filter(Boolean).map((para, i) => (
-                <p key={i} className="text-[15px] leading-[1.75] text-slate-700">{para.trim()}</p>
+        <>
+          {quote && (
+            <blockquote className="relative rounded-2xl border border-cyan-200/70 bg-cyan-50/70 px-5 py-4 pl-14">
+              <Quote className="absolute left-4 top-4 size-6 text-cyan-500/70" />
+              <p className="text-[15px] leading-relaxed text-slate-700 italic">{quote.trim()}</p>
+              <footer className="mt-3 flex items-center gap-2 text-xs text-slate-500">
+                {thumbnail && <img src={thumbnail} alt="" className="size-6 rounded-full object-cover object-top" />}
+                — {entityLabel}
+              </footer>
+            </blockquote>
+          )}
+
+          {wiki?.html ? (
+            <WikiArticleWithMainEmbeds
+              entity={entity}
+              html={wiki.html}
+              articles={wiki.mainArticles}
+              onArticleClick={onArticleClick}
+            />
+          ) : (
+            <div className="space-y-4">
+              {wiki?.lead && (
+                <div className="space-y-3">
+                  {wiki.lead.split(/\n{2,}/).filter(Boolean).map((para, i) => (
+                    <p key={i} className="text-[15px] leading-[1.75] text-slate-700">{para.trim()}</p>
+                  ))}
+                </div>
+              )}
+              {wiki?.sections.map((section, i) => (
+                <div
+                  key={`${section.title}-${i}`}
+                  id={`wiki-sec-${section.title.replace(/[^a-zA-Z0-9]+/g, "_")}`}
+                  className="scroll-mt-28 pt-2"
+                >
+                  <h3 className={cn("font-serif font-semibold text-slate-900 mb-2", section.level >= 3 ? "text-base" : "text-lg")}>
+                    {section.title}
+                  </h3>
+                  <div className="space-y-3">
+                    {section.content.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean).map((para, j) => (
+                      <p key={j} className="text-[14.5px] leading-[1.75] text-slate-700 whitespace-pre-wrap">{para}</p>
+                    ))}
+                  </div>
+                </div>
               ))}
+              {wiki?.mainArticles && wiki.mainArticles.length > 0 && (
+                <WikiArticleWithMainEmbeds
+                  entity={entity}
+                  html=""
+                  articles={wiki.mainArticles}
+                  onArticleClick={onArticleClick}
+                />
+              )}
             </div>
           )}
-          {wiki?.sections.map((section, i) => (
-            <div key={`${section.title}-${i}`} className="pt-2">
-              <h3 className={cn("font-serif font-semibold text-slate-900 mb-2", section.level >= 3 ? "text-base" : "text-lg")}>
-                {section.title}
-              </h3>
-              <div className="space-y-3">
-                {section.content.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean).map((para, j) => (
-                  <p key={j} className="text-[14.5px] leading-[1.75] text-slate-700 whitespace-pre-wrap">{para}</p>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
+        </>
       )}
     </div>
   );
@@ -1383,81 +1153,46 @@ function OverviewPanel({
 function KeyHighlights({ facts, onNavigate }: { facts: EntityFact[]; onNavigate: (path: string) => void }) {
   if (!facts.length) return null;
   return (
-    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3.5">
-      <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">Key highlights</p>
-      <ul className="space-y-1.5">
-        {facts.map((f) => (
-          <li key={f.propertyId} className="flex gap-2 text-sm text-slate-700">
-            <span className="mt-2 size-1.5 shrink-0 rounded-full bg-cyan-500" />
-            <span>
-              <span className="font-medium text-slate-900">{f.property}: </span>
-              {f.values.slice(0, 3).map((v, j) => (
-                <span key={j}>
-                  {j > 0 && ", "}
-                  {v.id ? (
-                    <button onClick={() => onNavigate(entityPath(v.id!, v.label))} className="text-cyan-700 hover:underline cursor-pointer">
-                      {v.label}
-                    </button>
-                  ) : v.label}
-                </span>
-              ))}
-            </span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function TimelinePanel({
-  items,
-  color,
-  onNavigate,
-}: {
-  items: EntitySummary["timeline"];
-  color: string;
-  onNavigate: (path: string) => void;
-}) {
-  return (
-    <div className="space-y-6">
-      {/* Horizontal strip for first milestones */}
-      <div className="overflow-x-auto -mx-1 px-1">
-        <div className="relative flex min-w-max gap-8 pb-2 pt-1">
-          <div className="absolute left-0 right-0 top-[11px] h-0.5 bg-slate-200" />
-          {items.slice(0, 8).map((item, i) => (
-            <div key={`h-${item.date}-${i}`} className="relative z-[1] w-28 text-center">
-              <span className="mx-auto mb-2 flex size-3 rounded-full border-2 border-white shadow" style={{ background: color }} />
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{item.date}</p>
-              <p className="mt-0.5 text-xs font-medium text-slate-800 line-clamp-2">{item.label}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <ol className="relative ml-2 space-y-4 border-l border-slate-200">
-        {items.map((item, i) => (
-          <li key={`${item.date}-${item.label}-${i}`} className="relative pl-5">
-            <span className="absolute left-[-5px] top-1.5 size-2.5 rounded-full border-2 border-white" style={{ background: color }} />
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">{item.date}</p>
-            <p className="mt-0.5 text-sm text-slate-800">
-              <span className="font-medium">{item.label}</span>
-              {item.value && (
-                <>
-                  {": "}
-                  {item.entityId ? (
-                    <button onClick={() => onNavigate(entityPath(item.entityId!, item.value))} className="cursor-pointer text-cyan-700 hover:underline">
-                      {item.value}
-                    </button>
-                  ) : item.value}
-                </>
-              )}
+    <div>
+      <p className="mb-4 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Spotlight</p>
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        {facts.map((f, i) => (
+          <div
+            key={f.propertyId}
+            className={cn(
+              "rounded-2xl border p-5 shadow-sm",
+              i === 0
+                ? "sm:col-span-2 xl:col-span-1 border-cyan-200 bg-gradient-to-br from-cyan-50 to-white"
+                : "border-slate-200 bg-gradient-to-br from-white to-slate-50"
+            )}
+          >
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-cyan-700/80 mb-2">
+              {f.property}
             </p>
-          </li>
+            <div className="flex flex-wrap gap-2">
+              {f.values.slice(0, 4).map((v, j) =>
+                v.id ? (
+                  <button
+                    key={j}
+                    onClick={() => onNavigate(entityPath(v.id!, v.label))}
+                    className="rounded-lg border border-cyan-200/80 bg-white px-3 py-1.5 text-[15px] font-medium text-cyan-900 hover:bg-cyan-50 cursor-pointer"
+                  >
+                    {v.label}
+                  </button>
+                ) : (
+                  <span key={j} className="text-[15px] font-medium text-slate-800 leading-relaxed">
+                    {v.label}
+                  </span>
+                )
+              )}
+            </div>
+          </div>
         ))}
-      </ol>
+      </div>
     </div>
   );
 }
+
 
 function FactsPanel({
   facts,
@@ -1469,64 +1204,98 @@ function FactsPanel({
   light?: boolean;
 }) {
   return (
-    <div
-      className={cn(
-        "rounded-xl border overflow-hidden divide-y",
-        light ? "border-slate-200 bg-white divide-slate-100" : "border-border/50 bg-background/25 divide-border/40"
-      )}
-    >
-      {facts.map((fact) => (
-        <div
-          key={fact.propertyId}
-          className={cn("flex items-start gap-4 px-4 py-3.5 transition-colors", light ? "hover:bg-slate-50" : "hover:bg-muted/15")}
-        >
-          <span className={cn("shrink-0 pt-0.5 text-[10px] font-semibold uppercase tracking-wide w-28 sm:w-36", light ? "text-slate-400" : "text-muted-foreground/60")}>
-            {fact.property}
-          </span>
-          <div className="flex flex-col gap-1.5 min-w-0 flex-1">
-            <div className="flex flex-wrap gap-1.5">
+    <div>
+      <p className="mb-4 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">All details</p>
+      <div className="grid gap-4 md:grid-cols-2">
+        {facts.map((fact) => (
+          <article
+            key={fact.propertyId}
+            className={cn(
+              "rounded-2xl border p-5 transition-shadow hover:shadow-md",
+              light
+                ? "border-slate-200 bg-white"
+                : "border-border/50 bg-background/25"
+            )}
+          >
+            <h3
+              className={cn(
+                "mb-3 text-sm font-semibold uppercase tracking-[0.12em]",
+                light ? "text-slate-500" : "text-muted-foreground"
+              )}
+            >
+              {fact.property}
+            </h3>
+            <div className="flex flex-wrap gap-2.5">
               {fact.values.map((v, j) =>
                 v.id ? (
                   <button
                     key={j}
                     onClick={() => onNavigate(entityPath(v.id!, v.label))}
                     className={cn(
-                      "rounded-md border px-2 py-0.5 text-xs font-medium transition-colors cursor-pointer",
+                      "rounded-xl border px-3.5 py-2 text-[15px] font-medium transition-colors cursor-pointer",
                       light
-                        ? "border-cyan-200 bg-cyan-50 text-cyan-800 hover:bg-cyan-100"
+                        ? "border-cyan-200 bg-cyan-50 text-cyan-900 hover:bg-cyan-100"
                         : "border-primary/25 bg-primary/8 text-primary hover:bg-primary/20"
                     )}
                   >
                     {v.label}
                   </button>
                 ) : v.url ? (
-                  <a key={j} href={v.url} target="_blank" rel="noopener noreferrer" className={cn("text-sm break-all hover:underline", light ? "text-cyan-700" : "text-primary")}>
+                  <a
+                    key={j}
+                    href={v.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={cn(
+                      "text-[15px] break-all hover:underline",
+                      light ? "text-cyan-700" : "text-primary"
+                    )}
+                  >
                     {v.label}
                   </a>
                 ) : (
-                  <span key={j} className={cn("text-sm leading-relaxed", light ? "text-slate-700" : "text-foreground/85")}>{v.label}</span>
+                  <span
+                    key={j}
+                    className={cn(
+                      "text-[15px] leading-relaxed",
+                      light ? "text-slate-800" : "text-foreground/85"
+                    )}
+                  >
+                    {v.label}
+                  </span>
                 )
               )}
             </div>
             {fact.values.some((v) => v.qualifiers?.length) && (
-              <ul className="space-y-0.5">
+              <ul className="mt-3 space-y-1 border-t border-slate-100 pt-3">
                 {fact.values.flatMap((v, vi) =>
                   (v.qualifiers ?? []).map((q, qi) => (
-                    <li key={`${vi}-${qi}`} className={cn("text-[11px]", light ? "text-slate-500" : "text-muted-foreground")}>
+                    <li
+                      key={`${vi}-${qi}`}
+                      className={cn("text-sm", light ? "text-slate-500" : "text-muted-foreground")}
+                    >
                       <span className="opacity-70">{q.property}: </span>
                       {q.id ? (
-                        <button onClick={() => onNavigate(entityPath(q.id!, q.label))} className={cn("hover:underline cursor-pointer", light ? "text-cyan-700" : "text-primary")}>
+                        <button
+                          onClick={() => onNavigate(entityPath(q.id!, q.label))}
+                          className={cn(
+                            "hover:underline cursor-pointer",
+                            light ? "text-cyan-700" : "text-primary"
+                          )}
+                        >
                           {q.label}
                         </button>
-                      ) : q.label}
+                      ) : (
+                        q.label
+                      )}
                     </li>
                   ))
                 )}
               </ul>
             )}
-          </div>
-        </div>
-      ))}
+          </article>
+        ))}
+      </div>
     </div>
   );
 }

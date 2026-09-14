@@ -1,0 +1,71 @@
+# Multi-app host platform
+#
+# Layout on the server:
+#   /opt/apps/
+#     Caddyfile
+#     docker-compose.yml
+#     ontology/          # this project
+#     <other-app>/       # add more the same way
+#
+# Each app gets a hostname on the server IP via sslip.io, e.g.:
+#   http://ontology.162.35.175.150.sslip.io
+#
+# To add another app:
+#   1. Copy app files to /opt/apps/<name>/
+#   2. Add a service in docker-compose.yml
+#   3. Add a site block in Caddyfile
+#   4. docker compose up -d --build <name>
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - ontology
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - redis_data:/data
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  ontology:
+    build:
+      context: ./ontology
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./ontology/.env
+    environment:
+      REDIS_URL: redis://redis:6379
+      CACHE_DIR: /app/.cache/ai
+      CACHE_TTL_SECONDS: "604800"
+    volumes:
+      - ontology_cache:/app/.cache
+    expose:
+      - "4173"
+    depends_on:
+      redis:
+        condition: service_healthy
+    # Optional direct port for debugging: "4101:4173"
+
+volumes:
+  caddy_data:
+  caddy_config:
+  redis_data:
+  ontology_cache:

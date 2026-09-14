@@ -29,22 +29,44 @@ export const HIDDEN_GRAPH_PROPERTIES = new Set(["P279", "P31"]);
  */
 export const IMPORTANT_GRAPH_PROPERTIES = new Set([
   // Creative / works
-  "P161", "P57", "P162", "P86", "P175", "P58", "P800", "P50", "P170",
+  "P161", "P57", "P162", "P86", "P58", "P800", "P50", "P170",
+  "CR_SONG", "CR_ALBUM", "CR_FILM",
   // Career
   "P106", "P108", "P69", "P166", "P39",
   // Family
-  "P26", "P22", "P25", "P40",
+  "P26", "P22", "P25", "P40", "P3373", "P1038",
   // Place / identity
   "P19", "P20", "P27",
 ]);
 
+/** Kinship hubs — show the relation node only until the user expands. */
+export const FAMILY_GRAPH_PROPERTIES = new Set([
+  "P22", // father
+  "P25", // mother
+  "P26", // spouse
+  "P40", // child
+  "P3373", // sibling
+  "P1038", // relative
+]);
+
+export function isFamilyRelation(propertyId: string): boolean {
+  return FAMILY_GRAPH_PROPERTIES.has(propertyId);
+}
+
+/** Initial visible targets under a hub (family starts collapsed). */
+export function defaultHubPageSize(propertyId: string): number {
+  return isFamilyRelation(propertyId) ? 0 : HUB_PAGE_SIZE;
+}
+
 /** Stable arm order: creative roles, then bio / people / place, then alpha. */
 export const HUB_SORT_RANK: Record<string, number> = {
   P161: 10,
+  CR_FILM: 15,
   P57: 20,
   P162: 30,
   P86: 40,
-  P175: 50,
+  CR_SONG: 50,
+  CR_ALBUM: 55,
   P58: 60,
   P800: 70,
   P106: 100,
@@ -56,6 +78,8 @@ export const HUB_SORT_RANK: Record<string, number> = {
   P22: 210,
   P25: 220,
   P40: 230,
+  P3373: 235,
+  P1038: 240,
   P19: 300,
   P20: 310,
   P27: 320,
@@ -89,7 +113,9 @@ const HUB_COLORS: Record<string, string> = {
   P57: "#8B5A2B",
   P162: "#B8860B",
   P86: "#6B4C9A",
-  P175: "#C45A7A",
+  CR_SONG: "#C45A7A",
+  CR_ALBUM: "#A05070",
+  CR_FILM: "#2A7AB0",
   P58: "#3A7A62",
   P800: "#D46EC8",
   P50: "#5B6BB5",
@@ -100,6 +126,8 @@ const HUB_COLORS: Record<string, string> = {
   P22: "#6B5CA8",
   P25: "#6B5CA8",
   P40: "#C48A2A",
+  P3373: "#8B6BB5",
+  P1038: "#8B6BB5",
   P19: "#3A7A9E",
   P20: "#3A7A9E",
   P27: "#3A7A9E",
@@ -214,7 +242,9 @@ export function toKnowledgeHubs(
     const hubId = hubIdFor(rootId, pid);
     const label = unique[0]!.edge.label || pid;
     const total = unique.length;
-    const shown = Math.min(Math.max(shownByHub[hubId] ?? HUB_PAGE_SIZE, HUB_PAGE_SIZE), total);
+    const fallback = defaultHubPageSize(pid);
+    const requested = shownByHub[hubId] ?? fallback;
+    const shown = Math.min(Math.max(requested, 0), total);
     const visible = unique.slice(0, shown);
     const remaining = total - shown;
 
@@ -228,7 +258,12 @@ export function toKnowledgeHubs(
       hubRelation: label,
       hubTotal: total,
       hubShown: shown,
-      description: remaining > 0 ? `${shown} of ${total}` : `${total} linked`,
+      description:
+        shown === 0
+          ? `${total} linked · expand to show`
+          : remaining > 0
+            ? `${shown} of ${total}`
+            : `${total} linked`,
     });
 
     outEdges.push({

@@ -6,8 +6,9 @@ import {
   isKnowledgeHub,
   hubColorForProperty,
   isHubMoreNode,
+  isFamilyRelation,
 } from "../_lib/relationHubs.ts";
-import { layoutKnowledgeGraph } from "../_lib/knowledgeLayout.ts";
+import { layoutKnowledgeGraph, type GraphArrangeMode } from "../_lib/knowledgeLayout.ts";
 import {
   routeOrbitEdge,
   routeLabelPoint,
@@ -19,7 +20,12 @@ type Props = {
   rootId: string;
   onNodeClick: (node: GraphNode) => void;
   onNodeExpand: (node: GraphNode) => void;
+  /** Open details without expanding (e.g. double-click) */
+  onNodeInspect?: (node: GraphNode) => void;
   expandingIds: Set<string>;
+  arrangeMode?: GraphArrangeMode;
+  /** Bump to force re-layout + fit after drag mess */
+  arrangeNonce?: number;
 };
 
 type ZoomTransform = { x: number; y: number; k: number };
@@ -31,6 +37,37 @@ const FAR_SIZE = { w: 96, h: 36, rx: 9 };
 
 function idOf(v: string | GraphNode): string {
   return typeof v === "object" ? v.id : v;
+}
+
+/** Undirected hop distance from root (for arrow orientation toward center). */
+function hopDistanceFromRoot(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  rootId: string,
+): Map<string, number> {
+  const adj = new Map<string, string[]>();
+  for (const n of nodes) adj.set(n.id, []);
+  for (const e of edges) {
+    const s = idOf(e.source);
+    const t = idOf(e.target);
+    if (!adj.has(s)) adj.set(s, []);
+    if (!adj.has(t)) adj.set(t, []);
+    adj.get(s)!.push(t);
+    adj.get(t)!.push(s);
+  }
+  const hops = new Map<string, number>();
+  const q: string[] = [rootId];
+  hops.set(rootId, 0);
+  while (q.length) {
+    const cur = q.shift()!;
+    const d = hops.get(cur) ?? 0;
+    for (const nb of adj.get(cur) ?? []) {
+      if (hops.has(nb)) continue;
+      hops.set(nb, d + 1);
+      q.push(nb);
+    }
+  }
+  return hops;
 }
 
 /** Approximate text width so labels are never clipped with ellipsis. */
@@ -100,7 +137,10 @@ export default function GraphCanvas({
   rootId,
   onNodeClick,
   onNodeExpand,
+  onNodeInspect,
   expandingIds,
+  arrangeMode = "orbit",
+  arrangeNonce = 0,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
@@ -108,6 +148,8 @@ export default function GraphCanvas({
   const [, forceRender] = useState(0);
   const draggedRef = useRef(false);
   const layoutKeyRef = useRef("");
+  const arrangeNonceRef = useRef(arrangeNonce);
+  const [hoveredHubId, setHoveredHubId] = useState<string | null>(null);
 
   // Zoom behavior
   useEffect(() => {
@@ -131,11 +173,19 @@ export default function GraphCanvas({
     const W = Math.max(svgRef.current.clientWidth || 0, 640);
     const H = Math.max(svgRef.current.clientHeight || 0, 480);
 
-    const key = `${rootId}|${nodes.map((n) => n.id).join(",")}|${edges.length}`;
-    const bounds = layoutKnowledgeGraph(nodes, edges, rootId, W, H);
+    // Clear drag pins so Auto arrange can reclaim positions
+    for (const n of nodes) {
+      n.fx = undefined;
+      n.fy = undefined;
+    }
+
+    const key = `${rootId}|${nodes.map((n) => n.id).join(",")}|${edges.length}|${arrangeMode}|${arrangeNonce}`;
+    const bounds = layoutKnowledgeGraph(nodes, edges, rootId, W, H, arrangeMode);
     forceRender((t) => t + 1);
 
-    const shouldFit = layoutKeyRef.current !== key;
+    const arrangeChanged = arrangeNonceRef.current !== arrangeNonce;
+    arrangeNonceRef.current = arrangeNonce;
+    const shouldFit = layoutKeyRef.current !== key || arrangeChanged;
     layoutKeyRef.current = key;
 
     if (shouldFit) {
@@ -155,7 +205,7 @@ export default function GraphCanvas({
           .call(zoomRef.current.transform, d3.zoomIdentity.translate(tx, ty).scale(k));
       });
     }
-  }, [nodes, edges, rootId]);
+  }, [nodes, edges, rootId, arrangeMode, arrangeNonce]);
 
   const attachDrag = useCallback((el: SVGGElement | null, node: GraphNode) => {
     if (!el) return;
@@ -183,7 +233,11 @@ export default function GraphCanvas({
     if (!svgRef.current || !zoomRef.current || nodes.length === 0) return;
     const W = Math.max(svgRef.current.clientWidth || 0, 640);
     const H = Math.max(svgRef.current.clientHeight || 0, 480);
-    const bounds = layoutKnowledgeGraph(nodes, edges, rootId, W, H);
+    for (const n of nodes) {
+      n.fx = undefined;
+      n.fy = undefined;
+    }
+    const bounds = layoutKnowledgeGraph(nodes, edges, rootId, W, H, arrangeMode);
     forceRender((t) => t + 1);
     const pad = 80;
     const bw = Math.max(bounds.maxX - bounds.minX + pad * 2, 1);
@@ -195,7 +249,7 @@ export default function GraphCanvas({
       .transition()
       .duration(450)
       .call(zoomRef.current.transform, d3.zoomIdentity.translate(tx, ty).scale(k));
-  }, [nodes, edges, rootId]);
+  }, [nodes, edges, rootId, arrangeMode]);
 
   useEffect(() => {
     (window as unknown as Record<string, unknown>).__graphResetZoom = resetZoom;
@@ -206,6 +260,20 @@ export default function GraphCanvas({
 
   const { x: tX, y: tY, k: tK } = transform;
   const byId = new Map(nodes.map((n) => [n.id, n]));
+  const hops = hopDistanceFromRoot(nodes, edges, rootId);
+  const rootNode = byId.get(rootId);
+  const rootX = rootNode?.x ?? 0;
+  const rootY = rootNode?.y ?? 0;
+
+  /** True when `a` is closer to the focus center than `b` (hop, then geometry). */
+  const closerToCenter = (a: GraphNode, b: GraphNode): boolean => {
+    const ha = hops.get(a.id);
+    const hb = hops.get(b.id);
+    if (ha != null && hb != null && ha !== hb) return ha < hb;
+    const da = Math.hypot((a.x ?? 0) - rootX, (a.y ?? 0) - rootY);
+    const db = Math.hypot((b.x ?? 0) - rootX, (b.y ?? 0) - rootY);
+    return da <= db;
+  };
 
   return (
     <svg
@@ -234,6 +302,9 @@ export default function GraphCanvas({
         <marker id="arrow-default" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
           <path d="M 0 0 L 10 5 L 0 10 z" fill="#6A7A96" opacity={0.55} />
         </marker>
+        <marker id="arrow-hub" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#7A8AA0" opacity={0.5} />
+        </marker>
       </defs>
 
       <g transform={`translate(${tX},${tY}) scale(${tK})`}>
@@ -243,17 +314,22 @@ export default function GraphCanvas({
             const tgt = typeof edge.target === "object" ? edge.target : byId.get(String(edge.target));
             if (!src || !tgt || src.x === undefined || tgt.x === undefined) return null;
 
-            const sx = src.x ?? 0;
-            const sy = src.y ?? 0;
-            const tx = tgt.x ?? 0;
-            const ty = tgt.y ?? 0;
-            const srcSz = getNodeSize(src, rootId, edges);
-            const tgtSz = getNodeSize(tgt, rootId, edges);
-            const isHubEdge = edge.propertyId === "HUB";
-            const p1 = rectEdgePoint(sx, sy, srcSz.w, srcSz.h, tx, ty);
-            const p2 = rectEdgePoint(tx, ty, tgtSz.w, tgtSz.h, sx, sy, isHubEdge ? 2 : 4);
+            // Draw periphery → center so the arrow always points toward the main node
+            const towardCenter = closerToCenter(tgt, src);
+            const from = towardCenter ? src : tgt;
+            const to = towardCenter ? tgt : src;
 
-            const skip = new Set([src.id, tgt.id]);
+            const fx = from.x ?? 0;
+            const fy = from.y ?? 0;
+            const tx = to.x ?? 0;
+            const ty = to.y ?? 0;
+            const fromSz = getNodeSize(from, rootId, edges);
+            const toSz = getNodeSize(to, rootId, edges);
+            const isHubEdge = edge.propertyId === "HUB";
+            const p1 = rectEdgePoint(fx, fy, fromSz.w, fromSz.h, tx, ty);
+            const p2 = rectEdgePoint(tx, ty, toSz.w, toSz.h, fx, fy, isHubEdge ? 2 : 4);
+
+            const skip = new Set([from.id, to.id]);
             const pathD = routeOrbitEdge(p1.x, p1.y, p2.x, p2.y, nodes, skip, {
               preferStraight: isHubEdge,
               pad: 8,
@@ -265,10 +341,13 @@ export default function GraphCanvas({
             const hubNode = isKnowledgeHub(src) ? src : isKnowledgeHub(tgt) ? tgt : null;
             const stroke = hubNode?.hubPropertyId
               ? `${hubColorForProperty(hubNode.hubPropertyId)}99`
-              : `${getEntityTypeConfig(tgt.type).hex}77`;
+              : `${getEntityTypeConfig(to.type).hex}77`;
 
             const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x) * (180 / Math.PI);
             const flipped = angle > 90 || angle < -90;
+            const arrowMarker = isHubEdge
+              ? "url(#arrow-hub)"
+              : `url(#arrow-${to.type ?? "unknown"})`;
 
             return (
               <g key={edge.id}>
@@ -277,7 +356,7 @@ export default function GraphCanvas({
                   fill="none"
                   stroke={stroke}
                   strokeWidth={isHubEdge ? 1.7 : 1.35}
-                  markerEnd={isHubEdge ? undefined : `url(#arrow-${tgt.type ?? "unknown"})`}
+                  markerEnd={arrowMarker}
                 />
                 {!isHubEdge && edge.label && len > 80 && (
                   <text
@@ -315,25 +394,47 @@ export default function GraphCanvas({
             if (isHub) {
               const color = hubColorForProperty(node.hubPropertyId ?? "");
               const isMore = isHubMoreNode(node);
+              const isFamilyCollapsed =
+                !isMore &&
+                isFamilyRelation(node.hubPropertyId ?? "") &&
+                (node.hubShown ?? 0) === 0;
+              const showExpandCue = isFamilyCollapsed && hoveredHubId === node.id;
               const countLabel =
-                !isMore && node.hubTotal != null && node.hubShown != null && node.hubTotal > node.hubShown
-                  ? `${node.hubShown}/${node.hubTotal}`
-                  : !isMore && node.hubTotal != null
-                    ? `${node.hubTotal}`
-                    : null;
+                isFamilyCollapsed && node.hubTotal != null
+                  ? `${node.hubTotal}`
+                  : !isMore && node.hubTotal != null && node.hubShown != null && node.hubTotal > node.hubShown
+                    ? `${node.hubShown}/${node.hubTotal}`
+                    : !isMore && node.hubTotal != null
+                      ? `${node.hubTotal}`
+                      : null;
               return (
                 <g
                   key={node.id}
                   ref={(el) => attachDrag(el, node)}
                   transform={`translate(${x},${y})`}
-                  style={{ cursor: "pointer" }}
+                  style={{ cursor: isFamilyCollapsed ? "default" : "pointer" }}
+                  onMouseEnter={() => {
+                    if (isFamilyCollapsed) setHoveredHubId(node.id);
+                  }}
+                  onMouseLeave={() => {
+                    setHoveredHubId((cur) => (cur === node.id ? null : cur));
+                  }}
                   onClick={(e) => {
                     if (draggedRef.current) {
                       draggedRef.current = false;
                       return;
                     }
                     e.stopPropagation();
+                    if (isFamilyCollapsed) return;
                     onNodeClick(node);
+                  }}
+                  onDoubleClick={(e) => {
+                    e.stopPropagation();
+                    if (isFamilyCollapsed) {
+                      onNodeExpand(node);
+                      return;
+                    }
+                    onNodeExpand(node);
                   }}
                 >
                   {isExpanding && (
@@ -359,8 +460,9 @@ export default function GraphCanvas({
                     rx={sz.rx}
                     fill={isMore ? "#FFFFFF" : color}
                     stroke={color}
-                    strokeWidth={isMore ? 1.75 : 1}
-                    strokeDasharray={isMore ? "4 3" : undefined}
+                    strokeWidth={isMore || isFamilyCollapsed ? 1.75 : 1}
+                    strokeDasharray={isMore || isFamilyCollapsed ? "4 3" : undefined}
+                    opacity={isFamilyCollapsed ? 0.92 : 1}
                   />
                   <text
                     y={countLabel ? -5 : 0}
@@ -385,7 +487,7 @@ export default function GraphCanvas({
                       dominantBaseline="middle"
                       style={{
                         fontSize: "8px",
-                        fill: "#FFFFFF",
+                        fill: isMore ? color : "#FFFFFF",
                         fontFamily: "'Space Grotesk', sans-serif",
                         fontWeight: 600,
                         opacity: 0.9,
@@ -395,6 +497,41 @@ export default function GraphCanvas({
                     >
                       {countLabel}
                     </text>
+                  )}
+                  {showExpandCue && (
+                    <g
+                      transform={`translate(0, ${sz.h / 2 + 18})`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onNodeExpand(node);
+                      }}
+                      style={{ cursor: "pointer" }}
+                    >
+                      <rect
+                        x={-34}
+                        y={-11}
+                        width={68}
+                        height={22}
+                        rx={11}
+                        fill="#0f172a"
+                        stroke={color}
+                        strokeWidth={1.25}
+                      />
+                      <text
+                        textAnchor="middle"
+                        dominantBaseline="middle"
+                        style={{
+                          fontSize: "10px",
+                          fill: "#FFFFFF",
+                          fontFamily: "'Space Grotesk', sans-serif",
+                          fontWeight: 700,
+                          pointerEvents: "none",
+                          userSelect: "none",
+                        }}
+                      >
+                        Expand
+                      </text>
+                    </g>
                   )}
                 </g>
               );
@@ -419,7 +556,8 @@ export default function GraphCanvas({
                 }}
                 onDoubleClick={(e) => {
                   e.stopPropagation();
-                  onNodeExpand(node);
+                  if (onNodeInspect) onNodeInspect(node);
+                  else onNodeExpand(node);
                 }}
               >
                 {isRoot && (

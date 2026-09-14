@@ -4,10 +4,11 @@ import { useQuery } from "@tanstack/react-query";
 import { motion } from "motion/react";
 import { toast } from "sonner";
 import {
-  ArrowLeft, Network, Share2, RotateCcw, GitBranch,
+  ArrowLeft, Share2, RotateCcw, GitBranch,
   Users, Info, LayoutGrid, ChevronDown, Download,
 } from "lucide-react";
 import SearchBox from "@/components/search/SearchBox.tsx";
+import { ExploreAtlasPills } from "@/components/ExploreAtlas.tsx";
 import FamilyTreeCanvas from "./_components/FamilyTreeCanvas.tsx";
 import NodeDetailModal from "@/pages/graph/_components/NodeDetailModal.tsx";
 import { fetchEntitySummary, fetchFamilyData, dedupeFamilyEdges } from "@/lib/wikidata/api.ts";
@@ -229,6 +230,16 @@ export default function FamilyTreePage() {
             <SearchBox size="md" />
           </div>
 
+          {rootEntity && (
+            <ExploreAtlasPills
+              qid={id!}
+              entityType={rootEntity.type}
+              entityLabel={rootEntity.label}
+              active="family-tree"
+              className="hidden lg:inline-flex"
+            />
+          )}
+
           <div className="flex items-center gap-1.5 ml-auto">
             {/* Relation arrow direction: out (default) / in / both */}
             <div className="flex items-center rounded-lg border border-border/60 bg-card/60 p-0.5" title="Relation perspective: Out = father/mother, In = son/daughter">
@@ -328,15 +339,6 @@ export default function FamilyTreePage() {
               title="Reset zoom"
             >
               <RotateCcw className="size-4" />
-            </button>
-
-            {/* Knowledge graph link */}
-            <button
-              onClick={() => navigate(`/graph/${id}`)}
-              className="hidden md:flex items-center gap-1.5 rounded-lg border border-border/60 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:border-border transition-colors cursor-pointer"
-            >
-              <Network className="size-3.5" />
-              Knowledge Graph
             </button>
 
             {/* Share */}

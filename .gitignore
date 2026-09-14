@@ -33,3 +33,6 @@ pnpm-debug.log*
 # TypeScript / Vite
 *.tsbuildinfo
 .vite/
+
+# Local AI / response cache
+.cache/

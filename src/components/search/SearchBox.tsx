@@ -138,8 +138,30 @@ export default function SearchBox({ size = "lg", placeholder = "Search any perso
                   onMouseDown={() => handleSelect(result)}
                   className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/50 transition-colors cursor-pointer border-b border-border/40 last:border-0"
                 >
-                  <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg border", cfg.bgClass, cfg.borderClass)}>
-                    <Icon className={cn("size-4", cfg.textClass)} />
+                  <span
+                    className={cn(
+                      "relative flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-lg border",
+                      result.thumbnail ? "border-border/60 bg-muted/40" : cn(cfg.bgClass, cfg.borderClass),
+                    )}
+                  >
+                    {result.thumbnail ? (
+                      <img
+                        src={result.thumbnail}
+                        alt=""
+                        loading="lazy"
+                        decoding="async"
+                        className="absolute inset-0 size-full object-cover object-top"
+                        onError={(e) => {
+                          e.currentTarget.remove();
+                        }}
+                      />
+                    ) : (
+                      <Icon className={cn("size-4", cfg.textClass)} aria-hidden />
+                    )}
+                    {/* Fallback icon sits behind image; shows if image fails to load */}
+                    {result.thumbnail && (
+                      <Icon className={cn("size-4 relative z-0", cfg.textClass)} aria-hidden />
+                    )}
                   </span>
                   <div className="flex-1 min-w-0">
                     <div className="font-medium text-sm text-foreground truncate">{result.label}</div>
