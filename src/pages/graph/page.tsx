@@ -18,7 +18,7 @@ import {
 import type { GraphNode, GraphEdge } from "@/lib/wikidata/types.ts";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { cn } from "@/lib/utils.ts";
-import { toKnowledgeHubs, isKnowledgeHub, isHubMoreNode, HUB_PAGE_SIZE, HIDDEN_GRAPH_PROPERTIES, hubIdFor, defaultHiddenRelations, presentLifeFamilyPids, personLifeFamilyGroupsPresent, isImportantRelation, isPersonLifeFamilyPid, defaultHubPageSize } from "./_lib/relationHubs.ts";
+import { toKnowledgeHubs, isKnowledgeHub, isHubMoreNode, HUB_PAGE_SIZE, HIDDEN_GRAPH_PROPERTIES, hubIdFor, defaultHiddenRelations, presentLifeFamilyPids, personLifeFamilyGroupsPresent, isImportantRelation, isPersonLifeFamilyPid, defaultHubPageSize, pruneConnectedToRoot } from "./_lib/relationHubs.ts";
 import {
   GRAPH_ARRANGE_MODES,
   GRAPH_ARRANGE_LABEL,
@@ -101,18 +101,20 @@ export default function GraphPage() {
 
     fetchGraphData(id, depth, new Set())
       .then((data) => {
-        setNodes(data.nodes);
-        setEdges(data.edges);
-        setLoadedIds(new Set(data.nodes.map((n) => n.id)));
-        const root = data.nodes.find((n) => n.id === id);
-        // Person: Family & life hubs start unselected (hidden) until opted in
-        setHiddenRelations(
+        const pruned = pruneConnectedToRoot(data.nodes, data.edges, id);
+        setNodes(pruned.nodes);
+        setEdges(pruned.edges);
+        setLoadedIds(new Set(pruned.nodes.map((n) => n.id)));
+        const root = pruned.nodes.find((n) => n.id === id);
+        const hidden =
           root?.type === "person"
-            ? presentLifeFamilyPids(data.edges, id)
-            : new Set(),
-        );
+            ? presentLifeFamilyPids(pruned.edges, id)
+            : new Set<string>();
+        setHiddenRelations(hidden);
         setLifeFamilyOpen(false);
-        setShownByHub({});
+        setShownByHub(
+          depth > 1 ? expandVisibleHubPages(pruned.edges, id, hidden) : {},
+        );
       })
       .catch(() => toast.error("Failed to load graph data"))
       .finally(() => setGraphLoading(false));
@@ -213,19 +215,22 @@ export default function GraphPage() {
         }
       }
 
-      setNodes((prev) => {
-        const existingIds = new Set(prev.map((n) => n.id));
-        const newNodes = data.nodes.filter((n) => !existingIds.has(n.id));
-        return [...prev, ...newNodes];
-      });
-
-      setEdges((prev) => {
-        const existingEdgeIds = new Set(prev.map((e) => e.id));
-        const newEdges = data.edges.filter((e) => !existingEdgeIds.has(e.id));
-        return [...prev, ...newEdges];
-      });
-
-      setLoadedIds((prev) => new Set([...prev, ...data.nodes.map((n) => n.id)]));
+      {
+        const existingIds = new Set(nodes.map((n) => n.id));
+        const existingEdgeIds = new Set(edges.map((e) => e.id));
+        const mergedNodes = [
+          ...nodes,
+          ...data.nodes.filter((n) => !existingIds.has(n.id)),
+        ];
+        const mergedEdges = [
+          ...edges,
+          ...data.edges.filter((e) => !existingEdgeIds.has(e.id)),
+        ];
+        const pruned = pruneConnectedToRoot(mergedNodes, mergedEdges, id!);
+        setNodes(pruned.nodes);
+        setEdges(pruned.edges);
+        setLoadedIds(new Set(pruned.nodes.map((n) => n.id)));
+      }
 
       const added = data.nodes.filter((n) => !loadedIds.has(n.id)).length;
       if (added > 0) {
@@ -307,39 +312,24 @@ export default function GraphPage() {
 
   const { nodes: viewNodes, edges: viewEdges } = useMemo(() => {
     if (!id) return { nodes: [], edges: [] };
-    const filteredEdges = edges.filter(
-      (e) =>
-        !HIDDEN_GRAPH_PROPERTIES.has(e.propertyId) &&
-        (!e.propertyId || e.propertyId === "HUB" || !hiddenRelations.has(e.propertyId)),
+    // Always start from the connected component of the main search node
+    const rootedRaw = pruneConnectedToRoot(
+      nodes,
+      edges.filter(
+        (e) =>
+          !HIDDEN_GRAPH_PROPERTIES.has(e.propertyId) &&
+          (!e.propertyId || e.propertyId === "HUB" || !hiddenRelations.has(e.propertyId)),
+      ),
+      id,
     );
-    // Keep only the undirected component reachable from the main search node
-    const adj = new Map<string, string[]>();
-    for (const e of filteredEdges) {
-      const s = edgeEndpointId(e.source);
-      const t = edgeEndpointId(e.target);
-      if (!adj.has(s)) adj.set(s, []);
-      if (!adj.has(t)) adj.set(t, []);
-      adj.get(s)!.push(t);
-      adj.get(t)!.push(s);
-    }
-    const reachable = new Set<string>([id]);
-    const queue = [id];
-    while (queue.length) {
-      const cur = queue.shift()!;
-      for (const nb of adj.get(cur) ?? []) {
-        if (reachable.has(nb)) continue;
-        reachable.add(nb);
-        queue.push(nb);
-      }
-    }
-    const filteredNodes = nodes.filter((n) => reachable.has(n.id));
-    const rootedEdges = filteredEdges.filter(
-      (e) =>
-        reachable.has(edgeEndpointId(e.source)) &&
-        reachable.has(edgeEndpointId(e.target)),
+    return toKnowledgeHubs(
+      rootedRaw.nodes,
+      rootedRaw.edges,
+      shownByHub,
+      id,
+      depth,
     );
-    return toKnowledgeHubs(filteredNodes, rootedEdges, shownByHub, id);
-  }, [nodes, edges, hiddenRelations, id, shownByHub]);
+  }, [nodes, edges, hiddenRelations, id, shownByHub, depth]);
 
   // ── Depth reload (reload entire graph at new depth) ────────────────────────
   const reloadWithDepth = useCallback(async (newDepth: number) => {
@@ -355,20 +345,21 @@ export default function GraphPage() {
     }
     try {
       const data = await fetchGraphData(id, newDepth, new Set());
-      setNodes(data.nodes);
-      setEdges(data.edges);
-      setLoadedIds(new Set(data.nodes.map((n) => n.id)));
-      const root = data.nodes.find((n) => n.id === id);
+      const pruned = pruneConnectedToRoot(data.nodes, data.edges, id);
+      setNodes(pruned.nodes);
+      setEdges(pruned.edges);
+      setLoadedIds(new Set(pruned.nodes.map((n) => n.id)));
+      const root = pruned.nodes.find((n) => n.id === id);
       const hidden =
         root?.type === "person"
-          ? presentLifeFamilyPids(data.edges, id)
+          ? presentLifeFamilyPids(pruned.edges, id)
           : new Set<string>();
       setHiddenRelations(hidden);
       setLifeFamilyOpen(false);
       // Hops > 1: immediately expand hop-1 relation hubs (visible ones only)
       setShownByHub(
         newDepth > 1
-          ? expandVisibleHubPages(data.edges, id, hidden)
+          ? expandVisibleHubPages(pruned.edges, id, hidden)
           : {},
       );
     } catch {

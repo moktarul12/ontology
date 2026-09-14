@@ -206,6 +206,41 @@ function idOf(v: string | GraphNode): string {
   return typeof v === "object" ? v.id : v;
 }
 
+/** Keep only nodes/edges in the undirected component of rootId. */
+export function pruneConnectedToRoot(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  rootId: string,
+): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  if (!rootId) return { nodes, edges };
+  const adj = new Map<string, string[]>();
+  for (const e of edges) {
+    if (HIDDEN_GRAPH_PROPERTIES.has(e.propertyId)) continue;
+    const s = idOf(e.source);
+    const t = idOf(e.target);
+    if (!adj.has(s)) adj.set(s, []);
+    if (!adj.has(t)) adj.set(t, []);
+    adj.get(s)!.push(t);
+    adj.get(t)!.push(s);
+  }
+  const seen = new Set<string>([rootId]);
+  const queue = [rootId];
+  while (queue.length) {
+    const cur = queue.shift()!;
+    for (const nb of adj.get(cur) ?? []) {
+      if (seen.has(nb)) continue;
+      seen.add(nb);
+      queue.push(nb);
+    }
+  }
+  return {
+    nodes: nodes.filter((n) => seen.has(n.id)),
+    edges: edges.filter(
+      (e) => seen.has(idOf(e.source)) && seen.has(idOf(e.target)),
+    ),
+  };
+}
+
 export function isKnowledgeHub(n: GraphNode): boolean {
   return n.kind === "hub" || n.id.startsWith("khub:") || n.id.startsWith("khub-more:");
 }
@@ -239,14 +274,15 @@ export function focusHubs(nodes: GraphNode[], rootId: string): GraphNode[] {
 /**
  * Presentation transform: hubs only on the focus root.
  * Edges that touch the root are folded through property hubs;
- * further hops grow only when attached to that rooted tree.
- * Disconnected components are dropped.
+ * further hops grow only when attached to that rooted tree and within maxHops.
+ * Anything not connected to the main search node is dropped.
  */
 export function toKnowledgeHubs(
   nodes: GraphNode[],
   edges: GraphEdge[],
   shownByHub: Record<string, number> = {},
   rootId?: string,
+  maxHops = 3,
 ): { nodes: GraphNode[]; edges: GraphEdge[] } {
   const entityNodes = nodes.filter((n) => !isKnowledgeHub(n));
   const nodeIds = new Set(entityNodes.map((n) => n.id));
@@ -262,7 +298,7 @@ export function toKnowledgeHubs(
       if (HIDDEN_GRAPH_PROPERTIES.has(e.propertyId)) continue;
       outEdges.push(e);
     }
-    return { nodes: outNodes, edges: outEdges };
+    return pruneConnectedToRoot(outNodes, outEdges, rootId ?? "");
   }
 
   // propertyId → edges touching root (other endpoint is the leaf)
@@ -382,60 +418,79 @@ export function toKnowledgeHubs(
   }
 
   // Grow outward from the rooted hub tree only — never show floating components.
-  const rooted = new Set<string>([rootId]);
-  for (const n of outNodes) {
-    if (isKnowledgeHub(n)) rooted.add(n.id);
-  }
-  for (const e of outEdges) {
-    rooted.add(idOf(e.source));
-    rooted.add(idOf(e.target));
-  }
-
-  const candidates = edges.filter(
-    (e) =>
-      !consumed.has(e.id) &&
-      !HIDDEN_GRAPH_PROPERTIES.has(e.propertyId) &&
-      e.propertyId !== "HUB",
-  );
+  // Hub edges don't consume hop budget; entity hops must stay within maxHops of root.
+  const hopCap = Math.max(1, Math.min(3, maxHops));
 
   let grew = true;
   while (grew) {
     grew = false;
-    for (const e of candidates) {
+    const entityDist = new Map<string, number>([[rootId, 0]]);
+    {
+      const adj = new Map<string, string[]>();
+      for (const e of outEdges) {
+        const s = idOf(e.source);
+        const t = idOf(e.target);
+        if (!adj.has(s)) adj.set(s, []);
+        if (!adj.has(t)) adj.set(t, []);
+        adj.get(s)!.push(t);
+        adj.get(t)!.push(s);
+      }
+      const q = [rootId];
+      while (q.length) {
+        const cur = q.shift()!;
+        const d = entityDist.get(cur) ?? 0;
+        for (const nb of adj.get(cur) ?? []) {
+          if (entityDist.has(nb)) continue;
+          const nbIsHub = nb.startsWith("khub:") || nb.startsWith("khub-more:");
+          entityDist.set(nb, nbIsHub ? d : d + 1);
+          q.push(nb);
+        }
+      }
+    }
+
+    for (const e of edges) {
       if (consumed.has(e.id)) continue;
+      if (HIDDEN_GRAPH_PROPERTIES.has(e.propertyId)) continue;
+      if (!e.propertyId || e.propertyId === "HUB") continue;
       const s = idOf(e.source);
       const t = idOf(e.target);
       if (!nodeIds.has(s) || !nodeIds.has(t)) continue;
-      const sIn = rooted.has(s);
-      const tIn = rooted.has(t);
+
+      const sDist = entityDist.get(s);
+      const tDist = entityDist.get(t);
+      const sIn = sDist != null;
+      const tIn = tDist != null;
       if (!sIn && !tIn) continue;
-      // Attach only when at least one end is already on the main-search tree
+
+      if (sIn && tIn) {
+        outEdges.push(e);
+        consumed.add(e.id);
+        continue;
+      }
+
+      // New node must land at hop <= hopCap from main search node
+      if (sIn && !tIn && (sDist as number) >= hopCap) continue;
+      if (tIn && !sIn && (tDist as number) >= hopCap) continue;
+
       outEdges.push(e);
       consumed.add(e.id);
-      if (!sIn) {
-        rooted.add(s);
-        grew = true;
-      }
-      if (!tIn) {
-        rooted.add(t);
-        grew = true;
-      }
+      grew = true;
     }
   }
 
-  // Drop anything not connected toward the main search node
-  const finalNodes = outNodes.filter(
-    (n) => n.id === rootId || isKnowledgeHub(n) || rooted.has(n.id),
-  );
-  const finalIds = new Set(finalNodes.map((n) => n.id));
-  const finalEdges = outEdges.filter(
-    (e) => finalIds.has(idOf(e.source)) && finalIds.has(idOf(e.target)),
-  );
-
-  if (!finalNodes.some((n) => n.id === rootId)) {
-    const root = entityNodes.find((n) => n.id === rootId);
-    if (root) finalNodes.unshift({ ...root, kind: root.kind ?? "entity" });
+  const keepIds = new Set<string>([rootId]);
+  for (const e of outEdges) {
+    keepIds.add(idOf(e.source));
+    keepIds.add(idOf(e.target));
   }
+  const trimmed = outNodes.filter(
+    (n) => keepIds.has(n.id) || (isKnowledgeHub(n) && n.hubOf === rootId),
+  );
 
-  return { nodes: finalNodes, edges: finalEdges };
+  const pruned = pruneConnectedToRoot(trimmed, outEdges, rootId);
+  if (!pruned.nodes.some((n) => n.id === rootId)) {
+    const root = entityNodes.find((n) => n.id === rootId);
+    if (root) pruned.nodes.unshift({ ...root, kind: root.kind ?? "entity" });
+  }
+  return pruned;
 }
