@@ -241,6 +241,39 @@ export function pruneConnectedToRoot(
   };
 }
 
+/**
+ * When expanding a peripheral node U, keep only edges that reconnect into the
+ * already-visible neighborhood (intersection). Drops U's full Wikidata star.
+ */
+export function filterExpansionToPriorNeighborhood(
+  data: { nodes: GraphNode[]; edges: GraphEdge[] },
+  expandedId: string,
+  priorIds: Set<string>,
+): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  const keptEdges = data.edges.filter((e) => {
+    if (HIDDEN_GRAPH_PROPERTIES.has(e.propertyId)) return false;
+    const s = idOf(e.source);
+    const t = idOf(e.target);
+    // Bridges: at least one end already in the prior graph
+    if (s === expandedId && priorIds.has(t)) return true;
+    if (t === expandedId && priorIds.has(s)) return true;
+    if (priorIds.has(s) && priorIds.has(t)) return true;
+    return false;
+  });
+
+  const keepIds = new Set<string>([expandedId]);
+  for (const e of keptEdges) {
+    keepIds.add(idOf(e.source));
+    keepIds.add(idOf(e.target));
+  }
+  // Only retain nodes that participate in kept edges (or were already known)
+  const keptNodes = data.nodes.filter(
+    (n) => keepIds.has(n.id) && (priorIds.has(n.id) || n.id === expandedId),
+  );
+
+  return { nodes: keptNodes, edges: keptEdges };
+}
+
 export function isKnowledgeHub(n: GraphNode): boolean {
   return n.kind === "hub" || n.id.startsWith("khub:") || n.id.startsWith("khub-more:");
 }

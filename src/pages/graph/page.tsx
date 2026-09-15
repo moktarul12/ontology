@@ -18,7 +18,7 @@ import {
 import type { GraphNode, GraphEdge } from "@/lib/wikidata/types.ts";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { cn } from "@/lib/utils.ts";
-import { toKnowledgeHubs, isKnowledgeHub, isHubMoreNode, HUB_PAGE_SIZE, HIDDEN_GRAPH_PROPERTIES, hubIdFor, defaultHiddenRelations, presentLifeFamilyPids, personLifeFamilyGroupsPresent, isImportantRelation, isPersonLifeFamilyPid, defaultHubPageSize, pruneConnectedToRoot } from "./_lib/relationHubs.ts";
+import { toKnowledgeHubs, isKnowledgeHub, isHubMoreNode, HUB_PAGE_SIZE, HIDDEN_GRAPH_PROPERTIES, hubIdFor, defaultHiddenRelations, presentLifeFamilyPids, personLifeFamilyGroupsPresent, isImportantRelation, isPersonLifeFamilyPid, defaultHubPageSize, pruneConnectedToRoot, filterExpansionToPriorNeighborhood } from "./_lib/relationHubs.ts";
 import {
   GRAPH_ARRANGE_MODES,
   GRAPH_ARRANGE_LABEL,
@@ -213,6 +213,15 @@ export default function GraphPage() {
           toast("No new connections found for this node");
           return;
         }
+        // Peripheral expand: only keep edges back into the already-visible neighborhood
+        if (node.id !== id) {
+          const priorIds = new Set(nodes.map((n) => n.id));
+          data = filterExpansionToPriorNeighborhood(data, node.id, priorIds);
+          if (data.edges.length === 0) {
+            toast("No links from this node back into the current graph");
+            return;
+          }
+        }
       }
 
       {
@@ -232,14 +241,19 @@ export default function GraphPage() {
         setLoadedIds(new Set(pruned.nodes.map((n) => n.id)));
       }
 
-      const added = data.nodes.filter((n) => !loadedIds.has(n.id)).length;
-      if (added > 0) {
+      const addedEdges = data.edges.filter((e) => !edges.some((x) => x.id === e.id)).length;
+      if (addedEdges > 0) {
         const role = isKnowledgeHub(node) ? (node.hubRelation ?? node.label) : null;
         toast.success(
           role
-            ? `Added ${added} ${role.toLowerCase()} item${added > 1 ? "s" : ""}`
-            : `Added ${added} new node${added > 1 ? "s" : ""}`,
+            ? `Added ${addedEdges} ${role.toLowerCase()} link${addedEdges > 1 ? "s" : ""}`
+            : `Linked ${addedEdges} connection${addedEdges > 1 ? "s" : ""} toward the search node`,
         );
+      } else if (isKnowledgeHub(node)) {
+        const added = data.nodes.filter((n) => !loadedIds.has(n.id)).length;
+        if (added > 0) {
+          toast.success(`Added ${added} new node${added > 1 ? "s" : ""}`);
+        }
       }
     } catch {
       toast.error("Failed to expand node");
@@ -250,7 +264,7 @@ export default function GraphPage() {
         return next;
       });
     }
-  }, [expandingIds, loadedIds, pulseExpanding, revealHubMore, shownByHub]);
+  }, [expandingIds, loadedIds, pulseExpanding, revealHubMore, shownByHub, nodes, edges, id]);
 
   const expandAllHop1Relations = useCallback(() => {
     if (!id) return;
@@ -648,7 +662,10 @@ export default function GraphPage() {
           </div>
         </div>
 
-        {/* Mobile atlas + legend */}
+        {/* Mobile: search (row 2) + atlas (row 3) */}
+        <div className="md:hidden border-t border-border/40 px-4 py-2">
+          <SearchBox size="md" />
+        </div>
         {rootEntity && (
           <div className="lg:hidden border-t border-border/40 px-4 py-2">
             <ExploreAtlasPills

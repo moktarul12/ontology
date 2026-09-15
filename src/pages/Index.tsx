@@ -53,7 +53,7 @@ export default function Index() {
       </div>
 
       {/* Nav */}
-      <nav className="relative z-10 flex items-center justify-between px-6 py-5 md:px-10">
+      <nav className="relative z-10 flex items-center justify-between px-4 py-5 md:px-10">
         <div className="flex items-center gap-2.5">
           <div className="flex size-8 items-center justify-center rounded-lg bg-primary/20 border border-primary/30">
             <Network className="size-4 text-primary" />
@@ -85,7 +85,7 @@ export default function Index() {
       </nav>
 
       {/* Hero */}
-      <main className="relative z-10 flex flex-1 flex-col items-center justify-center px-6 py-16 text-center">
+      <main className="relative z-10 flex flex-1 flex-col items-center justify-center px-4 py-16 text-center md:px-6">
         <motion.div
           initial={{ opacity: 0, y: 24 }}
           animate={{ opacity: 1, y: 0 }}

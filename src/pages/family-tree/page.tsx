@@ -354,6 +354,22 @@ export default function FamilyTreePage() {
           </div>
         </div>
 
+        {/* Mobile: search + atlas */}
+        <div className="md:hidden border-t border-border/40 px-4 py-2">
+          <SearchBox size="md" />
+        </div>
+        {rootEntity && (
+          <div className="lg:hidden border-t border-border/40 px-4 py-2">
+            <ExploreAtlasPills
+              qid={id!}
+              entityType={rootEntity.type}
+              entityLabel={rootEntity.label}
+              active="family-tree"
+              className="w-full justify-center"
+            />
+          </div>
+        )}
+
         {/* Legend bar */}
         {showLegend && (
           <motion.div
