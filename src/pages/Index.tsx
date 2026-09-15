@@ -27,7 +27,7 @@ export default function Index() {
   const navigate = useNavigate();
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-background flex flex-col">
+    <div className="relative min-h-screen overflow-x-hidden bg-background flex flex-col">
       {/* Atmospheric background */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
         {/* Radial gradient glow */}
@@ -53,7 +53,7 @@ export default function Index() {
       </div>
 
       {/* Nav */}
-      <nav className="relative z-10 flex items-center justify-between px-4 py-5 md:px-10">
+      <nav className="relative z-10 flex items-center justify-between px-5 py-4 sm:px-6 md:px-10">
         <div className="flex items-center gap-2.5">
           <div className="flex size-8 items-center justify-center rounded-lg bg-primary/20 border border-primary/30">
             <Network className="size-4 text-primary" />
@@ -85,22 +85,22 @@ export default function Index() {
       </nav>
 
       {/* Hero */}
-      <main className="relative z-10 flex flex-1 flex-col items-center justify-center px-4 py-16 text-center md:px-6">
+      <main className="relative z-10 flex w-full flex-1 flex-col items-center justify-center px-5 py-12 text-center sm:px-6 sm:py-16 md:px-10">
         <motion.div
           initial={{ opacity: 0, y: 24 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.7, ease: [0.25, 0.1, 0.25, 1] as const }}
-          className="flex flex-col items-center gap-6 max-w-3xl"
+          className="flex w-full max-w-3xl min-w-0 flex-col items-center gap-5 sm:gap-6"
         >
           {/* Badge */}
           <motion.div
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ delay: 0.1, duration: 0.4 }}
-            className="flex items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-4 py-1.5 text-xs font-medium text-primary"
+            className="flex max-w-full items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-3 py-1.5 text-[11px] font-medium text-primary sm:px-4 sm:text-xs"
           >
-            <span className="size-1.5 rounded-full bg-primary animate-pulse inline-block" />
-            Explore the world's knowledge graph
+            <span className="size-1.5 shrink-0 rounded-full bg-primary animate-pulse inline-block" />
+            <span className="truncate">Explore the world's knowledge graph</span>
           </motion.div>
 
           {/* Headline */}
@@ -108,7 +108,7 @@ export default function Index() {
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.15, duration: 0.6 }}
-            className="font-serif text-5xl font-extrabold tracking-tight text-balance leading-tight md:text-6xl lg:text-7xl"
+            className="w-full max-w-full font-serif text-[1.85rem] font-extrabold tracking-tight text-balance leading-[1.15] sm:text-4xl md:text-6xl lg:text-7xl"
           >
             Discover{" "}
             <span
@@ -125,7 +125,7 @@ export default function Index() {
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.25, duration: 0.5 }}
-            className="text-lg text-muted-foreground max-w-xl text-balance leading-relaxed"
+            className="w-full max-w-xl text-[15px] text-muted-foreground text-balance leading-relaxed sm:text-lg"
           >
             Search any person, place, organization, or concept — then explore it as an interactive
             knowledge graph or family tree, powered by Wikidata.
@@ -136,7 +136,7 @@ export default function Index() {
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.35, duration: 0.5 }}
-            className="w-full flex justify-center"
+            className="flex w-full max-w-full min-w-0 justify-center"
           >
             <SearchBox size="lg" autoFocus />
           </motion.div>
@@ -146,7 +146,7 @@ export default function Index() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ delay: 0.5, duration: 0.5 }}
-            className="flex flex-wrap justify-center gap-2"
+            className="flex w-full flex-wrap justify-center gap-2"
           >
             <span className="text-xs text-muted-foreground mr-1 self-center">Try:</span>
             {EXAMPLE_CHIPS.map((chip, i) => (

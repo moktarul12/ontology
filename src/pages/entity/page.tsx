@@ -617,7 +617,8 @@ export default function EntityPage() {
     <div className="min-h-screen bg-[#f4f7fb]">
       {/* Top nav — dark chrome over light page */}
       <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-[#0b1220]/96 backdrop-blur-md">
-        <div className="mx-auto flex max-w-[1600px] items-center gap-3 px-5 py-2.5">
+        {/* Row 1: brand + actions (search lives on row 2 on mobile) */}
+        <div className="mx-auto flex max-w-[1600px] items-center gap-2 px-4 py-2 sm:gap-3 md:px-5 md:py-2.5">
           <button
             onClick={() => navigate("/")}
             className="flex shrink-0 items-center gap-2 cursor-pointer"
@@ -633,7 +634,7 @@ export default function EntityPage() {
           >
             <ArrowLeft className="size-4" />
           </button>
-          <div className="flex-1 min-w-0 flex items-center gap-1.5">
+          <div className="hidden md:flex flex-1 min-w-0 items-center gap-1.5">
             <div className="flex-1 min-w-0">
               <SearchBox size="md" />
             </div>
@@ -642,7 +643,7 @@ export default function EntityPage() {
             )}
           </div>
           {qid && entity && (
-            <div className="flex items-center gap-0.5 sm:gap-1 shrink-0 overflow-x-auto max-w-[55vw] sm:max-w-none">
+            <div className="ml-auto flex shrink-0 items-center gap-0.5 sm:gap-1">
               <button
                 type="button"
                 onClick={() => {
@@ -714,11 +715,25 @@ export default function EntityPage() {
           )}
           <button
             onClick={handleShare}
-            className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer"
+            className={cn(
+              "flex size-8 shrink-0 items-center justify-center rounded-lg border border-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer",
+              !(qid && entity) && "ml-auto",
+            )}
             title="Copy link"
           >
             {copied ? <Check className="size-4 text-emerald-400" /> : <Share2 className="size-4" />}
           </button>
+        </div>
+        {/* Row 2 (mobile only): full-width search */}
+        <div className="md:hidden border-t border-white/10 px-4 py-2">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <div className="min-w-0 flex-1">
+              <SearchBox size="md" />
+            </div>
+            {qid && entity && (
+              <SearchNamePeers name={entity.label} currentId={qid} />
+            )}
+          </div>
         </div>
       </header>
 
@@ -773,9 +788,9 @@ export default function EntityPage() {
           {/* Primary surfaces — directly under hero */}
           <nav
             aria-label="Explore this entity"
-            className="sticky top-[3.25rem] z-20 border-b border-slate-200/80 bg-[#f4f7fb]/95 backdrop-blur-md"
+            className="sticky top-[6.75rem] z-20 border-b border-slate-200/80 bg-[#f4f7fb]/95 backdrop-blur-md md:top-[3.25rem]"
           >
-            <div className="mx-auto max-w-[1600px] px-5 py-2.5">
+            <div className="mx-auto max-w-[1600px] px-4 py-2.5 sm:px-5">
               <div className="flex gap-1.5 overflow-x-auto pb-0.5 -mx-1 px-1">
                 {(
                   [
@@ -869,7 +884,7 @@ export default function EntityPage() {
             id="entity-main"
             className="entity-body bg-[#f4f7fb] text-slate-800 min-h-[70vh] scroll-mt-28"
           >
-            <div className="mx-auto max-w-[1600px] px-5 py-6 md:py-8 pb-24">
+            <div className="mx-auto max-w-[1600px] px-4 py-6 sm:px-5 md:px-6 md:py-8 pb-24">
               {resolvingLink && (
                 <p className="mb-3 text-xs text-cyan-700 animate-pulse">Opening linked entity…</p>
               )}

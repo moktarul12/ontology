@@ -363,7 +363,7 @@ export function EntityHero({
 
   return (
     <section className="border-b border-slate-200/80 bg-[#f4f7fb]">
-      <div className="mx-auto max-w-[1600px] px-5 py-6 md:py-8">
+      <div className="mx-auto max-w-[1600px] px-4 py-6 sm:px-5 md:px-6 md:py-8">
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
