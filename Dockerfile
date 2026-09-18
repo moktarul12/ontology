@@ -22,5 +22,9 @@ ENV PORT=4173
 ENV CACHE_DIR=/app/.cache/ai
 EXPOSE 4173
 
-# Load .env from compose env_file; preview binds all interfaces
+RUN sed -i 's/\r$//' /app/deploy/docker-entrypoint.sh \
+  && chmod +x /app/deploy/docker-entrypoint.sh
+
+# Same entrypoint pattern as expomela; preview binds all interfaces
+ENTRYPOINT ["/app/deploy/docker-entrypoint.sh"]
 CMD ["npx", "vite", "preview", "--host", "0.0.0.0", "--port", "4173"]

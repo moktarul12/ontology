@@ -15,8 +15,15 @@
 #   2. Add a service in docker-compose.yml
 #   3. Add a site block in Caddyfile
 #   4. docker compose up -d --build <name>
+#
+# Public ports:
+#   manavsathi  4100  (static Expo web)
+#   ontology    4101  (Wikigraph)
+#   expomela    4102  (stall booking)
 
 services:
+  # Support: intended HTTPS reverse proxy (sslip.io). Currently idle because
+  # nginx already binds :80 on this VPS. Not required by either public app.
   caddy:
     image: caddy:2
     restart: unless-stopped
@@ -30,6 +37,8 @@ services:
     depends_on:
       - ontology
 
+  # Support: used only by Wikigraph (ontology) for AI response cache.
+  # Expomela / ManavSathi do not use Redis.
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -59,13 +68,42 @@ services:
       - ontology_cache:/app/.cache
     expose:
       - "4173"
+    ports:
+      - "4101:4173"
     depends_on:
       redis:
         condition: service_healthy
-    # Optional direct port for debugging: "4101:4173"
+
+  # Stall booking (local folder: stallbooking → server: /opt/apps/expomela)
+  expomela:
+    build:
+      context: ./expomela
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./expomela/.env
+    expose:
+      - "4000"
+    ports:
+      - "4102:4000"
+    volumes:
+      - expomela_data:/app/server/data
+
+  # ManavSathi (local folder: swabhimana → server: /opt/apps/manavsathi)
+  # Static Expo web export. Turso keys are baked in at image build from .env.
+  manavsathi:
+    build:
+      context: ./manavsathi
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    expose:
+      - "80"
+    ports:
+      - "4100:80"
 
 volumes:
   caddy_data:
   caddy_config:
   redis_data:
   ontology_cache:
+  expomela_data:

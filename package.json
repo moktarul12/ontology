@@ -8,7 +8,8 @@
     "preview": "vite preview",
     "build": "tsc -b && vite build",
     "lint": "eslint . --max-warnings=0",
-    "release": "bash scripts/release.sh"
+    "deploy": "bash deploy/deploy-vps.sh",
+    "release": "bash deploy/deploy-vps.sh"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.101.4",
