@@ -11,6 +11,92 @@ const KINDS = new Set<TimelineKind>([
   "life", "career", "award", "work", "tour", "legacy",
 ]);
 
+function yearFromFilename(name: string): number | null {
+  const m = name.match(/\b(1[5-9]\d{2}|20\d{2})\b/);
+  return m ? Number(m[1]) : null;
+}
+
+function isEventPhoto(filename: string): boolean {
+  return (
+    /\.(jpe?g|png|webp)$/i.test(filename) &&
+    !/signatur|autograph|logo|icon|coat.of.arms|flag of/i.test(filename)
+  );
+}
+
+type EventPhoto = { url: string; filename: string; year: number | null };
+
+function collectEventPhotos(entity: EntitySummary): EventPhoto[] {
+  const seen = new Set<string>();
+  const out: EventPhoto[] = [];
+  const add = (url?: string, filename?: string) => {
+    if (!url || !filename || seen.has(filename) || !isEventPhoto(filename)) return;
+    const portrait = entity.thumbnail;
+    if (portrait && url.split("?")[0] === portrait.split("?")[0]) return;
+    seen.add(filename);
+    out.push({ url, filename, year: yearFromFilename(filename) });
+  };
+  for (const g of entity.wikipedia?.gallery ?? []) {
+    add(g.thumb || g.url, g.filename);
+  }
+  for (const img of entity.images) {
+    add(img.thumb || img.url, img.filename);
+  }
+  return out;
+}
+
+function scoreEventPhoto(photo: EventPhoto, event: TimelineEvent): number {
+  const fn = photo.filename.toLowerCase().replace(/[_-]+/g, " ");
+  const title = event.title.toLowerCase();
+  const year = Number(event.year.match(/\b(1[5-9]\d{2}|20\d{2})\b/)?.[1] ?? 0);
+  let score = 0;
+  if (photo.year && year) {
+    const d = Math.abs(photo.year - year);
+    if (d <= 2) score += 10;
+    else if (d <= 8) score += 5;
+    else if (d <= 20) score += 2;
+  }
+  for (const word of title.split(/\s+/)) {
+    const w = word.replace(/[^a-z]/g, "");
+    if (w.length > 3 && fn.includes(w)) score += 6;
+  }
+  if (/\bbirth|\bborn/.test(title) && /child|boy|young|infant|ulm|house/.test(fn)) score += 8;
+  if (/\bdeath|\bdied/.test(title) && /death|grave|funeral|obituar/.test(fn)) score += 8;
+  if (/marri|spouse|wedding/.test(title) && /wife|husband|wedding|marri/.test(fn)) score += 8;
+  return score;
+}
+
+function attachEventImages(
+  entity: EntitySummary,
+  events: TimelineEvent[],
+): TimelineEvent[] {
+  const photos = collectEventPhotos(entity);
+  if (!photos.length) return events;
+  const used = new Set<string>();
+  return events.map((ev) => {
+    let best: EventPhoto | undefined;
+    let bestScore = 0;
+    for (const p of photos) {
+      if (used.has(p.filename)) continue;
+      const sc = scoreEventPhoto(p, ev);
+      if (sc > bestScore) {
+        bestScore = sc;
+        best = p;
+      }
+    }
+    if (!best) best = photos.find((p) => !used.has(p.filename));
+    if (!best) return ev;
+    used.add(best.filename);
+    return { ...ev, imageUrl: best.url };
+  });
+}
+
+function withEventImages(
+  entity: EntitySummary,
+  timeline: NarrativeTimeline,
+): NarrativeTimeline {
+  return { ...timeline, events: attachEventImages(entity, timeline.events) };
+}
+
 export type TimelineRequestBody = {
   id: string;
   label: string;
@@ -535,14 +621,14 @@ export function buildLocalNarrative(entity: EntitySummary): NarrativeTimeline {
         }${occupations[0] ? ` and a lasting mark as a ${occupations[0]}` : ""}.`
       : undefined;
 
-  return {
+  return withEventImages(entity, {
     tagline,
     legacy,
     eras,
     events,
     signatureWorks: signatureWorks.length ? signatureWorks : undefined,
     fallback: true,
-  };
+  });
 }
 
 export function buildTimelineSeed(entity: EntitySummary): TimelineRequestBody {
@@ -848,6 +934,7 @@ export function normalizeNarrative(
       entityId: typeof row.entityId === "string" ? row.entityId : undefined,
       detail: row.detail != null ? String(row.detail) : undefined,
       whyItMatters: row.whyItMatters != null ? String(row.whyItMatters) : undefined,
+      imageUrl: typeof row.imageUrl === "string" ? row.imageUrl : undefined,
     };
   });
 
@@ -960,23 +1047,23 @@ export async function fetchNarrativeTimeline(
     });
 
     if (!res.ok) {
-      return {
+      return withEventImages(entity, {
         ...local,
         fallback: true,
         hint: res.status === 503
           ? "Showing structured Wikidata chronology. Add GROQ_API_KEY for AI prose polish."
           : "Showing structured Wikidata chronology (AI polish unavailable).",
-      };
+      });
     }
 
     const data: unknown = await res.json();
     const normalized = normalizeNarrative(data, local);
     if (!normalized) {
-      return {
+      return withEventImages(entity, {
         ...local,
         fallback: true,
         hint: "Showing structured Wikidata chronology (AI returned incomplete JSON).",
-      };
+      });
     }
     // Fill creative drawer copy using real entity context when AI omitted it
     for (const ev of normalized.events) {
@@ -985,12 +1072,12 @@ export async function fetchNarrativeTimeline(
       if (!ev.detail) ev.detail = packed.story;
       if (!ev.whyItMatters) ev.whyItMatters = packed.whyItMatters;
     }
-    return stitchFullLifespan(local, normalized);
+    return withEventImages(entity, stitchFullLifespan(local, normalized));
   } catch {
-    return {
+    return withEventImages(entity, {
       ...local,
       fallback: true,
       hint: "Showing structured Wikidata chronology (AI offline).",
-    };
+    });
   }
 }

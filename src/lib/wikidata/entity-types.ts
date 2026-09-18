@@ -69,3 +69,10 @@ export const ENTITY_TYPE_CONFIG = {
 export function getEntityTypeConfig(type: EntityType) {
   return ENTITY_TYPE_CONFIG[type] ?? ENTITY_TYPE_CONFIG.unknown;
 }
+
+/** Wikidata "instance of" values that add no identity (e.g. human on every person). */
+export function isGenericTypeLabel(label: string): boolean {
+  return /^(human|person|homo sapiens|organism|individual|entity|human being)$/i.test(
+    label.trim(),
+  );
+}

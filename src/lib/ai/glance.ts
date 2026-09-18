@@ -53,34 +53,119 @@ function wikiRow(entity: EntitySummary, labelRe: RegExp): string | undefined {
   return row?.value?.replace(/\s+/g, " ").trim();
 }
 
+function wikiByLabel(entity: EntitySummary, needles: string[]): string | undefined {
+  const rows = entity.wikipedia?.infobox ?? [];
+  for (const needle of needles) {
+    const n = needle.toLowerCase();
+    const row = rows.find(
+      (r) => r.kind !== "section" && r.label.toLowerCase().includes(n) && r.value,
+    );
+    if (row?.value) return row.value.replace(/\s+/g, " ").trim();
+  }
+}
+
+function compactStat(label: string): string {
+  const s = shortMoney(label)
+    .replace(/\s*\([^)]*\)\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (s.length <= 42) return s;
+  return `${s.slice(0, 39).trimEnd()}…`;
+}
+
 function yearOf(text?: string): string | undefined {
   return text?.match(/\b(1[5-9]\d{2}|20\d{2})\b/)?.[1];
+}
+
+function similarTo(a: string, b: string): boolean {
+  const x = a.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const y = b.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  if (!x || !y) return false;
+  if (x === y) return true;
+  return x.includes(y) || y.includes(x);
+}
+
+/** Best 1–2 sentences of identity — never the short Wikidata description. */
+function highlightPulse(entity: EntitySummary): string {
+  const desc = (entity.description || "").trim();
+  const lead = (entity.wikipedia?.lead || "").replace(/\s+/g, " ").trim();
+  const sentences = lead
+    .split(/(?<=\.)\s+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 50);
+
+  const useful = sentences.filter((s) => !desc || !similarTo(s, desc));
+  const pick = (useful.length ? useful : sentences).slice(0, 2).join(" ");
+  if (pick) return pick.length > 340 ? `${pick.slice(0, 337).trimEnd()}…` : pick;
+
+  const occ = factLabels(entity, "P106", 3);
+  const works = factLabels(entity, "P800", 2);
+  const awards = factLabels(entity, "P166", 2);
+  const bits: string[] = [];
+  if (occ.length) bits.push(occ.join(", "));
+  if (works.length) bits.push(`Known for ${works.join(" and ")}`);
+  if (awards.length) bits.push(awards[0]!);
+  if (bits.length) return `${bits.join(". ")}.`;
+  return `${entity.label} in the knowledge graph.`;
+}
+
+function orgHighlightPulse(entity: EntitySummary, metrics: GlanceMetric[]): string {
+  if (metrics.length) {
+    return metrics
+      .slice(0, 4)
+      .map((m) => `${m.label} ${m.value}`)
+      .join(" · ");
+  }
+  const industry = factLabels(entity, "P452", 2).join(" · ");
+  const hq = factLabel(entity, "P159");
+  if (industry) {
+    return `${entity.label} in ${industry}${hq ? `, based in ${hq}` : ""}.`;
+  }
+  return highlightPulse(entity);
 }
 
 /** Deterministic snapshot — AI polish when available. */
 export function buildLocalGlance(entity: EntitySummary): GlanceSnapshot {
   if (entity.type === "organization") {
     const metrics: GlanceMetric[] = [];
-    const revenue = factLabel(entity, "P2139") || wikiRow(entity, /^revenue$/i);
-    if (revenue) metrics.push({ label: "Revenue", value: shortMoney(revenue) });
-    const profit = factLabel(entity, "P2295") || wikiRow(entity, /^net (income|profit)$/i);
-    if (profit) metrics.push({ label: "Net profit", value: shortMoney(profit) });
-    const employees = factLabel(entity, "P1128") || wikiRow(entity, /^number of employees|employees$/i);
-    if (employees) metrics.push({ label: "Employees", value: employees });
+    const mcap =
+      factLabel(entity, "P2226") ||
+      wikiByLabel(entity, ["market cap", "market capitalisation", "market capitalization"]);
+    if (mcap) metrics.push({ label: "Market cap", value: compactStat(mcap) });
+    const revenue =
+      factLabel(entity, "P2139") ||
+      wikiRow(entity, /^revenue$/i) ||
+      wikiByLabel(entity, ["revenue"]);
+    if (revenue) metrics.push({ label: "Revenue", value: compactStat(revenue) });
+    const profit =
+      factLabel(entity, "P2295") ||
+      wikiRow(entity, /^net (income|profit)$/i) ||
+      wikiByLabel(entity, ["net income", "net profit"]);
+    if (profit) metrics.push({ label: "Net profit", value: compactStat(profit) });
+    const employees =
+      factLabel(entity, "P1128") ||
+      wikiByLabel(entity, ["number of employees", "employees"]);
+    if (employees) metrics.push({ label: "Employees", value: compactStat(employees) });
+    const locations = wikiByLabel(entity, ["number of locations", "locations", "stores", "number of stores"]);
+    if (locations && metrics.length < 5) {
+      metrics.push({ label: "Locations", value: compactStat(locations) });
+    }
     const founded =
       yearOf(factLabel(entity, "P571")) ||
-      yearOf(wikiRow(entity, /^founded|inception$/i));
-    if (founded) metrics.push({ label: "Founded", value: founded });
-    const mcap = factLabel(entity, "P2226");
-    if (mcap && metrics.length < 5) {
-      metrics.push({ label: "Market cap", value: shortMoney(mcap) });
+      yearOf(wikiRow(entity, /^founded|inception$/i)) ||
+      yearOf(wikiByLabel(entity, ["founded"]));
+    if (founded && metrics.length < 5) metrics.push({ label: "Founded", value: founded });
+    const ticker = factLabel(entity, "P249");
+    const exchange = factLabel(entity, "P414") || wikiByLabel(entity, ["traded as"]);
+    if (ticker && metrics.length < 6) {
+      metrics.push({ label: "Ticker", value: exchange ? `${ticker} · ${compactStat(exchange)}` : ticker });
     }
 
     const cards: GlanceCard[] = [];
     const hq =
       factLabel(entity, "P159") ||
       wikiRow(entity, /^headquarters|hq$/i);
-    if (hq) cards.push({ label: "Headquarters", value: hq, tone: "hq" });
+    if (hq) cards.push({ label: "Headquarters", value: compactStat(hq), tone: "hq" });
     const ceo =
       factLabel(entity, "P169") ||
       wikiRow(entity, /^ceo|chief executive|key people$/i);
@@ -92,61 +177,51 @@ export function buildLocalGlance(entity: EntitySummary): GlanceSnapshot {
     const products =
       factLabels(entity, "P1056", 3).join(" · ") ||
       wikiRow(entity, /^products?$/i);
-    if (products) cards.push({ label: "Products", value: products, tone: "product" });
-    const exchange = factLabel(entity, "P414") || factLabel(entity, "P249");
-    if (exchange) cards.push({ label: "Listed", value: exchange, tone: "market" });
+    if (products) cards.push({ label: "Products", value: compactStat(products), tone: "product" });
+    if (exchange) cards.push({ label: "Listed", value: compactStat(exchange), tone: "market" });
     const country = factLabel(entity, "P17");
-    if (country && cards.length < 5) {
+    if (country && cards.length < 6) {
       cards.push({ label: "Country", value: country, tone: "hq" });
     }
 
-    const pulse =
-      entity.description ||
-      (industry
-        ? `${entity.label} operates in ${industry}${hq ? `, headquartered in ${hq}` : ""}.`
-        : `${entity.label} is an organization in the knowledge graph.`);
-
     return {
-      heading: "Company pulse",
-      pulse,
-      metrics: metrics.slice(0, 5),
+      heading: "Company highlights",
+      pulse: orgHighlightPulse(entity, metrics),
+      metrics: metrics.slice(0, 6),
       cards: cards.slice(0, 6),
       fallback: true,
     };
   }
 
-  // Person / other — life snapshot
+  // Person — achievements, not a mini-biography
   const metrics: GlanceMetric[] = [];
-  if (entity.lifespan) metrics.push({ label: "Lifespan", value: entity.lifespan });
   const awards = fact(entity, "P166")?.values.length;
   if (awards) metrics.push({ label: "Awards", value: String(awards) });
-  const works = fact(entity, "P800")?.values.length;
-  if (works) metrics.push({ label: "Notable works", value: String(works) });
+  const workCount =
+    (fact(entity, "P800")?.values.length ?? 0) +
+    (fact(entity, "CR_SONG")?.values.length ?? 0) +
+    (fact(entity, "CR_FILM")?.values.length ?? 0);
+  if (workCount) metrics.push({ label: "Notable works", value: String(workCount) });
+  const nominated = fact(entity, "P1411")?.values.length;
+  if (nominated) metrics.push({ label: "Nominations", value: String(nominated) });
 
   const cards: GlanceCard[] = [];
-  const born =
-    wikiRow(entity, /^born$/i) ||
-    [factLabel(entity, "P569"), factLabel(entity, "P19")].filter(Boolean).join(" · ");
-  if (born) cards.push({ label: "Born", value: born, tone: "life" });
-  const died =
-    wikiRow(entity, /^died$/i) ||
-    [factLabel(entity, "P570"), factLabel(entity, "P20")].filter(Boolean).join(" · ");
-  if (died) cards.push({ label: "Died", value: died, tone: "life" });
+  const awardNames = factLabels(entity, "P166", 4).join(" · ");
+  if (awardNames) cards.push({ label: "Honours", value: awardNames, tone: "market" });
+  const knownFor = factLabels(entity, "P800", 4).join(" · ");
+  if (knownFor) cards.push({ label: "Known for", value: knownFor, tone: "product" });
+  const songs = factLabels(entity, "CR_SONG", 3).join(" · ");
+  if (songs && cards.length < 4) cards.push({ label: "Songs", value: songs, tone: "product" });
+  const films = factLabels(entity, "CR_FILM", 3).join(" · ");
+  if (films && cards.length < 4) cards.push({ label: "Films", value: films, tone: "product" });
   const occ =
     factLabels(entity, "P106", 3).join(" · ") ||
     wikiRow(entity, /^occupations?$/i);
   if (occ) cards.push({ label: "Craft", value: occ, tone: "people" });
-  const spouses = factLabels(entity, "P26", 3).join(" · ");
-  if (spouses) cards.push({ label: "Family", value: spouses, tone: "people" });
-  const nationality = factLabels(entity, "P27", 2).join(" · ");
-  if (nationality) cards.push({ label: "Nationality", value: nationality, tone: "hq" });
 
   return {
     heading: entity.type === "person" ? "Life snapshot" : "At a glance",
-    pulse:
-      entity.description ||
-      entity.wikipedia?.lead?.split(/(?<=\.)\s+/).slice(0, 2).join(" ") ||
-      `${entity.label} in the knowledge graph.`,
+    pulse: "",
     metrics: metrics.slice(0, 4),
     cards: cards.slice(0, 6),
     fallback: true,
@@ -156,8 +231,13 @@ export function buildLocalGlance(entity: EntitySummary): GlanceSnapshot {
 function normalizeGlance(raw: unknown, local: GlanceSnapshot): GlanceSnapshot {
   if (!raw || typeof raw !== "object") return local;
   const o = raw as Record<string, unknown>;
-  const pulse = o.pulse != null ? String(o.pulse).trim() : local.pulse;
-  if (!pulse) return local;
+  const pulseRaw = o.pulse != null ? String(o.pulse).trim() : local.pulse;
+  const pulse =
+    pulseRaw.length < 90 &&
+    /\(\d{4}\s*[–-]\s*\d{4}\)/.test(pulseRaw) &&
+    local.pulse.length > pulseRaw.length
+      ? local.pulse
+      : pulseRaw || local.pulse;
 
   const metrics = Array.isArray(o.metrics)
     ? o.metrics
@@ -211,8 +291,9 @@ export async function fetchGlanceSnapshot(
     .filter((f) =>
       [
         "P159", "P169", "P452", "P1056", "P2139", "P2295", "P1128", "P571",
-        "P414", "P249", "P17", "P1454", "P2226", "P2403",
-        "P569", "P570", "P19", "P20", "P106", "P26", "P27", "P166", "P800",
+        "P414", "P249", "P17", "P1454", "P2226", "P2403", "P793",
+        "P569", "P570", "P19", "P20", "P106", "P26", "P27", "P166", "P800", "P1411",
+        "CR_SONG", "CR_FILM", "CR_ALBUM",
       ].includes(f.propertyId),
     )
     .slice(0, 14)

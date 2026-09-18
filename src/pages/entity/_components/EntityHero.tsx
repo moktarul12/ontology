@@ -24,7 +24,12 @@ import {
   type GlanceCard,
   type GlanceSnapshot,
 } from "@/lib/ai/glance.ts";
-import type { EntitySummary, EntityType } from "@/lib/wikidata/types.ts";
+import type { EntitySummary, EntityType, TimelineEvent } from "@/lib/wikidata/types.ts";
+import { isGenericTypeLabel } from "@/lib/wikidata/entity-types.ts";
+import {
+  buildLocalNarrative,
+  fetchNarrativeTimeline,
+} from "@/lib/ai/timeline.ts";
 import type { ComponentType } from "react";
 
 type TypeCfg = {
@@ -106,12 +111,22 @@ function GlanceBoard({
   isFetching,
   isOrg,
   website,
+  lifeEvents,
 }: {
   snapshot: GlanceSnapshot;
   isFetching: boolean;
   isOrg: boolean;
   website?: string;
+  lifeEvents?: TimelineEvent[];
 }) {
+  const metrics = snapshot.metrics.filter(
+    (m) => m.label.toLowerCase() !== "lifespan",
+  );
+  const cards = snapshot.cards.filter(
+    (c) => isOrg || !/^(born|died|family|nationality)$/i.test(c.label),
+  );
+  const showPulse = isOrg && Boolean(snapshot.pulse);
+
   return (
     <div
       className={cn(
@@ -149,27 +164,30 @@ function GlanceBoard({
           )}
         </div>
 
-        <p
-          className={cn(
-            "max-w-3xl text-[15px] sm:text-[16px] leading-[1.65]",
-            isOrg ? "text-slate-100" : "text-slate-800",
-          )}
-        >
-          {snapshot.pulse}
-        </p>
+        {showPulse && (
+          <p
+            className={cn(
+              "max-w-3xl text-[15px] sm:text-[16px] leading-[1.65]",
+              isOrg ? "text-slate-100" : "text-slate-800",
+            )}
+          >
+            {snapshot.pulse}
+          </p>
+        )}
 
-        {snapshot.metrics.length > 0 && (
+        {metrics.length > 0 && (
           <div
             className={cn(
-              "mt-4 grid gap-2",
-              snapshot.metrics.length >= 4
+              "grid gap-2",
+              showPulse || (lifeEvents && lifeEvents.length > 0) ? "mt-4" : "",
+              metrics.length >= 4
                 ? "grid-cols-2 sm:grid-cols-4"
-                : snapshot.metrics.length === 3
+                : metrics.length === 3
                   ? "grid-cols-3"
                   : "grid-cols-2",
             )}
           >
-            {snapshot.metrics.map((m) => (
+            {metrics.map((m) => (
               <div
                 key={m.label}
                 className={cn(
@@ -205,9 +223,71 @@ function GlanceBoard({
           </div>
         )}
 
-        {snapshot.cards.length > 0 && (
+        {lifeEvents && lifeEvents.length > 0 && (
+          <ol
+            className={cn(
+              "mt-4 grid gap-2",
+              lifeEvents.length > 3 ? "sm:grid-cols-2" : "grid-cols-1",
+            )}
+          >
+            {lifeEvents.map((ev) => (
+              <li
+                key={`${ev.sortKey}|${ev.title}`}
+                className={cn(
+                  "flex items-start gap-3 rounded-xl px-3 py-2.5",
+                  isOrg
+                    ? "bg-white/[0.06] ring-1 ring-white/10"
+                    : "bg-white border border-slate-200/90 shadow-sm",
+                )}
+              >
+                {ev.imageUrl ? (
+                  <img
+                    src={ev.imageUrl}
+                    alt=""
+                    referrerPolicy="no-referrer"
+                    className="size-14 sm:size-[4.25rem] shrink-0 rounded-lg object-cover object-top bg-slate-100"
+                  />
+                ) : (
+                  <span
+                    className={cn(
+                      "flex size-14 sm:size-[4.25rem] shrink-0 items-center justify-center rounded-lg font-mono text-[11px] tabular-nums",
+                      isOrg ? "bg-white/10 text-teal-200" : "bg-slate-100 text-slate-500",
+                    )}
+                  >
+                    {ev.year.replace(/[^\d–-]/g, "").slice(0, 4) || "—"}
+                  </span>
+                )}
+                <div className="min-w-0 pt-0.5">
+                  <p
+                    className={cn(
+                      "font-mono text-[11px] tabular-nums",
+                      isOrg ? "text-teal-300/80" : "text-slate-400",
+                    )}
+                  >
+                    {ev.year}
+                  </p>
+                  <p
+                    className={cn(
+                      "mt-0.5 text-[13.5px] font-semibold leading-snug",
+                      isOrg ? "text-slate-100" : "text-slate-800",
+                    )}
+                  >
+                    {ev.title}
+                  </p>
+                  {ev.highlights?.[0] && (
+                    <p className={cn("mt-0.5 text-[12px] leading-snug line-clamp-2", isOrg ? "text-slate-400" : "text-slate-500")}>
+                      {ev.highlights[0]}
+                    </p>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ol>
+        )}
+
+        {cards.length > 0 && (
           <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {snapshot.cards.map((c) => {
+            {cards.map((c) => {
               const tone = CARD_TONE[c.tone ?? "default"];
               const CIcon = tone.icon;
               return (
@@ -308,7 +388,9 @@ export function EntityHero({
   const navigate = useNavigate();
   const isOrg = entity.type === "organization";
   const subtitle = marketing?.tagline || rolesLine;
-  const chipTags = marketing?.industries.length ? marketing.industries : tags;
+  const chipTags = (marketing?.industries.length ? marketing.industries : tags).filter(
+    (t) => !isGenericTypeLabel(t.label),
+  );
   const aliases = entity.aliases.filter(Boolean).slice(0, 10);
 
   const localAbout = useMemo(() => buildLocalSectionBrief("overview", entity), [entity]);
@@ -352,7 +434,7 @@ export function EntityHero({
       "glance-snapshot",
       entity.id,
       entity.wikipedia?.revisedAt ?? "norev",
-      "v1",
+      "v4",
     ],
     queryFn: () => fetchGlanceSnapshot(entity),
     placeholderData: localGlance,
@@ -360,6 +442,65 @@ export function EntityHero({
     retry: 0,
   });
   const glance = glanceData ?? localGlance;
+
+  const localTimeline = useMemo(() => buildLocalNarrative(entity), [entity]);
+  const { data: timelineData } = useQuery({
+    queryKey: [
+      "narrative-timeline",
+      entity.id,
+      entity.wikipedia?.revisedAt ?? "norev",
+      "v13-event-images",
+    ],
+    queryFn: () => fetchNarrativeTimeline(entity),
+    placeholderData: localTimeline,
+    staleTime: 1000 * 60 * 60,
+    retry: 0,
+  });
+  const lifeEvents = useMemo(() => {
+    const name = entity.label.toLowerCase();
+    const skip =
+      /^(birth|born|death|died|education|marriage|married|child|move into a public career)/i;
+    const isAchievement = (ev: TimelineEvent) => {
+      const t = ev.title.trim();
+      if (t.length > 58) return false;
+      if (t.toLowerCase().startsWith(name)) return false;
+      if (skip.test(t)) return false;
+      if (/\b(was|were|had worked|played the|directed by|as a result)\b/i.test(t)) return false;
+      if (isOrg) {
+        if (/^inception$/i.test(t)) return false;
+        return /found|listed|ipo|acquis|opened|stores|headquarters|ticker/i.test(t);
+      }
+      if (ev.kind === "award" || ev.kind === "work") return true;
+      return /award|nobel|filmfare|padma|grammy|oscar|relativity|annus|debut|album|playback|national award|theory of relativity/i.test(
+        t,
+      );
+    };
+    const picked: TimelineEvent[] = [];
+    const seen = new Set<string>();
+    const take = (ev: TimelineEvent) => {
+      const k = ev.title.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 40);
+      if (seen.has(k) || !isAchievement(ev)) return;
+      seen.add(k);
+      picked.push(ev);
+    };
+    const pool = [
+      ...(localTimeline.events ?? []),
+      ...((timelineData?.events ?? []).filter(
+        (ev) => !localTimeline.events.some((l) => l.title === ev.title),
+      )),
+    ];
+    for (const ev of pool) {
+      if (ev.kind === "award" || ev.kind === "work") take(ev);
+      if (picked.length >= 8) break;
+    }
+    if (picked.length < 6) {
+      for (const ev of pool) {
+        take(ev);
+        if (picked.length >= 8) break;
+      }
+    }
+    return picked;
+  }, [isOrg, timelineData, localTimeline, entity.label]);
 
   return (
     <section className="border-b border-slate-200/80 bg-[#f4f7fb]">
@@ -369,8 +510,8 @@ export function EntityHero({
           animate={{ opacity: 1, y: 0 }}
           className="rounded-2xl border border-slate-200/90 bg-white shadow-sm shadow-slate-200/50 overflow-hidden"
         >
-          <div className="grid lg:grid-cols-[200px_minmax(0,1fr)] gap-0">
-            <div className="relative flex flex-col items-center gap-3 border-b lg:border-b-0 lg:border-r border-slate-100 bg-gradient-to-b from-slate-50 to-white px-5 py-6">
+          <div className="grid md:grid-cols-[240px_minmax(0,1fr)] gap-0">
+            <div className="relative flex flex-col items-center gap-3 border-b md:border-b-0 md:border-r border-slate-100 bg-gradient-to-b from-slate-50 to-white px-4 py-6">
               <div
                 className="pointer-events-none absolute inset-0 opacity-60"
                 style={{
@@ -414,16 +555,23 @@ export function EntityHero({
                   </figcaption>
                 </figure>
               )}
-              <span
-                className={cn(
-                  "relative z-10 rounded-full border px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em]",
-                  cfg.bgClass,
-                  cfg.textClass,
-                  cfg.borderClass,
+              <div className="relative z-10 flex w-full items-start gap-2 px-0.5">
+                <span
+                  className={cn(
+                    "mt-0.5 shrink-0 rounded-full border px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em]",
+                    cfg.bgClass,
+                    cfg.textClass,
+                    cfg.borderClass,
+                  )}
+                >
+                  {cfg.label}
+                </span>
+                {(entity.description || subtitle) && (
+                  <p className="min-w-0 text-left text-[12px] leading-snug text-slate-600">
+                    {entity.description || subtitle}
+                  </p>
                 )}
-              >
-                {cfg.label}
-              </span>
+              </div>
             </div>
 
             <div className="px-5 py-5 sm:px-7 sm:py-6 min-w-0">
@@ -462,7 +610,7 @@ export function EntityHero({
                 )}
               </div>
 
-              {subtitle && (
+              {subtitle && subtitle !== entity.description && (
                 <p className="mt-1.5 text-[15px] text-slate-600 font-medium">
                   {subtitle}
                 </p>
@@ -526,6 +674,7 @@ export function EntityHero({
             isFetching={glanceFetching}
             isOrg={isOrg}
             website={marketing?.website}
+            lifeEvents={lifeEvents}
           />
         </motion.div>
       </div>

@@ -14,7 +14,7 @@ import { loadEnv } from "vite";
 import { cacheGet, cacheSet, cacheStats, hashKey } from "./src/server/responseCache";
 
 /** Bump when prompts / response shape change to invalidate cached AI JSON. */
-const CACHE_PROMPT_VERSION = "ai-v5-relation-story";
+const CACHE_PROMPT_VERSION = "ai-v7-glance-achievements";
 
 type ProviderId = "groq" | "gemini" | "openai";
 
@@ -89,9 +89,10 @@ Return ONLY JSON:
 }
 
 Rules:
-- pulse: 1–2 vivid briefing sentences (magazine tone). Never paste wiki parentheticals or citation junk.
-- Organizations: heading like "Company pulse". metrics = money/headcount/founded (3–5). cards = HQ, Leadership, Industry, Products, Listed — short clean values.
-- Persons: heading like "Life snapshot". metrics = lifespan / awards / works counts when known. cards = Born, Died, Craft, Family — concise.
+- pulse: 1–2 vivid HIGHLIGHT sentences (magazine tone). Never paste wiki parentheticals or citation junk.
+- Do NOT repeat the short Wikidata description (e.g. "Indian singer and actor (1929–1987)") or lifespan already shown beside the portrait.
+- Organizations: heading "Company highlights". metrics MUST include market cap / revenue / employees / locations / ticker when present in factsDigest or local.metrics. cards = HQ, Leadership, Industry, Products, Listed.
+- Persons: heading "Life snapshot". Do NOT write a biography pulse. metrics = awards / notable works / nominations. cards = Honours, Known for, Songs/Films — achievements only, never Born/Died/Family.
 - Prefer local.metrics / local.cards structure; polish wording, drop duplicates, keep numbers faithful.
 - No markdown. Prefer complete valid JSON.`;
 

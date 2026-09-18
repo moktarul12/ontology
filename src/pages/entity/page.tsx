@@ -2,7 +2,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { fetchEntitySummary, resolveWikipediaTitleToQid, searchEntities } from "@/lib/wikidata/api.ts";
 import { entityPath, parseEntityParam } from "@/lib/entityPath.ts";
-import { getEntityTypeConfig } from "@/lib/wikidata/entity-types.ts";
+import { getEntityTypeConfig, isGenericTypeLabel } from "@/lib/wikidata/entity-types.ts";
 import {
   sectionOrderForType,
   SECTION_TITLES,
@@ -442,7 +442,10 @@ export default function EntityPage() {
             ...labelsOf(entity, "P452", 3),
             ...labelsOf(entity, "P17", 1),
             ...labelsOf(entity, "P1056", 2),
-            ...entity.instanceOf.slice(0, 3).map((i) => ({ id: i.id, label: i.label })),
+            ...entity.instanceOf
+              .filter((i) => !isGenericTypeLabel(i.label))
+              .slice(0, 3)
+              .map((i) => ({ id: i.id, label: i.label })),
             ...labelsOf(entity, "P1454", 1),
           ]
         : entity.type === "person"
@@ -450,11 +453,17 @@ export default function EntityPage() {
               ...labelsOf(entity, "P101", 2),
               ...labelsOf(entity, "P106", 3),
               ...labelsOf(entity, "P27", 1),
-              ...entity.instanceOf.slice(0, 3).map((i) => ({ id: i.id, label: i.label })),
+              ...entity.instanceOf
+                .filter((i) => !isGenericTypeLabel(i.label))
+                .slice(0, 3)
+                .map((i) => ({ id: i.id, label: i.label })),
               ...labelsOf(entity, "P1412", 1),
             ]
           : [
-              ...entity.instanceOf.slice(0, 4).map((i) => ({ id: i.id, label: i.label })),
+              ...entity.instanceOf
+                .filter((i) => !isGenericTypeLabel(i.label))
+                .slice(0, 4)
+                .map((i) => ({ id: i.id, label: i.label })),
               ...labelsOf(entity, "P17", 1),
               ...labelsOf(entity, "P136", 2),
             ];
@@ -462,7 +471,7 @@ export default function EntityPage() {
     return buckets
       .filter((t) => {
         const k = t.label.toLowerCase();
-        if (seen.has(k) || k.length > 40) return false;
+        if (seen.has(k) || k.length > 40 || isGenericTypeLabel(t.label)) return false;
         seen.add(k);
         return true;
       })
@@ -595,7 +604,10 @@ export default function EntityPage() {
   };
 
   const wiki = entity?.wikipedia;
-  const breadcrumbMid = entity?.instanceOf[0]?.label || occupations[0] || cfg?.label;
+  const breadcrumbMid =
+    entity?.instanceOf.find((i) => !isGenericTypeLabel(i.label))?.label ||
+    occupations[0] ||
+    undefined;
   const signatureUrl =
     entity?.images.find((i) => i.propertyId === "P109")?.url ||
     entity?.images.find((i) => /signatur|autograph/i.test(i.filename))?.url;
@@ -1109,7 +1121,6 @@ export default function EntityPage() {
                             entity={entity}
                             color={cfg.color}
                             onNavigate={navigate}
-                            portraitUrl={portraitUrl}
                           />
                         )}
 

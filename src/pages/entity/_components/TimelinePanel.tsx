@@ -368,12 +368,10 @@ export default function TimelinePanel({
   entity,
   color: _color,
   onNavigate,
-  portraitUrl,
 }: {
   entity: EntitySummary;
   color: string;
   onNavigate: (path: string) => void;
-  portraitUrl?: string;
 }) {
   const local = useMemo(() => buildLocalNarrative(entity), [entity]);
 
@@ -382,7 +380,7 @@ export default function TimelinePanel({
       "narrative-timeline",
       entity.id,
       entity.wikipedia?.revisedAt ?? "norev",
-      "v12-depth-flyout",
+      "v13-event-images",
     ],
     queryFn: () => fetchNarrativeTimeline(entity),
     placeholderData: local,
@@ -456,21 +454,6 @@ export default function TimelinePanel({
         {intro}
       </p>
 
-      {portraitUrl && (
-        <figure className="mt-6 mb-8 flex flex-col items-center">
-          <img
-            src={portraitUrl}
-            alt={entity.label}
-            referrerPolicy="no-referrer"
-            className="max-h-72 w-auto max-w-full rounded-xl object-cover object-top shadow-sm"
-          />
-          <figcaption className="mt-2 text-center text-[13px] text-slate-500">
-            {entity.label}
-            {entity.lifespan ? ` (${entity.lifespan})` : ""}
-          </figcaption>
-        </figure>
-      )}
-
       {yearGroups.length > 0 && (
         <div className="mb-8 flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
           <button
@@ -529,6 +512,20 @@ export default function TimelinePanel({
                   aria-hidden
                 />
 
+                <div className="flex items-start gap-3 sm:gap-4">
+                  {ev.imageUrl ? (
+                    <img
+                      src={ev.imageUrl}
+                      alt=""
+                      referrerPolicy="no-referrer"
+                      className="h-[4.5rem] w-[4.5rem] sm:h-24 sm:w-24 shrink-0 rounded-xl object-cover object-top bg-slate-100 border border-slate-200/80"
+                    />
+                  ) : (
+                    <div className="flex h-[4.5rem] w-[4.5rem] sm:h-24 sm:w-24 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 font-mono text-[12px] tabular-nums text-slate-400">
+                      {ev.year.replace(/[^\d]/g, "").slice(0, 4) || "—"}
+                    </div>
+                  )}
+                  <div className="min-w-0 flex-1">
                 <button
                   type="button"
                   onClick={() => setActive(ev)}
@@ -578,6 +575,8 @@ export default function TimelinePanel({
                 >
                   More depth
                 </button>
+                  </div>
+                </div>
 
                 {i < visibleEvents.length - 1 &&
                   yearNum(ev) !== yearNum(visibleEvents[i + 1]!) &&

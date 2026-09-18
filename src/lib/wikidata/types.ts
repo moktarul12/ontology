@@ -67,6 +67,8 @@ export type TimelineEvent = {
   /** Longer creative prose for the moment drawer */
   detail?: string;
   whyItMatters?: string;
+  /** Optional photo for the event (gallery / Commons), shown at left */
+  imageUrl?: string;
 };
 
 export type TimelineEra = {
