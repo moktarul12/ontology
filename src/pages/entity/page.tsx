@@ -687,7 +687,7 @@ export default function EntityPage() {
     : [];
 
   return (
-    <div className="min-h-screen bg-[#f4f7fb]">
+    <div className="min-h-screen bg-[#0b1220]">
       {/* Top nav — dark chrome over light page */}
       <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-[#0b1220]/96 backdrop-blur-md">
         {/* Row 1: brand + actions (search lives on row 2 on mobile) */}
@@ -829,12 +829,43 @@ export default function EntityPage() {
             explore={explore}
           />
 
-          {/* ═══════════════ BODY (light) ═══════════════ */}
+          {/* ═══════════════ BODY (light reading surface) ═══════════════ */}
           <section
             id="entity-main"
-            className="entity-body bg-[#f4f7fb] text-slate-800 min-h-[70vh] scroll-mt-28"
+            className="entity-body relative isolate overflow-hidden text-slate-800 min-h-[70vh] scroll-mt-28 bg-[#f1efe9]"
           >
-            <div className="mx-auto max-w-[1600px] px-4 py-6 sm:px-5 md:px-6 md:py-8 pb-24">
+            {/* Ink / paper atmosphere — scoped below the dark hero */}
+            <div className="pointer-events-none absolute inset-0" aria-hidden>
+              <div
+                className="absolute inset-0"
+                style={{
+                  background: `
+                    radial-gradient(ellipse 90% 50% at 50% -5%, rgba(71, 85, 105, 0.1), transparent 55%),
+                    radial-gradient(ellipse 42% 38% at 100% 22%, rgba(15, 118, 110, 0.055), transparent 52%),
+                    radial-gradient(ellipse 38% 32% at 0% 78%, rgba(100, 80, 50, 0.045), transparent 50%),
+                    linear-gradient(180deg, #e8e5de 0%, #f1efe9 22%, #f4f2ed 100%)
+                  `,
+                }}
+              />
+              <svg className="absolute inset-0 h-full w-full opacity-[0.4]" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                  <pattern id="entity-paper-dots" width="20" height="20" patternUnits="userSpaceOnUse">
+                    <circle cx="1" cy="1" r="0.9" fill="#64748b" opacity="0.3" />
+                  </pattern>
+                </defs>
+                <rect width="100%" height="100%" fill="url(#entity-paper-dots)" />
+              </svg>
+            </div>
+            {/* Soft seam from dark hero into paper */}
+            <div
+              className="pointer-events-none absolute inset-x-0 top-0 h-28 z-[1]"
+              style={{
+                background:
+                  "linear-gradient(180deg, rgba(11,18,32,0.18) 0%, rgba(11,18,32,0.06) 40%, transparent 100%)",
+              }}
+              aria-hidden
+            />
+            <div className="relative z-[2] mx-auto max-w-[1600px] px-4 py-6 sm:px-5 md:px-6 md:py-8 pb-24">
               {resolvingLink && (
                 <p className="mb-3 text-xs text-cyan-700 animate-pulse">Opening linked entity…</p>
               )}
@@ -856,7 +887,7 @@ export default function EntityPage() {
                               block: "start",
                             });
                           }}
-                          className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-cyan-800 shadow-sm cursor-pointer"
+                          className="inline-flex items-center gap-1.5 rounded-full border border-stone-300/80 bg-[#faf9f6] px-3 py-1.5 text-xs font-medium text-teal-900 shadow-sm shadow-stone-400/10 cursor-pointer"
                         >
                           {item.title}
                         </button>
@@ -871,8 +902,8 @@ export default function EntityPage() {
                             className={cn(
                               "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium cursor-pointer transition-all",
                               selected
-                                ? "border-transparent bg-gradient-to-r from-cyan-500 to-sky-500 text-white shadow-md shadow-cyan-500/25"
-                                : "border-slate-200 bg-white text-slate-600 hover:text-slate-900"
+                                ? "border-transparent bg-slate-800 text-white shadow-md shadow-stone-500/20"
+                                : "border-stone-300/80 bg-[#faf9f6] text-stone-600 hover:text-stone-900"
                             )}
                           >
                             <CatIcon className={cn("size-3.5", selected ? "opacity-95" : "opacity-70")} />
@@ -897,10 +928,10 @@ export default function EntityPage() {
                   {activeTab === "overview" && wiki?.toc && wiki.toc.length > 0 ? (
                     <WikiTocNav toc={wiki.toc} readingMins={readingMins} />
                   ) : (
-                    <nav className="rounded-2xl border border-slate-200/80 bg-white shadow-sm shadow-slate-200/50 overflow-hidden">
-                      <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-100">
-                        <List className="size-4 text-cyan-600" />
-                        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Contents</p>
+                    <nav className="rounded-2xl border border-stone-300/70 bg-[#faf9f6]/95 shadow-sm shadow-stone-400/15 overflow-hidden backdrop-blur-sm">
+                      <div className="flex items-center gap-2 px-4 py-3 border-b border-stone-200/80">
+                        <List className="size-4 text-teal-700" />
+                        <p className="text-xs font-semibold uppercase tracking-wider text-stone-500">Contents</p>
                       </div>
                       <ul className="p-2 space-y-0.5 max-h-[calc(100vh-12rem)] overflow-auto">
                         {categories.map((cat) => {
@@ -913,56 +944,56 @@ export default function EntityPage() {
                                 className={cn(
                                   "relative flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 pl-3.5 text-left text-sm cursor-pointer transition-all",
                                   selected
-                                    ? "bg-gradient-to-r from-cyan-50 via-sky-50 to-white text-cyan-950 font-semibold shadow-sm ring-1 ring-cyan-200/90"
-                                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                                    ? "bg-gradient-to-r from-stone-100 via-[#f3f1ec] to-[#faf9f6] text-stone-900 font-semibold shadow-sm ring-1 ring-stone-300/80"
+                                    : "text-stone-600 hover:bg-stone-100/70 hover:text-stone-900"
                                 )}
                               >
                                 {selected && (
-                                  <span className="absolute inset-y-1.5 left-1 w-1 rounded-full bg-gradient-to-b from-cyan-400 to-sky-600" />
+                                  <span className="absolute inset-y-1.5 left-1 w-1 rounded-full bg-gradient-to-b from-teal-600 to-slate-700" />
                                 )}
                                 <span
                                   className={cn(
                                     "flex size-7 shrink-0 items-center justify-center rounded-lg",
                                     selected
-                                      ? "bg-cyan-500 text-white"
-                                      : "bg-slate-100 text-slate-500",
+                                      ? "bg-slate-800 text-white"
+                                      : "bg-stone-200/80 text-stone-500",
                                   )}
                                 >
                                   <CatIcon className="size-3.5" />
                                 </span>
                                 <span className="flex-1 truncate">{cat.title}</span>
                                 {selected && (
-                                  <span className="size-1.5 shrink-0 rounded-full bg-cyan-500" />
+                                  <span className="size-1.5 shrink-0 rounded-full bg-teal-700" />
                                 )}
                               </button>
                             </li>
                           );
                         })}
                       </ul>
-                      <div className="border-t border-slate-100 px-4 py-3 flex items-center gap-2 text-xs text-slate-500">
+                      <div className="border-t border-stone-200/80 px-4 py-3 flex items-center gap-2 text-xs text-stone-500">
                         <Clock className="size-3.5" />
                         {readingMins} min read
                       </div>
                     </nav>
                   )}
                   {activeTab === "overview" && wiki?.toc && wiki.toc.length > 0 && (
-                    <div className="rounded-2xl border border-slate-200/80 bg-white/90 px-3 py-2.5 text-[11px] text-slate-500">
+                    <div className="rounded-2xl border border-stone-300/70 bg-[#faf9f6]/90 px-3 py-2.5 text-[11px] text-stone-500">
                       <button
                         type="button"
-                        className="font-medium text-cyan-800 hover:underline cursor-pointer"
+                        className="font-medium text-teal-800 hover:underline cursor-pointer"
                         onClick={() => setActiveTab("timeline")}
                       >
                         More sections →
                       </button>
-                      <span className="mx-1.5 text-slate-300">·</span>
+                      <span className="mx-1.5 text-stone-300">·</span>
                       Facts, timeline, media
                     </div>
                   )}
                 </div>
                 )}
 
-                <div className="min-w-0 w-full rounded-2xl border border-slate-200/80 bg-white shadow-sm shadow-slate-200/40">
-                  <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-5 sm:px-8 py-3.5 bg-gradient-to-r from-slate-50 to-cyan-50/40 rounded-t-2xl">
+                <div className="min-w-0 w-full rounded-2xl border border-stone-300/70 bg-[#faf9f6]/95 shadow-sm shadow-stone-400/15 backdrop-blur-sm">
+                  <div className="flex items-center justify-between gap-3 border-b border-stone-200/80 px-5 sm:px-8 py-3.5 bg-gradient-to-r from-stone-100/80 to-[#f1efe9] rounded-t-2xl">
                     <div className="flex items-center gap-2 min-w-0">
                       <button
                         onClick={() => goTab(-1)}

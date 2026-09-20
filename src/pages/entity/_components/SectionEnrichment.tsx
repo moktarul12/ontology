@@ -89,7 +89,7 @@ function SectionBriefCard({
   accentClass?: string;
 }) {
   return (
-    <article className="rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-sm">
+    <article className="rounded-2xl border border-stone-300/70 bg-[#faf9f6]/95 p-5 sm:p-6 shadow-sm shadow-stone-400/15">
       <header className="flex flex-wrap items-center gap-2 border-b border-slate-100 pb-3">
         <Sparkles className={cn("size-3.5", accentClass)} />
         <h3 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">

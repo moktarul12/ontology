@@ -68,7 +68,7 @@ function MainArticleCard({
   return (
     <article
       id={`main-${article.parentSectionId}`}
-      className="scroll-mt-28 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
+      className="scroll-mt-28 overflow-hidden rounded-2xl border border-stone-300/70 bg-[#faf9f6]/95 shadow-sm shadow-stone-400/15"
     >
       <header className="border-b border-slate-100 bg-gradient-to-br from-slate-50 via-white to-cyan-50/50 px-5 py-4 sm:px-6">
         <div className="flex flex-wrap items-start justify-between gap-3">

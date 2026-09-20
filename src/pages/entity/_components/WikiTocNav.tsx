@@ -141,14 +141,14 @@ export function WikiTocNav({
   );
 
   return (
-    <nav className={cn("rounded-2xl border border-slate-200/80 bg-white shadow-sm shadow-slate-200/50 overflow-hidden", className)}>
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-100">
-        <List className="size-4 text-cyan-600" />
-        <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Contents</p>
+    <nav className={cn("rounded-2xl border border-stone-300/70 bg-[#faf9f6]/95 shadow-sm shadow-stone-400/15 overflow-hidden backdrop-blur-sm", className)}>
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-stone-200/80">
+        <List className="size-4 text-teal-700" />
+        <p className="text-xs font-semibold uppercase tracking-wider text-stone-500">Contents</p>
       </div>
       <div className="max-h-[calc(100vh-12rem)] overflow-auto">{renderItems(toc)}</div>
       {readingMins != null && readingMins > 0 && (
-        <div className="border-t border-slate-100 px-4 py-3 text-xs text-slate-500">
+        <div className="border-t border-stone-200/80 px-4 py-3 text-xs text-stone-500">
           {readingMins} min read
         </div>
       )}
