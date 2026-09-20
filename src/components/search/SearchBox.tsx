@@ -27,19 +27,57 @@ type SearchBoxProps = {
   autoFocus?: boolean;
 };
 
+function ResultThumb({
+  result,
+}: {
+  result: SearchResult;
+}) {
+  const cfg = getEntityTypeConfig(result.type);
+  const Icon = TYPE_ICONS[result.type];
+  const [imgFailed, setImgFailed] = useState(false);
+  const showImg = Boolean(result.thumbnail) && !imgFailed;
+
+  return (
+    <span
+      className={cn(
+        "relative flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-lg border",
+        showImg ? "border-border/60 bg-muted/40" : cn(cfg.bgClass, cfg.borderClass),
+      )}
+    >
+      {showImg ? (
+        <img
+          src={result.thumbnail}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          className="absolute inset-0 size-full object-cover object-top"
+          onError={() => setImgFailed(true)}
+        />
+      ) : (
+        <Icon className={cn("size-4", cfg.textClass)} aria-hidden />
+      )}
+    </span>
+  );
+}
+
 export default function SearchBox({ size = "lg", placeholder = "Search any person, place, concept, organization…", autoFocus = false }: SearchBoxProps) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [focused, setFocused] = useState(false);
-  const [debouncedQuery] = useDebounce(query, 300);
+  const [debouncedQuery] = useDebounce(query, 450);
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const { data: results, isLoading } = useQuery({
-    queryKey: ["search", debouncedQuery],
-    queryFn: () => searchEntities(debouncedQuery, 8),
-    enabled: debouncedQuery.trim().length >= 2,
+  const q = query.trim();
+  const dq = debouncedQuery.trim();
+  // Only search after typing has settled on the current string
+  const settled = q.length >= 2 && q === dq;
+
+  const { data: results, isFetching } = useQuery({
+    queryKey: ["search", dq],
+    queryFn: ({ signal }) => searchEntities(dq, 8, signal),
+    enabled: settled,
     staleTime: 1000 * 60 * 5,
   });
 
@@ -58,7 +96,12 @@ export default function SearchBox({ size = "lg", placeholder = "Search any perso
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  const showDropdown = open && (isLoading || (results && results.length > 0));
+  const activeResults = settled ? results : undefined;
+  const showSpinner = q.length >= 2 && (!settled || isFetching);
+  const showDropdown =
+    open &&
+    q.length >= 2 &&
+    (showSpinner || (activeResults != null && activeResults.length > 0));
 
   const handleSelect = (result: SearchResult) => {
     setOpen(false);
@@ -68,7 +111,7 @@ export default function SearchBox({ size = "lg", placeholder = "Search any perso
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") setOpen(false);
-    if (e.key === "Enter" && results?.[0]) handleSelect(results[0]);
+    if (e.key === "Enter" && activeResults?.[0]) handleSelect(activeResults[0]);
   };
 
   return (
@@ -84,7 +127,7 @@ export default function SearchBox({ size = "lg", placeholder = "Search any perso
             : "border-border hover:border-border/80"
         )}
       >
-        {isLoading && query.length >= 2 ? (
+        {showSpinner ? (
           <Loader2 className={cn("shrink-0 animate-spin text-muted-foreground", size === "lg" ? "size-5" : "size-4")} />
         ) : (
           <Search className={cn("shrink-0 text-muted-foreground", size === "lg" ? "size-5" : "size-4")} />
@@ -120,61 +163,37 @@ export default function SearchBox({ size = "lg", placeholder = "Search any perso
             transition={{ duration: 0.15, ease: "easeOut" }}
             className="absolute top-full left-0 right-0 mt-2 z-50 overflow-hidden rounded-xl border border-border bg-popover shadow-2xl shadow-black/40"
           >
-            {isLoading && (
+            {showSpinner && (
               <div className="flex items-center gap-2 px-4 py-3 text-sm text-muted-foreground">
                 <Loader2 className="size-3.5 animate-spin" />
                 Searching Wikidata…
               </div>
             )}
-            {results?.map((result, i) => {
-              const cfg = getEntityTypeConfig(result.type);
-              const Icon = TYPE_ICONS[result.type];
-              return (
-                <motion.button
-                  key={result.id}
-                  initial={{ opacity: 0, x: -8 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: i * 0.03, duration: 0.15 }}
-                  onMouseDown={() => handleSelect(result)}
-                  className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/50 transition-colors cursor-pointer border-b border-border/40 last:border-0"
-                >
-                  <span
-                    className={cn(
-                      "relative flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-lg border",
-                      result.thumbnail ? "border-border/60 bg-muted/40" : cn(cfg.bgClass, cfg.borderClass),
-                    )}
+            {!showSpinner &&
+              activeResults?.map((result, i) => {
+                const cfg = getEntityTypeConfig(result.type);
+                return (
+                  <motion.button
+                    key={result.id}
+                    initial={{ opacity: 0, x: -8 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: i * 0.03, duration: 0.15 }}
+                    onMouseDown={() => handleSelect(result)}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted/50 transition-colors cursor-pointer border-b border-border/40 last:border-0"
                   >
-                    {result.thumbnail ? (
-                      <img
-                        src={result.thumbnail}
-                        alt=""
-                        loading="lazy"
-                        decoding="async"
-                        className="absolute inset-0 size-full object-cover object-top"
-                        onError={(e) => {
-                          e.currentTarget.remove();
-                        }}
-                      />
-                    ) : (
-                      <Icon className={cn("size-4", cfg.textClass)} aria-hidden />
-                    )}
-                    {/* Fallback icon sits behind image; shows if image fails to load */}
-                    {result.thumbnail && (
-                      <Icon className={cn("size-4 relative z-0", cfg.textClass)} aria-hidden />
-                    )}
-                  </span>
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium text-sm text-foreground truncate">{result.label}</div>
-                    {result.description && (
-                      <div className="text-xs text-muted-foreground truncate mt-0.5">{result.description}</div>
-                    )}
-                  </div>
-                  <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium border", cfg.bgClass, cfg.textClass, cfg.borderClass)}>
-                    {cfg.label}
-                  </span>
-                </motion.button>
-              );
-            })}
+                    <ResultThumb result={result} />
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium text-sm text-foreground truncate">{result.label}</div>
+                      {result.description && (
+                        <div className="text-xs text-muted-foreground truncate mt-0.5">{result.description}</div>
+                      )}
+                    </div>
+                    <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium border", cfg.bgClass, cfg.textClass, cfg.borderClass)}>
+                      {cfg.label}
+                    </span>
+                  </motion.button>
+                );
+              })}
           </motion.div>
         )}
       </AnimatePresence>

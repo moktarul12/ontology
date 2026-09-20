@@ -112,6 +112,62 @@ function detectTypeFromInstanceOf(instanceOfIds: string[]): EntityType {
   return "unknown";
 }
 
+/** Wikidata “name” items (not people) — demote in search. */
+const NAME_ENTITY_QIDS = new Set([
+  "Q12308941", // male given name
+  "Q11879590", // female given name
+  "Q202444", // given name
+  "Q3409032", // unisex given name
+  "Q3409027", // double given name
+  "Q1243157", // hypocorism
+  "Q101352", // family name
+  "Q82799", // name
+]);
+
+function isAnthroponymEntity(p31: string[], description?: string): boolean {
+  if (p31.some((id) => NAME_ENTITY_QIDS.has(id))) return true;
+  return /\b(male |female |unisex )?(given|first) name\b|\bfamily name\b|\bsurname\b|\blast name\b/i.test(
+    description ?? "",
+  );
+}
+
+/** Lower = higher in search. Prefer people / companies / films; names last. */
+function searchResultRank(
+  query: string,
+  label: string,
+  type: EntityType,
+  description: string | undefined,
+  p31: string[],
+): number {
+  if (isAnthroponymEntity(p31, description)) return 100;
+
+  const q = query.trim().toLowerCase();
+  const l = label.trim().toLowerCase();
+  let score =
+    type === "person" ? 0
+    : type === "organization" ? 2
+    : type === "work" ? 3
+    : type === "place" ? 12
+    : type === "event" ? 14
+    : type === "concept" ? 16
+    : 20;
+
+  if (l === q) score -= 6;
+  else if (l.startsWith(q)) score -= 3;
+  else if (l.includes(q)) score -= 1;
+
+  // Description cues for companies / movies when P31 is thin
+  const d = (description ?? "").toLowerCase();
+  if (/\b(company|corporation|studio|enterprise|business|band|organization)\b/.test(d)) {
+    score = Math.min(score, 2);
+  }
+  if (/\b(film|movie|television series|tv series|album|novel|book)\b/.test(d)) {
+    score = Math.min(score, 3);
+  }
+
+  return score;
+}
+
 // Fallback edge labels for graph view
 const GRAPH_PROP_LABELS: Record<string, string> = {
   P18: "Image", P19: "Place of birth", P20: "Place of death", P21: "Sex or gender",
@@ -142,52 +198,82 @@ const GRAPH_PROP_LABELS: Record<string, string> = {
 
 // ─── Search ─────────────────────────────────────────────────────────────────
 
-export async function searchEntities(query: string, limit = 10): Promise<SearchResult[]> {
+export async function searchEntities(
+  query: string,
+  limit = 10,
+  signal?: AbortSignal,
+): Promise<SearchResult[]> {
   if (!query.trim()) return [];
+
+  // Pull a wider Wikidata page so we can demote name-items and still fill the list
+  const fetchLimit = Math.min(50, Math.max(limit * 3, 20));
 
   const params = new URLSearchParams({
     action: "wbsearchentities",
     search: query,
     language: "en",
-    limit: String(limit),
+    limit: String(fetchLimit),
     format: "json",
     origin: "*",
     type: "item",
   });
 
-  const res = await fetch(`${WIKIDATA_API}?${params}`);
+  const res = await fetch(`${WIKIDATA_API}?${params}`, { signal });
   if (!res.ok) throw new Error(`Wikidata search failed: ${res.status}`);
   const data = await res.json() as {
     search: Array<{ id: string; label: string; description?: string }>;
   };
 
+  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+
   const ids = data.search.map((r) => r.id);
-  const [typeMap, thumbs] = await Promise.all([
-    ids.length > 0 ? fetchEntityTypes(ids) : Promise.resolve({} as Record<string, EntityType>),
-    ids.length > 0 ? fetchThumbnails(ids) : Promise.resolve({} as Record<string, string>),
+  const [meta, thumbs] = await Promise.all([
+    ids.length > 0 ? fetchSearchMeta(ids, signal) : Promise.resolve({} as Record<string, SearchEntityMeta>),
+    ids.length > 0 ? fetchThumbnails(ids, signal) : Promise.resolve({} as Record<string, string>),
   ]);
 
-  return data.search.map((r) => ({
-    id: r.id,
-    label: r.label,
-    description: r.description,
-    thumbnail: thumbs[r.id],
-    type: typeMap[r.id] ?? guessTypeFromDescription(r.description),
-  }));
+  const mapped = data.search.map((r, index) => {
+    const m = meta[r.id];
+    const type = m?.type ?? guessTypeFromDescription(r.description);
+    return {
+      id: r.id,
+      label: r.label,
+      description: r.description,
+      thumbnail: thumbs[r.id],
+      type,
+      _rank: searchResultRank(query, r.label, type, r.description, m?.p31 ?? []),
+      _wikidataOrder: index,
+    };
+  });
+
+  mapped.sort(
+    (a, b) =>
+      a._rank - b._rank ||
+      a._wikidataOrder - b._wikidataOrder ||
+      a.label.localeCompare(b.label),
+  );
+
+  return mapped.slice(0, limit).map(({ _rank: _r, _wikidataOrder: _o, ...r }) => r);
 }
 
 function guessTypeFromDescription(desc = ""): EntityType {
   const d = desc.toLowerCase();
+  if (/\b(male |female |unisex )?(given|first) name\b|\bfamily name\b|\bsurname\b/.test(d)) {
+    return "unknown";
+  }
   if (/politician|actor|scientist|writer|musician|athlete|king|queen|person|human/.test(d)) return "person";
   if (/city|country|town|capital|village|island|river|mountain|commune|municipality|settlement/.test(d)) return "place";
-  if (/company|organization|university|corporation|business|party|agency/.test(d)) return "organization";
+  if (/company|organization|university|corporation|business|party|agency|studio|band/.test(d)) return "organization";
   if (/war|battle|election|festival|revolution/.test(d)) return "event";
-  if (/film|novel|album|book|painting|song|software|game/.test(d)) return "work";
+  if (/film|movie|novel|album|book|painting|song|software|game|television series/.test(d)) return "work";
   if (/concept|theory|disease|chemical|philosophy/.test(d)) return "concept";
   return "unknown";
 }
 
-async function fetchThumbnails(ids: string[]): Promise<Record<string, string>> {
+async function fetchThumbnails(
+  ids: string[],
+  signal?: AbortSignal,
+): Promise<Record<string, string>> {
   try {
     const params = new URLSearchParams({
       action: "wbgetentities",
@@ -196,7 +282,7 @@ async function fetchThumbnails(ids: string[]): Promise<Record<string, string>> {
       format: "json",
       origin: "*",
     });
-    const res = await fetch(`${WIKIDATA_API}?${params}`);
+    const res = await fetch(`${WIKIDATA_API}?${params}`, { signal });
     if (!res.ok) return {};
     const data = await res.json() as { entities: Record<string, WikidataEntity> };
     const out: Record<string, string> = {};
@@ -211,9 +297,15 @@ async function fetchThumbnails(ids: string[]): Promise<Record<string, string>> {
   }
 }
 
-async function fetchEntityTypes(ids: string[]): Promise<Record<string, EntityType>> {
-  const result: Record<string, EntityType> = {};
+type SearchEntityMeta = { type: EntityType; p31: string[] };
+
+async function fetchSearchMeta(
+  ids: string[],
+  signal?: AbortSignal,
+): Promise<Record<string, SearchEntityMeta>> {
+  const result: Record<string, SearchEntityMeta> = {};
   for (let i = 0; i < ids.length; i += 50) {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     const chunk = ids.slice(i, i + 50);
     const params = new URLSearchParams({
       action: "wbgetentities",
@@ -222,19 +314,32 @@ async function fetchEntityTypes(ids: string[]): Promise<Record<string, EntityTyp
       format: "json",
       origin: "*",
     });
-    const res = await fetch(`${WIKIDATA_API}?${params}`);
+    const res = await fetch(`${WIKIDATA_API}?${params}`, { signal });
     if (!res.ok) continue;
     const data = await res.json() as { entities: Record<string, { claims?: Record<string, unknown[]> }> };
     for (const [id, entity] of Object.entries(data.entities)) {
       const p31Claims = entity.claims?.["P31"] as Array<{
         mainsnak?: { datavalue?: { value?: { id?: string } } };
       }> | undefined;
-      const instanceOfIds = (p31Claims ?? [])
+      const p31 = (p31Claims ?? [])
         .map((c) => c.mainsnak?.datavalue?.value?.id)
         .filter((x): x is string => Boolean(x));
-      result[id] = detectTypeFromInstanceOf(instanceOfIds);
+      result[id] = {
+        type: detectTypeFromInstanceOf(p31),
+        p31,
+      };
     }
   }
+  return result;
+}
+
+async function fetchEntityTypes(
+  ids: string[],
+  signal?: AbortSignal,
+): Promise<Record<string, EntityType>> {
+  const meta = await fetchSearchMeta(ids, signal);
+  const result: Record<string, EntityType> = {};
+  for (const [id, m] of Object.entries(meta)) result[id] = m.type;
   return result;
 }
 

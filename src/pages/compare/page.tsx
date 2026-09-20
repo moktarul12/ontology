@@ -351,7 +351,7 @@ export default function ComparePage() {
   const [copied, setCopied] = useState(false);
 
   const [query, setQuery] = useState("");
-  const [debounced] = useDebounce(query, 300);
+  const [debounced] = useDebounce(query, 450);
   const [otherId, setOtherId] = useState<string | null>(() => {
     const vs = searchParams.get("vs");
     return vs && /^Q\d+$/i.test(vs) ? vs.toUpperCase() : null;
@@ -382,8 +382,8 @@ export default function ComparePage() {
 
   const search = useQuery({
     queryKey: ["search", debounced, "compare"],
-    queryFn: () => searchEntities(debounced, 10),
-    enabled: debounced.trim().length >= 2,
+    queryFn: ({ signal }) => searchEntities(debounced, 10, signal),
+    enabled: debounced.trim().length >= 2 && query.trim() === debounced.trim(),
   });
 
   const peerList = useMemo(
