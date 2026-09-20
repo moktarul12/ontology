@@ -36,7 +36,8 @@ import {
 } from "@/pages/entity/_components/SectionEnrichment.tsx";
 import { WikiTocNav } from "@/pages/entity/_components/WikiTocNav.tsx";
 import { WikiArticleWithMainEmbeds } from "@/pages/entity/_components/MainArticlePanels.tsx";
-import { EntityHero } from "@/pages/entity/_components/EntityHero.tsx";
+import { EntityHero, type HeroExploreItem } from "@/pages/entity/_components/EntityHero.tsx";
+import { AiReadAloud } from "@/pages/entity/_components/AiReadAloud.tsx";
 
 const TYPE_ICONS: Record<EntityType, ComponentType<{ className?: string }>> = {
   person: User,
@@ -624,6 +625,66 @@ export default function EntityPage() {
         !/signatur|autograph/i.test(i.filename) &&
         /\.(jpe?g|png|webp)$/i.test(i.filename),
     )?.url;
+  const galleryUrls = (entity?.images ?? [])
+    .filter((i) => {
+      if (i.propertyId === "P109" || /signatur|autograph|logo|flag|map|coa|icon|svg/i.test(i.filename)) return false;
+      if (!/\.(jpe?g|png|webp)$/i.test(i.filename)) return false;
+      if (entity?.type === "organization") return i.propertyId === "P18" || i.propertyId === "P154" || i.propertyId === "wiki-gallery";
+      if (entity?.type === "person") return i.propertyId === "P18" || i.propertyId === "wiki-gallery";
+      return true;
+    })
+    .map((i) => i.url);
+
+  const goExploreTab = (id: string) => {
+    setActiveTab(id);
+    requestAnimationFrame(() =>
+      document.getElementById("entity-main")?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    );
+  };
+
+  const explore: HeroExploreItem[] = entity && qid
+    ? [
+        {
+          id: "overview",
+          label: "Overview",
+          icon: BookOpen,
+          action: () => goExploreTab("overview"),
+          selected: activeTab === "overview",
+        },
+        {
+          id: "timeline",
+          label: "Timeline",
+          icon: Sparkles,
+          action: () => goExploreTab("timeline"),
+          selected: activeTab === "timeline",
+        },
+        {
+          id: "graph",
+          label: "Knowledge Graph",
+          icon: Network,
+          action: () => navigate(`/graph/${qid}`),
+          selected: false,
+        },
+        ...(entity.type === "person"
+          ? [
+              {
+                id: "family-tree",
+                label: "Family Tree",
+                icon: GitBranch,
+                action: () => navigate(`/family-tree/${qid}`),
+                selected: false,
+              },
+            ]
+          : []),
+        {
+          id: "compare",
+          label: "Compare",
+          icon: GitCompareArrows,
+          action: () => navigate(`/compare/${qid}`),
+          selected: false,
+        },
+      ]
+    : [];
 
   return (
     <div className="min-h-screen bg-[#f4f7fb]">
@@ -658,44 +719,6 @@ export default function EntityPage() {
             <div className="ml-auto flex shrink-0 items-center gap-0.5 sm:gap-1">
               <button
                 type="button"
-                onClick={() => {
-                  setActiveTab("timeline");
-                  requestAnimationFrame(() =>
-                    document.getElementById("entity-main")?.scrollIntoView({ behavior: "smooth", block: "start" }),
-                  );
-                }}
-                className={cn(
-                  "inline-flex items-center gap-1 rounded-lg px-2 sm:px-2.5 py-1.5 text-[11px] sm:text-[12px] font-medium cursor-pointer transition-colors",
-                  activeTab === "timeline"
-                    ? "bg-teal-400 text-slate-950"
-                    : "border border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/[0.08] hover:text-white",
-                )}
-                title="AI Timeline"
-              >
-                <Sparkles className="size-3.5 shrink-0" />
-                <span className="hidden md:inline">Timeline</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setActiveTab("overview");
-                  requestAnimationFrame(() =>
-                    document.getElementById("entity-main")?.scrollIntoView({ behavior: "smooth", block: "start" }),
-                  );
-                }}
-                className={cn(
-                  "inline-flex items-center gap-1 rounded-lg px-2 sm:px-2.5 py-1.5 text-[11px] sm:text-[12px] font-medium cursor-pointer transition-colors",
-                  activeTab === "overview"
-                    ? "bg-teal-400 text-slate-950"
-                    : "border border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/[0.08] hover:text-white",
-                )}
-                title="Overview"
-              >
-                <BookOpen className="size-3.5 shrink-0" />
-                <span className="hidden md:inline">Overview</span>
-              </button>
-              <button
-                type="button"
                 onClick={() => navigate(`/graph/${qid}`)}
                 className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 sm:px-2.5 py-1.5 text-[11px] sm:text-[12px] font-medium text-slate-300 hover:bg-white/[0.08] hover:text-white transition-colors cursor-pointer"
                 title="Knowledge graph"
@@ -723,6 +746,13 @@ export default function EntityPage() {
                 <GitCompareArrows className="size-3.5 text-teal-300 shrink-0" />
                 <span className="hidden lg:inline">Compare</span>
               </button>
+              <AiReadAloud
+                entity={entity}
+                variant="header"
+                text={[entity.label, entity.description, entity.wikipedia?.lead]
+                  .filter(Boolean)
+                  .join(". ")}
+              />
             </div>
           )}
           <button
@@ -795,101 +825,9 @@ export default function EntityPage() {
             marketing={marketing}
             wikiInfobox={wikiInfobox}
             quickFacts={quickFacts}
+            galleryUrls={galleryUrls}
+            explore={explore}
           />
-
-          {/* Primary surfaces — directly under hero */}
-          <nav
-            aria-label="Explore this entity"
-            className="sticky top-[6.75rem] z-20 border-b border-slate-200/80 bg-[#f4f7fb]/95 backdrop-blur-md md:top-[3.25rem]"
-          >
-            <div className="mx-auto max-w-[1600px] px-4 py-2.5 sm:px-5">
-              <div className="flex gap-1.5 overflow-x-auto pb-0.5 -mx-1 px-1">
-                {(
-                  [
-                    {
-                      id: "timeline" as const,
-                      label: "Timeline",
-                      hint: "Year-by-year",
-                      icon: Sparkles,
-                      action: () => setActiveTab("timeline"),
-                      selected: activeTab === "timeline",
-                    },
-                    {
-                      id: "overview" as const,
-                      label: "Overview",
-                      hint: "Full biography",
-                      icon: BookOpen,
-                      action: () => setActiveTab("overview"),
-                      selected: activeTab === "overview",
-                    },
-                    {
-                      id: "graph" as const,
-                      label: "Knowledge graph",
-                      hint: "Relations map",
-                      icon: Network,
-                      action: () => navigate(`/graph/${qid}`),
-                      selected: false,
-                    },
-                    ...(entity.type === "person"
-                      ? [
-                          {
-                            id: "family-tree" as const,
-                            label: "Family tree",
-                            hint: "Kinship links",
-                            icon: GitBranch,
-                            action: () => navigate(`/family-tree/${qid}`),
-                            selected: false,
-                          },
-                        ]
-                      : []),
-                    {
-                      id: "compare" as const,
-                      label: "Compare",
-                      hint: "Side-by-side",
-                      icon: GitCompareArrows,
-                      action: () => navigate(`/compare/${qid}`),
-                      selected: false,
-                    },
-                  ] as const
-                ).map((item) => {
-                  const ItemIcon = item.icon;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={item.action}
-                      className={cn(
-                        "inline-flex shrink-0 items-center gap-2 rounded-xl border px-3.5 py-2 text-left cursor-pointer transition-all",
-                        item.selected
-                          ? "border-teal-600 bg-teal-600 text-white shadow-sm shadow-teal-600/20"
-                          : "border-slate-200 bg-white text-slate-700 hover:border-teal-300 hover:bg-teal-50/60",
-                      )}
-                    >
-                      <ItemIcon
-                        className={cn(
-                          "size-4 shrink-0",
-                          item.selected ? "text-white" : "text-teal-600",
-                        )}
-                      />
-                      <span className="min-w-0">
-                        <span className="block text-[13px] font-semibold leading-tight">
-                          {item.label}
-                        </span>
-                        <span
-                          className={cn(
-                            "hidden sm:block text-[11px] leading-tight",
-                            item.selected ? "text-teal-100" : "text-slate-500",
-                          )}
-                        >
-                          {item.hint}
-                        </span>
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          </nav>
 
           {/* ═══════════════ BODY (light) ═══════════════ */}
           <section

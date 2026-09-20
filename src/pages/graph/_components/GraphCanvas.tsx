@@ -396,12 +396,23 @@ export default function GraphCanvas({
       .call(zoomRef.current.transform, d3.zoomIdentity.translate(tx, ty).scale(k));
   }, [nodes, edges, rootId, arrangeMode]);
 
+  const zoomBy = useCallback((factor: number) => {
+    if (!svgRef.current || !zoomRef.current) return;
+    d3.select(svgRef.current)
+      .transition()
+      .duration(220)
+      .call(zoomRef.current.scaleBy, factor);
+  }, []);
+
   useEffect(() => {
-    (window as unknown as Record<string, unknown>).__graphResetZoom = resetZoom;
+    const w = window as unknown as Record<string, unknown>;
+    w.__graphResetZoom = resetZoom;
+    w.__graphZoomBy = zoomBy;
     return () => {
-      delete (window as unknown as Record<string, unknown>).__graphResetZoom;
+      delete w.__graphResetZoom;
+      delete w.__graphZoomBy;
     };
-  }, [resetZoom]);
+  }, [resetZoom, zoomBy]);
 
   const { x: tX, y: tY, k: tK } = transform;
   const byId = new Map(nodes.map((n) => [n.id, n]));

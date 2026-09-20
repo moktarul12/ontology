@@ -52,6 +52,12 @@ const TYPE_QID_MAP: Record<string, EntityType> = {
   Q4022: "place",
   Q5107: "place",
   Q2221906: "place",
+  Q484170: "place", // commune of France
+  Q1549591: "place", // big city
+  Q1637706: "place", // city with millions of inhabitants
+  Q174844: "place", // megacity
+  Q208511: "place",
+  Q515721: "place",
   Q43229: "organization",
   Q4830453: "organization",
   Q3918: "organization",
@@ -173,7 +179,7 @@ export async function searchEntities(query: string, limit = 10): Promise<SearchR
 function guessTypeFromDescription(desc = ""): EntityType {
   const d = desc.toLowerCase();
   if (/politician|actor|scientist|writer|musician|athlete|king|queen|person|human/.test(d)) return "person";
-  if (/city|country|town|capital|village|island|river|mountain/.test(d)) return "place";
+  if (/city|country|town|capital|village|island|river|mountain|commune|municipality|settlement/.test(d)) return "place";
   if (/company|organization|university|corporation|business|party|agency/.test(d)) return "organization";
   if (/war|battle|election|festival|revolution/.test(d)) return "event";
   if (/film|novel|album|book|painting|song|software|game/.test(d)) return "work";
@@ -280,7 +286,13 @@ export async function fetchEntitySummary(id: string): Promise<EntitySummary> {
       instanceOf.push({ id: val.id, label: qidMeta[val.id]?.label ?? val.id });
     }
   }
-  const type = detectTypeFromInstanceOf(instanceOf.map((i) => i.id));
+  const mappedType = detectTypeFromInstanceOf(instanceOf.map((i) => i.id));
+  const type =
+    mappedType !== "unknown"
+      ? mappedType
+      : guessTypeFromDescription(
+          `${instanceOf.map((i) => i.label).join(" ")} ${description ?? ""}`,
+        );
 
   // Images from Wikidata (P18 portrait preferred; P109 signatures often SVG)
   const images: EntityImage[] = [];

@@ -1,11 +1,14 @@
 import { useParams, useNavigate } from "react-router-dom";
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Share2, Minus, Plus, RotateCcw, Layers, Info, ChevronDown, LayoutGrid, Expand } from "lucide-react";
+import {
+  ArrowLeft, Share2, Minus, Plus, RotateCcw, Layers, Info, ChevronDown,
+  LayoutGrid, Expand, Network, GitBranch, GitCompareArrows, ZoomIn, ZoomOut, Check,
+} from "lucide-react";
 import { toast } from "sonner";
 import { motion } from "motion/react";
 import SearchBox from "@/components/search/SearchBox.tsx";
-import { ExploreAtlasPills } from "@/components/ExploreAtlas.tsx";
+import { SearchNamePeers } from "@/components/search/SearchNamePeers.tsx";
 import GraphCanvas from "./_components/GraphCanvas.tsx";
 import NodeDetailModal from "./_components/NodeDetailModal.tsx";
 import GraphLegend from "./_components/GraphLegend.tsx";
@@ -78,6 +81,7 @@ export default function GraphPage() {
   const [shownByHub, setShownByHub] = useState<Record<string, number>>({});
   const [arrangeMode, setArrangeMode] = useState<GraphArrangeMode>("orbit");
   const [arrangeNonce, setArrangeNonce] = useState(0);
+  const [copied, setCopied] = useState(false);
   /** Family & life filter panel — collapsed by default. */
   const [lifeFamilyOpen, setLifeFamilyOpen] = useState(false);
 
@@ -461,229 +465,220 @@ export default function GraphPage() {
     const next = GRAPH_ARRANGE_MODES[(idx + 1) % GRAPH_ARRANGE_MODES.length]!;
     setArrangeMode(next);
     setArrangeNonce((n) => n + 1);
-    toast.message(GRAPH_ARRANGE_LABEL[next]);
   };
 
   return (
-    <div className="flex flex-col h-screen bg-background overflow-hidden">
-      {/* ── Top bar ──────────────────────────────────────────────────────── */}
-      <header className="shrink-0 border-b border-border/60 bg-background/95 backdrop-blur-sm z-10">
-        <div className="flex items-center gap-2.5 px-4 py-2.5 md:px-5">
+    <div className="flex flex-col h-screen bg-[#f4f7fb] overflow-hidden">
+      <header className="shrink-0 border-b border-slate-800/80 bg-[#0b1220]/96 backdrop-blur-md z-30">
+        <div className="mx-auto flex max-w-[1600px] items-center gap-2 px-4 py-2 sm:gap-3 md:px-5 md:py-2.5">
           <button
+            type="button"
+            onClick={() => navigate("/")}
+            className="flex shrink-0 items-center gap-2 cursor-pointer"
+          >
+            <div className="flex size-8 items-center justify-center rounded-lg bg-cyan-500/20 border border-cyan-400/30">
+              <Network className="size-4 text-cyan-300" />
+            </div>
+            <span className="hidden sm:inline font-serif font-semibold text-white tracking-tight">
+              Wikigraph
+            </span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => navigate(entityPath(id!, rootEntity?.label))}
-            className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/60 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+            className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer"
+            title="Back to overview"
           >
             <ArrowLeft className="size-4" />
           </button>
 
-          {/* Title */}
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="min-w-0">
-              <p className="text-[10px] text-muted-foreground uppercase tracking-wider hidden sm:block">Knowledge Graph</p>
-              <p className="text-sm font-semibold text-foreground truncate max-w-[140px]">
-                {rootEntity?.label ?? id}
-              </p>
+          <div className="hidden md:flex flex-1 min-w-0 items-center gap-1.5">
+            <div className="flex-1 min-w-0">
+              <SearchBox size="md" />
             </div>
+            {id && rootEntity && (
+              <SearchNamePeers name={rootEntity.label} currentId={id} />
+            )}
           </div>
 
-          {rootEntity && (
-            <ExploreAtlasPills
-              qid={id!}
-              entityType={rootEntity.type}
-              entityLabel={rootEntity.label}
-              active="graph"
-              className="hidden lg:inline-flex"
-            />
-          )}
-
-          <div className="flex-1 hidden md:block max-w-sm">
-            <SearchBox size="md" />
-          </div>
-
-          <div className="flex items-center gap-1.5 ml-auto">
-            {/* Depth control */}
-            <div className="flex items-center gap-1 rounded-lg border border-border/60 bg-card/60 px-1.5 py-1">
-              <button
-                onClick={() => handleDepthChange(depth - 1)}
-                disabled={depth <= 1 || busy}
-                className="flex size-6 items-center justify-center rounded text-muted-foreground hover:text-foreground disabled:opacity-30 transition-colors cursor-pointer disabled:cursor-not-allowed"
+          {id && rootEntity && (
+            <div className="ml-auto flex shrink-0 items-center gap-0.5 sm:gap-1">
+              <div
+                className="inline-flex items-center rounded-lg border border-cyan-400/40 bg-cyan-500/15 p-0.5"
+                title="Knowledge graph"
               >
-                <Minus className="size-3" />
-              </button>
-              <span className="px-2 text-xs font-mono text-foreground min-w-[56px] text-center">
-                {busy ? "…" : `${depth} hop${depth > 1 ? "s" : ""}`}
-              </span>
-              <button
-                onClick={() => handleDepthChange(depth + 1)}
-                disabled={depth >= 3 || busy}
-                className="flex size-6 items-center justify-center rounded text-muted-foreground hover:text-foreground disabled:opacity-30 transition-colors cursor-pointer disabled:cursor-not-allowed"
-              >
-                <Plus className="size-3" />
-              </button>
-            </div>
+                <span className="inline-flex items-center gap-1.5 pl-2 pr-2.5 py-1 text-[11px] sm:text-[12px] font-semibold text-white bg-white/15 rounded-md select-none">
+                  <Network className="size-3.5 text-teal-300 shrink-0" />
+                  Graph
+                </span>
+              </div>
 
-            {depth === 1 && collapsedHop1HubCount > 0 && (
+              {rootEntity.type === "person" && (
+                <button
+                  type="button"
+                  onClick={() => navigate(`/family-tree/${id}`)}
+                  className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 sm:px-2.5 py-1.5 text-[11px] sm:text-[12px] font-medium text-slate-300 hover:bg-white/[0.08] hover:text-white transition-colors cursor-pointer"
+                  title="Family tree"
+                >
+                  <GitBranch className="size-3.5 text-teal-300 shrink-0" />
+                  <span className="hidden lg:inline">Family</span>
+                </button>
+              )}
+
               <button
                 type="button"
-                onClick={expandAllHop1Relations}
-                disabled={busy}
-                className="flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-2.5 py-1.5 text-[11px] font-semibold text-primary hover:bg-primary/20 transition-colors cursor-pointer disabled:opacity-40"
-                title="Expand all hop-1 relation hubs"
+                onClick={() => navigate(`/compare/${id}`)}
+                className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 sm:px-2.5 py-1.5 text-[11px] sm:text-[12px] font-medium text-slate-300 hover:bg-white/[0.08] hover:text-white transition-colors cursor-pointer"
+                title="Compare"
               >
-                <Expand className="size-3.5" />
-                Expand all
-                <span className="font-mono text-[10px] opacity-80">{collapsedHop1HubCount}</span>
-              </button>
-            )}
-
-            {/* Filter which relation types appear (hubs always on) */}
-            <div ref={relationsMenuRef} className="relative">
-              <button
-                onClick={() => setRelationsOpen((v) => !v)}
-                disabled={busy || relationOptions.length === 0}
-                className={cn(
-                  "flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed",
-                  relationsOpen || hiddenRelations.size > 0
-                    ? "border-primary/40 bg-primary/10 text-primary"
-                    : "border-border/60 text-muted-foreground hover:text-foreground",
-                )}
-                title="Show or hide relation types"
-              >
-                Relations
-                {relationOptions.length > 0 && (
-                  <span className="font-mono text-[10px] opacity-80">
-                    {visibleRelationCount}/{relationOptions.length}
-                  </span>
-                )}
-                <ChevronDown className={cn("size-3.5 transition-transform", relationsOpen && "rotate-180")} />
+                <GitCompareArrows className="size-3.5 text-teal-300 shrink-0" />
+                <span className="hidden lg:inline">Compare</span>
               </button>
 
-              {relationsOpen && (
-                <div className="absolute right-0 top-full z-30 mt-1.5 w-64 max-h-72 overflow-y-auto rounded-xl border border-border/70 bg-card/95 backdrop-blur-md shadow-lg p-2">
-                  <div className="flex items-center justify-between px-2 py-1 mb-1">
-                    <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                      Relation types
+              <span className="hidden sm:block w-px self-stretch my-1.5 mx-0.5 bg-white/15" />
+
+              {depth === 1 && collapsedHop1HubCount > 0 && (
+                <button
+                  type="button"
+                  onClick={expandAllHop1Relations}
+                  disabled={busy}
+                  className="inline-flex items-center gap-1 rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-2 py-1.5 text-[11px] font-semibold text-cyan-100 hover:bg-cyan-500/20 transition-colors cursor-pointer disabled:opacity-40"
+                  title="Expand all hop-1 relation hubs"
+                >
+                  <Expand className="size-3.5" />
+                  <span className="hidden xl:inline">Expand</span>
+                  <span className="font-mono text-[10px] opacity-80">{collapsedHop1HubCount}</span>
+                </button>
+              )}
+
+              <div ref={relationsMenuRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setRelationsOpen((v) => !v)}
+                  disabled={busy || relationOptions.length === 0}
+                  className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] font-semibold transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                    relationsOpen || hiddenRelations.size > 0
+                      ? "border-cyan-400/40 bg-cyan-500/15 text-cyan-100"
+                      : "border-white/10 bg-white/[0.04] text-slate-300 hover:text-white hover:bg-white/[0.08]"
+                  }`}
+                  title="Show or hide relation types"
+                >
+                  Relations
+                  {relationOptions.length > 0 && (
+                    <span className="font-mono text-[10px] opacity-80">
+                      {visibleRelationCount}/{relationOptions.length}
                     </span>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        className={cn(
-                          "text-[10px] hover:underline cursor-pointer",
-                          hiddenRelations.size === 0 ? "text-primary font-semibold" : "text-primary",
-                        )}
-                        onClick={() => setHiddenRelations(new Set())}
-                        title="Show all relations toward the search item"
-                      >
-                        All
-                      </button>
-                      <button
-                        type="button"
-                        className="text-[10px] text-primary hover:underline cursor-pointer"
-                        onClick={() => setHiddenRelations(defaultHiddenRelations(edges, id!))}
-                        title="Enable important relations only"
-                      >
-                        Important
-                      </button>
-                      <button
-                        type="button"
-                        className="text-[10px] text-muted-foreground hover:text-foreground hover:underline cursor-pointer"
-                        onClick={() =>
-                          setHiddenRelations(new Set(relationOptions.map((r) => r.propertyId)))
-                        }
-                      >
-                        None
-                      </button>
+                  )}
+                  <ChevronDown className={`size-3.5 transition-transform ${relationsOpen ? "rotate-180" : ""}`} />
+                </button>
+
+                {relationsOpen && (
+                  <div className="absolute right-0 top-full z-30 mt-1.5 w-64 max-h-72 overflow-y-auto rounded-xl border border-slate-700 bg-[#0f172a] shadow-xl p-2">
+                    <div className="flex items-center justify-between px-2 py-1 mb-1">
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                        Relation types
+                      </span>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          className="text-[10px] text-cyan-300 hover:underline cursor-pointer"
+                          onClick={() => setHiddenRelations(new Set())}
+                        >
+                          All
+                        </button>
+                        <button
+                          type="button"
+                          className="text-[10px] text-cyan-300 hover:underline cursor-pointer"
+                          onClick={() => setHiddenRelations(defaultHiddenRelations(edges, id!))}
+                        >
+                          Important
+                        </button>
+                        <button
+                          type="button"
+                          className="text-[10px] text-slate-400 hover:text-white hover:underline cursor-pointer"
+                          onClick={() =>
+                            setHiddenRelations(new Set(relationOptions.map((r) => r.propertyId)))
+                          }
+                        >
+                          None
+                        </button>
+                      </div>
                     </div>
+                    <ul className="space-y-0.5">
+                      {relationOptions.map((rel) => {
+                        const checked = !hiddenRelations.has(rel.propertyId);
+                        const important = isImportantRelation(rel.propertyId);
+                        return (
+                          <li key={rel.propertyId}>
+                            <label className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs cursor-pointer hover:bg-white/5">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleRelation(rel.propertyId)}
+                                className="size-3.5 accent-cyan-400 cursor-pointer"
+                              />
+                              <span className={`flex-1 truncate ${important ? "text-slate-100 font-medium" : "text-slate-400"}`}>
+                                {rel.label}
+                              </span>
+                              <span className="font-mono text-[10px] text-slate-500">{rel.count}</span>
+                            </label>
+                          </li>
+                        );
+                      })}
+                    </ul>
                   </div>
-                  <ul className="space-y-0.5">
-                    {relationOptions.map((rel) => {
-                      const checked = !hiddenRelations.has(rel.propertyId);
-                      const important = isImportantRelation(rel.propertyId);
-                      return (
-                        <li key={rel.propertyId}>
-                          <label className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs cursor-pointer hover:bg-muted/50">
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => toggleRelation(rel.propertyId)}
-                              className="size-3.5 accent-primary cursor-pointer"
-                            />
-                            <span className={cn("flex-1 truncate", important ? "text-foreground font-medium" : "text-muted-foreground")}>
-                              {rel.label}
-                            </span>
-                            <span className="font-mono text-[10px] text-muted-foreground">{rel.count}</span>
-                          </label>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-              )}
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowLegend((v) => !v)}
+                className={`flex size-8 items-center justify-center rounded-lg border transition-colors cursor-pointer ${
+                  showLegend
+                    ? "border-cyan-400/40 bg-cyan-500/15 text-cyan-200"
+                    : "border-white/10 text-slate-400 hover:text-white"
+                }`}
+                title="Legend"
+              >
+                <Layers className="size-4" />
+              </button>
             </div>
+          )}
 
-            {/* Auto arrange — cycles orbit / spread / wide */}
-            <button
-              onClick={handleAutoArrange}
-              disabled={busy || nodes.length === 0}
-              className="flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-2.5 py-1.5 text-[11px] font-semibold text-primary hover:bg-primary/20 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-              title={GRAPH_ARRANGE_LABEL[arrangeMode]}
-            >
-              <LayoutGrid className="size-3.5" />
-              <span className="hidden sm:inline">Auto arrange</span>
-            </button>
-
-            {/* Legend toggle */}
-            <button
-              onClick={() => setShowLegend((v) => !v)}
-              className={cn(
-                "flex size-8 items-center justify-center rounded-lg border transition-colors cursor-pointer",
-                showLegend ? "border-primary/50 bg-primary/10 text-primary" : "border-border/60 text-muted-foreground hover:text-foreground"
-              )}
-            >
-              <Layers className="size-4" />
-            </button>
-
-            {/* Reset zoom */}
-            <button
-              onClick={handleReset}
-              className="flex size-8 items-center justify-center rounded-lg border border-border/60 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-              title="Reset zoom"
-            >
-              <RotateCcw className="size-4" />
-            </button>
-
-            {/* Share */}
-            <button
-              onClick={() => { navigator.clipboard.writeText(window.location.href); toast.success("Link copied!"); }}
-              className="flex size-8 items-center justify-center rounded-lg border border-border/60 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-            >
-              <Share2 className="size-4" />
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => {
+              navigator.clipboard.writeText(window.location.href).then(() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+                toast.success("Link copied!");
+              });
+            }}
+            className={`flex size-8 shrink-0 items-center justify-center rounded-lg border border-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer ${!(id && rootEntity) ? "ml-auto" : ""}`}
+            title="Copy link"
+          >
+            {copied ? <Check className="size-4 text-emerald-400" /> : <Share2 className="size-4" />}
+          </button>
         </div>
 
-        {/* Mobile: search (row 2) + atlas (row 3) */}
-        <div className="md:hidden border-t border-border/40 px-4 py-2">
-          <SearchBox size="md" />
-        </div>
-        {rootEntity && (
-          <div className="lg:hidden border-t border-border/40 px-4 py-2">
-            <ExploreAtlasPills
-              qid={id!}
-              entityType={rootEntity.type}
-              entityLabel={rootEntity.label}
-              active="graph"
-              className="w-full justify-center"
-            />
+        <div className="md:hidden border-t border-white/10 px-4 py-2">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <div className="min-w-0 flex-1">
+              <SearchBox size="md" />
+            </div>
+            {id && rootEntity && (
+              <SearchNamePeers name={rootEntity.label} currentId={id} />
+            )}
           </div>
-        )}
+        </div>
 
         {showLegend && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            className="border-t border-border/40 px-5 py-2.5"
+            className="border-t border-white/10 px-5 py-2.5 bg-[#0b1220]"
           >
             <GraphLegend />
           </motion.div>
@@ -692,14 +687,28 @@ export default function GraphPage() {
 
       {/* ── Canvas area ───────────────────────────────────────────────────── */}
       <div className="relative flex-1 overflow-hidden">
-        {/* Background grid */}
-        <svg className="absolute inset-0 w-full h-full pointer-events-none opacity-[0.025]">
+        <div
+          className="absolute inset-0 pointer-events-none"
+          style={{
+            background: `
+              radial-gradient(ellipse 90% 55% at 50% -5%, rgba(14,165,233,0.09), transparent 50%),
+              radial-gradient(ellipse 50% 40% at 100% 100%, rgba(45,139,87,0.05), transparent 45%),
+              radial-gradient(ellipse 40% 35% at 0% 80%, rgba(107,92,168,0.05), transparent 40%),
+              #f0f4f8
+            `,
+          }}
+        />
+        <svg className="absolute inset-0 w-full h-full pointer-events-none" aria-hidden>
           <defs>
-            <pattern id="graphgrid" width="32" height="32" patternUnits="userSpaceOnUse">
-              <path d="M 32 0 L 0 0 0 32" fill="none" stroke="currentColor" strokeWidth="0.5" />
+            <pattern id="graph-dots" width="22" height="22" patternUnits="userSpaceOnUse">
+              <circle cx="1.2" cy="1.2" r="1.05" fill="#94a3b8" opacity="0.35" />
+            </pattern>
+            <pattern id="graph-dots-lg" width="88" height="88" patternUnits="userSpaceOnUse">
+              <circle cx="44" cy="44" r="1.6" fill="#64748b" opacity="0.2" />
             </pattern>
           </defs>
-          <rect width="100%" height="100%" fill="url(#graphgrid)" />
+          <rect width="100%" height="100%" fill="url(#graph-dots)" />
+          <rect width="100%" height="100%" fill="url(#graph-dots-lg)" />
         </svg>
 
         {/* Initial load only — full overlay when there is no graph yet */}
@@ -767,16 +776,74 @@ export default function GraphPage() {
           linkedLabels={selectedHubLinkedLabels}
         />
 
-        {/* Stats bar */}
         {nodes.length > 0 && (
-          <div className="absolute bottom-4 left-4 flex items-center gap-2 rounded-lg border border-border/50 bg-card/80 backdrop-blur-sm px-3 py-1.5">
-            <span className="text-[10px] text-muted-foreground">
-              <span className="font-mono text-foreground">{nodes.length}</span> nodes
-            </span>
-            <span className="text-border">·</span>
-            <span className="text-[10px] text-muted-foreground">
-              <span className="font-mono text-foreground">{edges.length}</span> edges
-            </span>
+          <div className="absolute bottom-4 left-4 z-10 flex flex-col gap-2">
+            <div className="inline-flex items-center gap-0.5 self-start rounded-xl border border-slate-200/80 bg-white/95 p-1 shadow-sm backdrop-blur-sm">
+              <button
+                type="button"
+                onClick={() => handleDepthChange(depth - 1)}
+                disabled={depth <= 1 || busy}
+                className="flex size-9 items-center justify-center rounded-lg border border-slate-200/80 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900 shadow-sm transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                title="Fewer hops"
+              >
+                <Minus className="size-3.5" />
+              </button>
+              <span className="min-w-[3.5rem] text-center text-[11px] font-mono font-semibold text-slate-700">
+                {busy ? "…" : `${depth} hop${depth === 1 ? "" : "s"}`}
+              </span>
+              <button
+                type="button"
+                onClick={() => handleDepthChange(depth + 1)}
+                disabled={depth >= 3 || busy}
+                className="flex size-9 items-center justify-center rounded-lg border border-slate-200/80 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900 shadow-sm transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                title="More hops"
+              >
+                <Plus className="size-3.5" />
+              </button>
+            </div>
+            <div className="rounded-xl border border-slate-200/80 bg-white/90 px-3 py-1.5 text-[10px] text-slate-500 shadow-sm">
+              <span className="font-mono text-slate-800">{nodes.length}</span> nodes
+              <span className="mx-1.5 text-slate-300">·</span>
+              <span className="font-mono text-slate-800">{edges.length}</span> edges
+            </div>
+          </div>
+        )}
+
+        {nodes.length > 0 && (
+          <div className="absolute bottom-4 right-4 z-10 flex flex-col gap-1.5 rounded-xl border border-slate-200/80 bg-white/95 p-1.5 shadow-sm backdrop-blur-sm">
+            <button
+              type="button"
+              onClick={() => (window as unknown as Record<string, unknown>).__graphZoomBy?.(1.25)}
+              className="flex size-9 items-center justify-center rounded-lg border border-slate-200/80 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900 shadow-sm transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Zoom in"
+            >
+              <ZoomIn className="size-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => (window as unknown as Record<string, unknown>).__graphZoomBy?.(0.8)}
+              className="flex size-9 items-center justify-center rounded-lg border border-slate-200/80 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900 shadow-sm transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Zoom out"
+            >
+              <ZoomOut className="size-4" />
+            </button>
+            <button
+              type="button"
+              onClick={handleAutoArrange}
+              disabled={busy}
+              className="flex size-9 items-center justify-center rounded-lg border border-slate-200/80 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900 shadow-sm transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              title={GRAPH_ARRANGE_LABEL[arrangeMode]}
+            >
+              <LayoutGrid className="size-4" />
+            </button>
+            <button
+              type="button"
+              onClick={handleReset}
+              className="flex size-9 items-center justify-center rounded-lg border border-slate-200/80 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900 shadow-sm transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Reset zoom"
+            >
+              <RotateCcw className="size-4" />
+            </button>
           </div>
         )}
 

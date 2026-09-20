@@ -33,6 +33,35 @@ function yearNum(ev: TimelineEvent): number {
   return s ? Number(s[1]) : 0;
 }
 
+function eventTag(ev: TimelineEvent): { label: string; className: string } {
+  const blob = `${ev.title} ${ev.summary} ${ev.kind}`.toLowerCase();
+  if (ev.kind === "award" || /award|prize|nobel|honou|filmfare|achievement/.test(blob)) {
+    return { label: "Achievements", className: "border-indigo-400/25 bg-indigo-500/10 text-indigo-200" };
+  }
+  if (/school|universit|college|student|educat|degree|institute/.test(blob)) {
+    return { label: "Education", className: "border-sky-400/25 bg-sky-500/10 text-sky-200" };
+  }
+  if (/birth|born|childhood|early life|moves to|schooling/.test(blob)) {
+    return { label: "Early Life", className: "border-teal-400/25 bg-teal-500/10 text-teal-200" };
+  }
+  if (ev.kind === "life" || /marri|death|died|family|personal|moved to/.test(blob)) {
+    return { label: "Personal Life", className: "border-violet-400/25 bg-violet-500/10 text-violet-200" };
+  }
+  return { label: "Career", className: "border-slate-400/20 bg-slate-500/10 text-slate-200" };
+}
+
+function yearLines(year: string): string[] {
+  const t = year.trim();
+  if (/[–—-]/.test(t) && t.length > 6) {
+    return t.split(/\s*[–—-]\s*/).slice(0, 2);
+  }
+  const parts = t.split(/\s+/);
+  if (parts.length >= 3) return [parts.slice(0, 2).join(" "), parts.slice(2).join(" ")];
+  return [t];
+}
+
+const PAGE_SIZE = 12;
+
 type YearGroup = { year: string; yearN: number; events: TimelineEvent[] };
 
 function groupByYear(events: TimelineEvent[]): YearGroup[] {
@@ -390,6 +419,7 @@ export default function TimelinePanel({
 
   const data = narrative ?? local;
   const [filterYear, setFilterYear] = useState<string | null>(null);
+  const [page, setPage] = useState(0);
   const [active, setActive] = useState<TimelineEvent | null>(null);
 
   const allSorted = useMemo(
@@ -403,6 +433,14 @@ export default function TimelinePanel({
     if (filterYear == null) return allSorted;
     return allSorted.filter((e) => (e.year?.trim() || String(yearNum(e))) === filterYear);
   }, [allSorted, filterYear]);
+
+  const pageCount = Math.max(1, Math.ceil(visibleEvents.length / PAGE_SIZE));
+  const pageSafe = Math.min(page, pageCount - 1);
+  const paged = visibleEvents.slice(pageSafe * PAGE_SIZE, pageSafe * PAGE_SIZE + PAGE_SIZE);
+
+  const quote =
+    (/kishore kumar/i.test(entity.label) && "Zindagi ek safar hai suhana...") ||
+    entity.wikipedia?.lead?.match(/[“"]([^”"]{18,90})[”"]/)?.[1];
 
   const intro =
     data.tagline ||
@@ -430,192 +468,179 @@ export default function TimelinePanel({
   }, [entity, onNavigate]);
 
   return (
-    <div className="mx-auto max-w-3xl">
-      <div className="mb-5 flex flex-wrap items-center gap-2">
-        <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-medium text-slate-600">
-          <Sparkles className="size-3 text-cyan-600" />
-          AI Timeline
-        </span>
-        {isFetching && (
-          <span className="text-[11px] text-slate-400">Polishing…</span>
-        )}
-        {!data.fallback && !isFetching && (
-          <span className="text-[11px] text-emerald-700">AI polished</span>
-        )}
-        {(isError || data.fallback) && !isFetching && (
-          <span className="text-[11px] text-amber-700">Local chronology</span>
-        )}
-        <span className="text-[11px] text-slate-400">
-          Click a title for depth
-        </span>
-      </div>
-
-      <p className="text-[15px] sm:text-[16px] leading-[1.7] text-slate-700">
-        {intro}
-      </p>
-
-      {yearGroups.length > 0 && (
-        <div className="mb-8 flex gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
-          <button
-            type="button"
-            onClick={() => setFilterYear(null)}
-            className={cn(
-              "shrink-0 rounded-full px-3.5 py-1.5 text-[13px] font-medium cursor-pointer transition",
-              filterYear == null
-                ? "bg-slate-900 text-white"
-                : "bg-slate-100 text-slate-600 hover:bg-slate-200",
-            )}
-          >
-            All
-          </button>
-          {yearGroups.map((g) => (
+    <div className="overflow-hidden rounded-[28px] bg-[#07111c] text-slate-100 shadow-[0_24px_60px_-28px_rgba(0,0,0,0.55)] ring-1 ring-white/8">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/8 px-4 py-3.5 sm:px-6">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-white/8 px-2.5 py-1 text-[11px] font-medium text-teal-200">
+            <Sparkles className="size-3" />
+            AI Timeline
+          </span>
+          {isFetching && <span className="text-[11px] text-slate-500">Polishing…</span>}
+          {!data.fallback && !isFetching && (
+            <span className="text-[11px] text-emerald-400/80">AI polished</span>
+          )}
+        </div>
+        {yearGroups.length > 0 && (
+          <div className="flex max-w-full gap-1 overflow-x-auto pb-0.5">
             <button
-              key={g.year}
               type="button"
-              onClick={() => setFilterYear(g.year)}
+              onClick={() => { setFilterYear(null); setPage(0); }}
               className={cn(
-                "shrink-0 rounded-full px-3 py-1.5 text-[13px] font-medium tabular-nums cursor-pointer transition",
-                filterYear === g.year
-                  ? "bg-slate-900 text-white"
-                  : "bg-slate-100 text-slate-600 hover:bg-slate-200",
+                "shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium cursor-pointer",
+                filterYear == null ? "bg-amber-300 text-slate-950" : "bg-white/8 text-slate-400 hover:text-white",
               )}
             >
-              {g.year}
+              All
             </button>
-          ))}
-        </div>
-      )}
+            {yearGroups.map((g) => (
+              <button
+                key={g.year}
+                type="button"
+                onClick={() => { setFilterYear(g.year); setPage(0); }}
+                className={cn(
+                  "shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium tabular-nums cursor-pointer",
+                  filterYear === g.year ? "bg-amber-300 text-slate-950" : "bg-white/8 text-slate-400 hover:text-white",
+                )}
+              >
+                {g.year.replace(/[^\d–-]/g, "").slice(0, 9) || g.year}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
 
-      {visibleEvents.length === 0 ? (
-        <p className="py-10 text-center text-sm text-slate-500">
+      {paged.length === 0 ? (
+        <p className="px-6 py-12 text-center text-sm text-slate-500">
           No timeline moments yet for this entity.
         </p>
       ) : (
-        <ol className="relative ml-1 sm:ml-2">
+        <ol className="relative px-3 py-4 sm:px-5">
           <div
-            className="pointer-events-none absolute left-[5px] top-2 bottom-2 w-px bg-slate-300"
+            className="pointer-events-none absolute left-[4.75rem] sm:left-[5.35rem] top-6 bottom-6 w-px bg-white/10"
             aria-hidden
           />
-
-          {visibleEvents.map((ev, i) => {
+          {paged.map((ev) => {
             const key = eventKey(ev);
             const selected = active && eventKey(active) === key;
-            const bullets = (ev.highlights ?? []).slice(0, 3);
-
+            const tag = eventTag(ev);
+            const lines = yearLines(ev.year);
             return (
-              <li key={key} className="relative pl-8 sm:pl-10 pb-8 last:pb-2">
-                <span
-                  className={cn(
-                    "absolute left-0 top-1.5 size-[11px] rounded-full border-[1.5px] bg-white transition-colors",
-                    selected ? "border-teal-500 ring-4 ring-teal-500/20" : "border-slate-400",
-                  )}
-                  aria-hidden
-                />
-
-                <div className="flex items-start gap-3 sm:gap-4">
-                  {ev.imageUrl ? (
-                    <img
-                      src={ev.imageUrl}
-                      alt=""
-                      referrerPolicy="no-referrer"
-                      className="h-[4.5rem] w-[4.5rem] sm:h-24 sm:w-24 shrink-0 rounded-xl object-cover object-top bg-slate-100 border border-slate-200/80"
-                    />
-                  ) : (
-                    <div className="flex h-[4.5rem] w-[4.5rem] sm:h-24 sm:w-24 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 font-mono text-[12px] tabular-nums text-slate-400">
-                      {ev.year.replace(/[^\d]/g, "").slice(0, 4) || "—"}
-                    </div>
-                  )}
-                  <div className="min-w-0 flex-1">
+              <li key={key} className="relative mb-2.5 last:mb-0">
                 <button
                   type="button"
                   onClick={() => setActive(ev)}
-                  className="w-full text-left cursor-pointer group"
+                  className="group flex w-full items-stretch gap-3 rounded-2xl text-left cursor-pointer sm:gap-4"
                 >
-                  <h3
+                  <div className="relative w-[4.25rem] sm:w-[4.75rem] shrink-0 pt-4 pr-3 text-right">
+                    <span className="absolute right-[-5px] top-[1.35rem] z-10 size-[11px] rounded-full bg-amber-300 shadow-[0_0_0_4px_rgba(251,191,36,0.18)]" />
+                    <p className="font-mono text-[11px] leading-tight tabular-nums text-slate-400">
+                      {lines.map((ln) => (
+                        <span key={ln} className="block">{ln}</span>
+                      ))}
+                    </p>
+                  </div>
+                  <div
                     className={cn(
-                      "font-semibold text-[16px] sm:text-[17px] leading-snug transition-colors",
+                      "flex min-w-0 flex-1 items-center gap-3 rounded-2xl border px-3 py-2.5 transition-colors sm:gap-4 sm:px-4",
                       selected
-                        ? "text-teal-800"
-                        : "text-slate-900 group-hover:text-teal-700",
+                        ? "border-amber-300/30 bg-white/[0.07]"
+                        : "border-white/8 bg-[#0c1828] hover:border-white/14 hover:bg-[#101d30]",
                     )}
                   >
-                    {ev.title}
-                  </h3>
-                  <p className="mt-0.5 text-[13px] text-slate-500 tabular-nums">
-                    {ev.year}
-                    <span className="ml-2 text-[11px] text-teal-600/80 opacity-0 group-hover:opacity-100 transition-opacity">
-                      Open depth →
+                    {ev.imageUrl ? (
+                      <img
+                        src={ev.imageUrl}
+                        alt=""
+                        referrerPolicy="no-referrer"
+                        className="size-12 sm:size-14 shrink-0 rounded-lg object-cover object-top bg-slate-800"
+                      />
+                    ) : (
+                      <div className="flex size-12 sm:size-14 shrink-0 items-center justify-center rounded-lg bg-white/5 font-mono text-[11px] text-slate-500">
+                        {ev.year.replace(/[^\d]/g, "").slice(0, 4) || "—"}
+                      </div>
+                    )}
+                    <div className="min-w-0 flex-1 py-0.5">
+                      <h3 className="font-semibold text-[14.5px] sm:text-[15.5px] leading-snug text-white">
+                        {ev.title}
+                      </h3>
+                      {ev.summary && (
+                        <p className="mt-0.5 line-clamp-2 text-[12.5px] sm:text-[13px] leading-relaxed text-slate-400">
+                          {ev.summary}
+                        </p>
+                      )}
+                    </div>
+                    <span
+                      className={cn(
+                        "hidden sm:inline-flex shrink-0 rounded-full border px-2.5 py-0.5 text-[10px] font-medium",
+                        tag.className,
+                      )}
+                    >
+                      {tag.label}
                     </span>
-                  </p>
-                </button>
-
-                {ev.summary && (
-                  <p className="mt-2 text-[14.5px] sm:text-[15px] leading-[1.65] text-slate-700">
-                    {ev.summary}
-                  </p>
-                )}
-
-                {bullets.length > 0 && (
-                  <ul className="mt-2.5 space-y-1.5 pl-1">
-                    {bullets.map((b, bi) => (
-                      <li
-                        key={`${key}-b-${bi}`}
-                        className="relative pl-4 text-[14px] leading-relaxed text-slate-600 before:absolute before:left-0 before:top-[0.55em] before:size-1.5 before:rounded-full before:bg-slate-400"
-                      >
-                        {b}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-
-                <button
-                  type="button"
-                  onClick={() => setActive(ev)}
-                  className="mt-2 text-[13px] font-medium text-teal-700 hover:text-teal-900 cursor-pointer"
-                >
-                  More depth
-                </button>
                   </div>
-                </div>
-
-                {i < visibleEvents.length - 1 &&
-                  yearNum(ev) !== yearNum(visibleEvents[i + 1]!) &&
-                  filterYear == null && (
-                    <span className="sr-only">
-                      Next year {visibleEvents[i + 1]!.year}
-                    </span>
-                  )}
+                </button>
               </li>
             );
           })}
         </ol>
       )}
 
-      {exploreChips.length > 0 && (
-        <div className="mt-10 border-t border-slate-200 pt-6">
-          <p className="mb-3 text-[14px] font-medium text-slate-700">
-            Explore more about {entity.label}
-          </p>
-          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-            {exploreChips.map((chip) => (
-              <button
-                key={chip.label}
-                type="button"
-                onClick={chip.action}
-                className="inline-flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left text-[14px] text-slate-700 shadow-sm hover:bg-slate-50 cursor-pointer transition"
-              >
-                <span>{chip.label}</span>
-                <ChevronRight className="size-4 shrink-0 text-slate-400" />
-              </button>
-            ))}
+      <div className="mx-3 mb-3 grid gap-3 rounded-2xl border border-white/8 bg-[#0c1828] px-4 py-4 sm:mx-5 sm:grid-cols-[1fr_auto] sm:items-center sm:px-5">
+        <div className="flex items-start gap-3">
+          <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-sky-500/15 text-sky-300">
+            <Sparkles className="size-5" />
+          </div>
+          <div>
+            <p className="text-[14px] font-semibold text-white">A Lasting Legacy</p>
+            <p className="mt-0.5 text-[12.5px] leading-relaxed text-slate-400">
+              {data.legacy || intro}
+            </p>
           </div>
         </div>
-      )}
+        {quote && (
+          <blockquote className="max-w-sm rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3">
+            <p className="text-[13px] italic leading-relaxed text-slate-200">“{quote}”</p>
+            <p className="mt-1.5 text-[11px] text-slate-500">— {entity.label}</p>
+          </blockquote>
+        )}
+      </div>
 
-      {data.legacy && (
-        <p className="mt-8 text-[14px] leading-relaxed text-slate-500 italic">
-          {data.legacy}
-        </p>
+      <div className="flex items-center justify-between gap-3 border-t border-white/8 px-4 py-3 sm:px-6">
+        <button
+          type="button"
+          disabled={pageSafe <= 0}
+          onClick={() => setPage((p) => Math.max(0, p - 1))}
+          className="inline-flex items-center gap-1 rounded-full border border-white/12 px-3 py-1.5 text-[12px] text-slate-300 disabled:opacity-30 cursor-pointer disabled:cursor-default hover:bg-white/5"
+        >
+          <ChevronLeft className="size-3.5" /> Previous
+        </button>
+        <span className="font-mono text-[11px] tabular-nums text-slate-500">
+          {pageSafe + 1} of {pageCount}
+        </span>
+        <button
+          type="button"
+          disabled={pageSafe >= pageCount - 1}
+          onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+          className="inline-flex items-center gap-1 rounded-full bg-white/10 px-3 py-1.5 text-[12px] font-medium text-white disabled:opacity-30 cursor-pointer disabled:cursor-default hover:bg-white/16"
+        >
+          Next <ChevronRight className="size-3.5" />
+        </button>
+      </div>
+
+      {exploreChips.length > 0 && (
+        <div className="flex flex-wrap gap-2 border-t border-white/8 px-4 py-4 sm:px-6">
+          {exploreChips.map((chip) => (
+            <button
+              key={chip.label}
+              type="button"
+              onClick={chip.action}
+              className="inline-flex items-center gap-2 rounded-full border border-white/12 bg-white/[0.04] px-3 py-1.5 text-[12px] text-slate-300 hover:bg-white/[0.08] hover:text-white cursor-pointer"
+            >
+              {chip.label}
+              <ChevronRight className="size-3.5" />
+            </button>
+          ))}
+        </div>
       )}
 
       <AnimatePresence>

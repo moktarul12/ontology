@@ -19,6 +19,7 @@
 import type { GraphNode, GraphEdge } from "@/lib/wikidata/types.ts";
 import {
   isHubNode,
+  isHubId,
   hubsForOwner,
   isCoParentEdge,
   type HubGraphNode,
@@ -250,6 +251,7 @@ function placeExtended(
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const adj = new Map<string, string[]>();
   const addAdj = (a: string, b: string) => {
+    if (a === b) return;
     if (!adj.has(a)) adj.set(a, []);
     adj.get(a)!.push(b);
   };
@@ -261,6 +263,30 @@ function placeExtended(
     if (!sn || !tn || isHubNode(sn) || isHubNode(tn)) continue;
     addAdj(s, t);
     addAdj(t, s);
+  }
+
+  // Treat relation hubs as transparent: people on the same hub place as neighbors
+  const hubPeople = new Map<string, Set<string>>();
+  for (const e of edges) {
+    if (e.propertyId !== "HUB" && e.propertyId !== "HUB_SHARE") continue;
+    const s = idOf(e.source);
+    const t = idOf(e.target);
+    const hubId = isHubId(s) ? s : isHubId(t) ? t : null;
+    const personId = isHubId(s) ? t : isHubId(t) ? s : null;
+    if (!hubId || !personId || isHubId(personId)) continue;
+    if (!hubPeople.has(hubId)) hubPeople.set(hubId, new Set());
+    hubPeople.get(hubId)!.add(personId);
+  }
+  for (const [hubId, people] of hubPeople) {
+    const hub = byId.get(hubId) as HubGraphNode | undefined;
+    if (hub?.hubOf) people.add(hub.hubOf);
+    const ids = [...people];
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        addAdj(ids[i]!, ids[j]!);
+        addAdj(ids[j]!, ids[i]!);
+      }
+    }
   }
 
   const pitch = PERSON + gap;
@@ -569,12 +595,57 @@ export function layoutFamilyTree(
     focusSpouseIds,
   );
 
+  // Pack kids of each extended "child" hub into a tight row under the hub
+  for (const n of nodes) {
+    if (!isHubNode(n)) continue;
+    const h = n as HubGraphNode;
+    if (h.hubRelation !== "child" || h.hubOf === rootId) continue;
+    const owner = h.hubOf ? byId.get(h.hubOf) : undefined;
+    if (!owner || owner.x == null || owner.y == null) continue;
+    const kids = hubTargets(h.id, edges, byId);
+    if (!kids.length) continue;
+    const kidGap = gap + (kids.length >= 4 ? 12 : 4);
+    const hubY = (owner.y ?? cy) + PERSON + gap + 20;
+    const hubX = owner.x ?? cx;
+    // Prefer midpoint with co-parent if present
+    let ax = hubX;
+    let shareCount = 1;
+    for (const e of edges) {
+      if (e.propertyId !== "HUB_SHARE") continue;
+      const s = idOf(e.source);
+      const t = idOf(e.target);
+      if (t !== h.id && s !== h.id) continue;
+      const otherId = t === h.id ? s : t;
+      const other = byId.get(otherId);
+      if (!other || other.x == null) continue;
+      ax += other.x;
+      shareCount += 1;
+    }
+    ax /= shareCount;
+    pin(h, ax, hubY);
+    placed.add(h.id);
+    packRow(kids, ax, hubY + PERSON + gap + 8, kidGap);
+    for (const k of kids) placed.add(k.id);
+  }
+
   for (const n of nodes) {
     if (!isHubNode(n) || placed.has(n.id)) continue;
     const h = n as HubGraphNode;
     const owner = h.hubOf ? byId.get(h.hubOf) : undefined;
     if (!owner) continue;
-    pin(h, owner.x ?? cx, (owner.y ?? cy) - 80);
+    const dy =
+      h.hubRelation === "child" ? 72
+      : h.hubRelation === "parent" ? -72
+      : -56;
+    // Sit hub between owner and its spoke people when we can
+    const spokes = hubTargets(h.id, edges, byId);
+    if (spokes.length && h.hubRelation === "child") {
+      const sax = spokes.reduce((s, p) => s + (p.x ?? owner.x ?? cx), 0) / spokes.length;
+      const say = spokes.reduce((s, p) => s + (p.y ?? owner.y ?? cy), 0) / spokes.length;
+      pin(h, (owner.x ?? cx) * 0.45 + sax * 0.55, (owner.y ?? cy) * 0.45 + say * 0.55);
+    } else {
+      pin(h, owner.x ?? cx, (owner.y ?? cy) + dy);
+    }
     placed.add(h.id);
   }
 
@@ -655,4 +726,520 @@ export function orbitRadiusForCount(count: number): number {
   if (count <= 1) return 90;
   const gap = 52;
   return Math.max(90, (PERSON + gap) / (2 * Math.sin(Math.PI / count)));
+}
+
+/** Undirected hop distance from root (parents, children, spouses, siblings). */
+export function hopDistanceFromRoot(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  rootId: string,
+): Map<string, number> {
+  const hops = new Map<string, number>();
+  hops.set(rootId, 0);
+  const adj = new Map<string, Set<string>>();
+  const link = (a: string, b: string) => {
+    if (a === b) return;
+    if (!adj.has(a)) adj.set(a, new Set());
+    if (!adj.has(b)) adj.set(b, new Set());
+    adj.get(a)!.add(b);
+    adj.get(b)!.add(a);
+  };
+  for (const e of edges) {
+    if (e.propertyId === "HUB" || e.propertyId === "HUB_SHARE") continue;
+    const s = idOf(e.source);
+    const t = idOf(e.target);
+    if (isHubId(s) || isHubId(t)) continue;
+    link(s, t);
+  }
+
+  // Relation hubs are transparent: people on the same hub are neighbors for hop count
+  const hubPeople = new Map<string, Set<string>>();
+  for (const e of edges) {
+    if (e.propertyId !== "HUB" && e.propertyId !== "HUB_SHARE") continue;
+    const s = idOf(e.source);
+    const t = idOf(e.target);
+    const hubId = isHubId(s) ? s : isHubId(t) ? t : null;
+    const personId = isHubId(s) ? t : isHubId(t) ? s : null;
+    if (!hubId || !personId || isHubId(personId)) continue;
+    if (!hubPeople.has(hubId)) hubPeople.set(hubId, new Set());
+    hubPeople.get(hubId)!.add(personId);
+  }
+  for (const n of nodes) {
+    if (!isHubNode(n)) continue;
+    const h = n as HubGraphNode;
+    if (!h.hubOf) continue;
+    if (!hubPeople.has(n.id)) hubPeople.set(n.id, new Set());
+    hubPeople.get(n.id)!.add(h.hubOf);
+  }
+  for (const people of hubPeople.values()) {
+    const ids = [...people];
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) link(ids[i]!, ids[j]!);
+    }
+  }
+
+  const q = [rootId];
+  while (q.length) {
+    const cur = q.shift()!;
+    const d = hops.get(cur) ?? 0;
+    for (const n of adj.get(cur) ?? []) {
+      if (hops.has(n)) continue;
+      hops.set(n, d + 1);
+      q.push(n);
+    }
+  }
+  for (const n of nodes) {
+    if (!hops.has(n.id) && !isHubNode(n)) hops.set(n.id, 99);
+  }
+  return hops;
+}
+
+function isParentLbl(lbl: string): boolean {
+  return lbl === "father" || lbl === "mother" || lbl === "parent";
+}
+
+type CompassBucket = "parent" | "child" | "spouse" | "sibling";
+
+/** Classify hop-1 neighbors of the focus into compass buckets. */
+function classifyFocusNeighbors(
+  rootId: string,
+  edges: GraphEdge[],
+): Map<string, CompassBucket> {
+  const role = new Map<string, CompassBucket>();
+  for (const e of edges) {
+    const s = idOf(e.source);
+    const t = idOf(e.target);
+    const lbl = e.label.toLowerCase();
+    if (isParentLbl(lbl) && s === rootId) role.set(t, "parent");
+    if (isParentLbl(lbl) && t === rootId) role.set(s, "child");
+    if (lbl === "child" && s === rootId) role.set(t, "child");
+    if (lbl === "spouse") {
+      if (s === rootId) role.set(t, "spouse");
+      if (t === rootId) role.set(s, "spouse");
+    }
+    if (lbl === "sibling") {
+      if (s === rootId) role.set(t, "sibling");
+      if (t === rootId) role.set(s, "sibling");
+    }
+  }
+  return role;
+}
+
+/**
+ * Orbit portals around the focus, then extended family nestled outward.
+ * `phase` (0–3) rotates which portal sits N/S/W/E so Rearrange visibly changes.
+ */
+export function layoutOrbitCircles(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  rootId: string,
+  W: number,
+  H: number,
+  opts?: { phase?: number },
+): LayoutBounds {
+  const cx = W / 2;
+  const cy = H / 2;
+  const phase = ((opts?.phase ?? 0) % 4 + 4) % 4;
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const root = byId.get(rootId);
+  if (!root) return boundsOf(nodes);
+
+  for (const n of nodes) {
+    n.fx = undefined;
+    n.fy = undefined;
+  }
+
+  pin(root, cx, cy);
+
+  type Rel = "parent" | "child" | "spouse" | "sibling";
+  const REL_ORDER: Rel[] = ["parent", "child", "sibling", "spouse"];
+
+  const hubs = nodes.filter(
+    (n) => isHubNode(n) && (n as HubGraphNode).hubOf === rootId,
+  ) as HubGraphNode[];
+
+  const membersOf = (hubId: string): GraphNode[] => {
+    const out: GraphNode[] = [];
+    const seen = new Set<string>();
+    for (const e of edges) {
+      if (e.propertyId !== "HUB") continue;
+      const s = idOf(e.source);
+      const t = idOf(e.target);
+      if (s !== hubId) continue;
+      if (isHubId(t) || t === rootId || seen.has(t)) continue;
+      const person = byId.get(t);
+      if (person) {
+        seen.add(t);
+        out.push(person);
+      }
+    }
+    out.sort((a, b) => a.label.localeCompare(b.label));
+    return out;
+  };
+
+  const GAP = 172;
+  const HUB_GAP = 230;
+  const ARM = 310;
+
+  const placeRow = (list: GraphNode[], y: number) => {
+    const n = list.length;
+    if (!n) return;
+    const totalW = (n - 1) * GAP;
+    list.forEach((p, i) => {
+      const x = n === 1 ? cx : cx - totalW / 2 + i * GAP;
+      pin(p, x, y);
+    });
+  };
+
+  const placeCol = (list: GraphNode[], baseX: number, outward: number) => {
+    const n = list.length;
+    if (!n) return;
+    const cols = n > 5 ? 2 : 1;
+    const perCol = Math.ceil(n / cols);
+    list.forEach((p, i) => {
+      const col = Math.floor(i / perCol);
+      const row = i % perCol;
+      const colCount = Math.min(perCol, n - col * perCol);
+      const totalH = (colCount - 1) * GAP;
+      const y = colCount === 1 ? cy : cy - totalH / 2 + row * GAP;
+      const x = baseX + outward * col * GAP;
+      pin(p, x, y);
+    });
+  };
+
+  // Cardinal slots: 0=N, 1=S, 2=W, 3=E — phase rotates relation → slot
+  const slots = [
+    {
+      placeHub: (h: GraphNode) => pin(h, cx, cy - HUB_GAP),
+      placeMembers: (m: GraphNode[]) => placeRow(m, cy - HUB_GAP - ARM),
+    },
+    {
+      placeHub: (h: GraphNode) => pin(h, cx, cy + HUB_GAP),
+      placeMembers: (m: GraphNode[]) => placeRow(m, cy + HUB_GAP + ARM),
+    },
+    {
+      placeHub: (h: GraphNode) => pin(h, cx - HUB_GAP, cy),
+      placeMembers: (m: GraphNode[]) => placeCol(m, cx - HUB_GAP - ARM, -1),
+    },
+    {
+      placeHub: (h: GraphNode) => pin(h, cx + HUB_GAP, cy),
+      placeMembers: (m: GraphNode[]) => placeCol(m, cx + HUB_GAP + ARM, 1),
+    },
+  ];
+
+  for (const hub of hubs) {
+    const rel = (hub.hubRelation ?? "sibling") as Rel;
+    const base = REL_ORDER.indexOf(rel);
+    const slot = slots[(base < 0 ? 0 : base + phase) % 4]!;
+    slot.placeHub(hub);
+    slot.placeMembers(membersOf(hub.id));
+  }
+
+  const focusHubIds = new Set(hubs.map((h) => h.id));
+
+  const extHubs = nodes.filter(
+    (n) => isHubNode(n) && (n as HubGraphNode).hubOf && (n as HubGraphNode).hubOf !== rootId,
+  ) as HubGraphNode[];
+
+  const placeFan = (list: GraphNode[], hx: number, hy: number, baseAng: number) => {
+    const n = list.length;
+    if (!n) return;
+    // Arc radius so neighbor chord ≈ GAP
+    const halfSpread = n === 1 ? 0 : Math.min(0.85, ((n - 1) * 0.32) / 2);
+    const radius =
+      n === 1 ? 150 : Math.max(150, GAP / (2 * Math.sin(Math.max(halfSpread / Math.max(n - 1, 1), 0.12))));
+    list.forEach((p, i) => {
+      const t = n === 1 ? 0 : (i / (n - 1) - 0.5) * (halfSpread * 2);
+      const ang = baseAng + t;
+      pin(p, hx + Math.cos(ang) * radius, hy + Math.sin(ang) * radius);
+    });
+  };
+
+  const clearOfFocusHubs = (x: number, y: number, minD = 95): { x: number; y: number } => {
+    let px = x;
+    let py = y;
+    for (let guard = 0; guard < 6; guard++) {
+      let moved = false;
+      for (const hub of hubs) {
+        if (hub.fx == null || hub.fy == null) continue;
+        const dx = px - hub.fx;
+        const dy = py - hub.fy;
+        const dist = Math.hypot(dx, dy) || 0.01;
+        if (dist >= minD) continue;
+        const push = minD - dist + 4;
+        px += (dx / dist) * push;
+        py += (dy / dist) * push;
+        moved = true;
+      }
+      if (!moved) break;
+    }
+    return { x: px, y: py };
+  };
+
+  for (const hub of extHubs) {
+    if (hub.fx != null) continue;
+    const owner = byId.get(hub.hubOf!);
+    if (!owner || owner.fx == null || owner.fy == null) continue;
+    const ox = owner.fx;
+    const oy = owner.fy;
+    const baseAng = Math.atan2(oy - cy, ox - cx) + phase * 0.4;
+    const rel = hub.hubRelation ?? "child";
+    const hubDist = 120;
+    const hubAng =
+      rel === "child" ? baseAng + 0.55
+      : rel === "parent" ? baseAng - 0.55
+      : baseAng + Math.PI / 2;
+    const raw = {
+      x: ox + Math.cos(hubAng) * hubDist,
+      y: oy + Math.sin(hubAng) * hubDist,
+    };
+    const cleared = clearOfFocusHubs(raw.x, raw.y, 140);
+    pin(hub, cleared.x, cleared.y);
+  }
+
+  for (const hub of extHubs) {
+    if (hub.fx == null || hub.fy == null) continue;
+    const members = membersOf(hub.id).filter((p) => p.fx == null);
+    if (!members.length) continue;
+    const owner = byId.get(hub.hubOf!);
+    const baseAng =
+      owner?.fx != null && owner.fy != null
+        ? Math.atan2(hub.fy - owner.fy, hub.fx - owner.fx)
+        : Math.atan2(hub.fy - cy, hub.fx - cx);
+    placeFan(members, hub.fx, hub.fy, baseAng);
+  }
+
+  const peopleOnly = nodes.filter((n) => !isHubNode(n));
+  const hops = hopDistanceFromRoot(peopleOnly, edges, rootId);
+  const pending = nodes.filter((n) => n.fx == null);
+  pending.sort((a, b) => {
+    const ha = isHubNode(a) ? 0 : (hops.get(a.id) ?? 99);
+    const hb = isHubNode(b) ? 0 : (hops.get(b.id) ?? 99);
+    return ha - hb;
+  });
+
+  const slotCount = new Map<string, number>();
+  for (const n of pending) {
+    let best: GraphNode | undefined;
+    let bestScore = Infinity;
+    for (const e of edges) {
+      const s = idOf(e.source);
+      const t = idOf(e.target);
+      const other = s === n.id ? t : t === n.id ? s : null;
+      if (!other) continue;
+      const o = byId.get(other);
+      if (!o || o.fx == null || o.fy == null) continue;
+      const hubPenalty = focusHubIds.has(other) ? 5e5 : 0;
+      const h = isHubId(other)
+        ? ((byId.get(other) as HubGraphNode | undefined)?.hubOf
+          ? hops.get((byId.get(other) as HubGraphNode).hubOf!) ?? 2
+          : 2)
+        : (hops.get(other) ?? 99);
+      const d = (o.fx - cx) ** 2 + (o.fy - cy) ** 2;
+      const score = hubPenalty + h * 1e6 + d;
+      if (score < bestScore) {
+        bestScore = score;
+        best = o;
+      }
+    }
+    if (best && best.fx != null && best.fy != null) {
+      const key = best.id;
+      const slot = slotCount.get(key) ?? 0;
+      slotCount.set(key, slot + 1);
+      const baseAng = Math.atan2(best.fy - cy, best.fx - cx) + phase * 0.25;
+      const ang = baseAng + (slot - 0.5) * 0.48;
+      const dist = 130 + (slot % 4) * 22;
+      const raw = {
+        x: best.fx + Math.cos(ang) * dist,
+        y: best.fy + Math.sin(ang) * dist,
+      };
+      const cleared = clearOfFocusHubs(raw.x, raw.y, 130);
+      pin(n, cleared.x, cleared.y);
+    } else {
+      const hop = Math.min(hops.get(n.id) ?? 3, 4);
+      const ring = 300 + hop * 90;
+      const i = slotCount.get("__ring") ?? 0;
+      slotCount.set("__ring", i + 1);
+      const ang = -Math.PI / 2 + phase * (Math.PI / 2) + i * 0.5;
+      const cleared = clearOfFocusHubs(
+        cx + Math.cos(ang) * ring,
+        cy + Math.sin(ang) * ring,
+        100,
+      );
+      pin(n, cleared.x, cleared.y);
+    }
+  }
+
+  // Soft pull only for extreme outliers — don't pack siblings tight again
+  for (const hub of [...hubs, ...extHubs]) {
+    if (hub.fx == null || hub.fy == null) continue;
+    const members = membersOf(hub.id);
+    if (members.length < 2) continue;
+    const mx = members.reduce((s, p) => s + (p.x ?? 0), 0) / members.length;
+    const my = members.reduce((s, p) => s + (p.y ?? 0), 0) / members.length;
+    for (const p of members) {
+      if (p.id === rootId) continue;
+      const px = p.x ?? mx;
+      const py = p.y ?? my;
+      const dx = px - mx;
+      const dy = py - my;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      const maxR = 120 + members.length * 55;
+      if (dist <= maxR) continue;
+      const t = maxR / dist;
+      pin(p, mx + dx * t, my + dy * t);
+    }
+  }
+
+  // Collision: people ↔ people and people ↔ hubs
+  const allHubs = [...hubs, ...extHubs];
+  const personR = (id: string) => (id === rootId ? 64 : 58);
+  const hubR = 78;
+  const air = 28;
+
+  for (let pass = 0; pass < 18; pass++) {
+    let moved = false;
+    const people = nodes.filter((n) => !isHubNode(n));
+
+    for (let i = 0; i < people.length; i++) {
+      for (let j = i + 1; j < people.length; j++) {
+        const a = people[i]!;
+        const b = people[j]!;
+        const ax = a.x ?? 0, ay = a.y ?? 0;
+        const bx = b.x ?? 0, by = b.y ?? 0;
+        let dx = bx - ax, dy = by - ay;
+        let dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+        const minDist = personR(a.id) + personR(b.id) + air;
+        if (dist >= minDist) continue;
+        const push = Math.min(22, (minDist - dist) / 2 + 1);
+        dx /= dist;
+        dy /= dist;
+        if (a.id !== rootId) {
+          pin(a, ax - dx * push, ay - dy * push);
+          moved = true;
+        }
+        if (b.id !== rootId) {
+          pin(b, bx + dx * push, by + dy * push);
+          moved = true;
+        }
+      }
+    }
+
+    for (const p of people) {
+      if (p.id === rootId) continue;
+      const px = p.x ?? 0;
+      const py = p.y ?? 0;
+      const pr = personR(p.id);
+      for (const hub of allHubs) {
+        if (hub.fx == null || hub.fy == null) continue;
+        const hx = hub.fx;
+        const hy = hub.fy;
+        let dx = px - hx;
+        let dy = py - hy;
+        let dist = Math.hypot(dx, dy) || 0.01;
+        const minDist = pr + hubR + 12;
+        if (dist >= minDist) continue;
+        const push = minDist - dist + 2;
+        dx /= dist;
+        dy /= dist;
+        pin(p, px + dx * push, py + dy * push);
+        if (!focusHubIds.has(hub.id)) {
+          pin(hub, hx - dx * push * 0.35, hy - dy * push * 0.35);
+        }
+        moved = true;
+      }
+    }
+
+    if (!moved) break;
+  }
+
+  return boundsOf(nodes);
+}
+
+export function filterCompassEdges(
+  edges: GraphEdge[],
+  rootId: string,
+  hops: Map<string, number>,
+): GraphEdge[] {
+  const out: GraphEdge[] = [];
+  const seenPair = new Set<string>();
+
+  const pairKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+
+  for (const e of edges) {
+    if (e.propertyId === "HUB" || e.propertyId === "HUB_SHARE" || e.propertyId === "COPARENT") {
+      continue;
+    }
+    const s = idOf(e.source);
+    const t = idOf(e.target);
+    if (isHubId(s) || isHubId(t)) continue;
+
+    const hs = hops.get(s) ?? 99;
+    const ht = hops.get(t) ?? 99;
+    const lbl = e.label.toLowerCase();
+
+    // Drop same-hop sibling webs (biggest clutter)
+    if (lbl === "sibling" && hs === ht && hs !== 0) continue;
+    // Only keep sibling edges that touch the root
+    if (lbl === "sibling" && s !== rootId && t !== rootId) continue;
+
+    // Orient outward: closer-to-root → farther.
+    // Wikidata-style "father" is child→parent; after flip it becomes root→child.
+    let source = s;
+    let target = t;
+    let label = e.label;
+    let propertyId = e.propertyId;
+    if (ht < hs || (t === rootId && s !== rootId)) {
+      source = t;
+      target = s;
+      if (isParentLbl(lbl)) {
+        // was "X's father is root" (X→root) → root→X as child
+        label = "child";
+        propertyId = "P40";
+      } else if (lbl === "child") {
+        // was "X's child is root" (X→root) → root→X as parent
+        label = "parent";
+        propertyId = "P22";
+      }
+    }
+
+    // Keep focus kinship + one-hop generational spokes (no cousin/spouse mesh)
+    const touchesRoot = source === rootId || target === rootId;
+    const ll = label.toLowerCase();
+    const stepOut = Math.abs(hs - ht) === 1;
+    const generational = isParentLbl(ll) || ll === "child" || ll === "parent";
+    if (!touchesRoot && !(stepOut && generational)) {
+      continue;
+    }
+
+    // One edge per pair (after filters so we don't drop a better edge)
+    const pk = pairKey(source, target);
+    if (seenPair.has(pk)) continue;
+    seenPair.add(pk);
+
+    out.push({
+      ...e,
+      id: `compass:${source}->${target}:${label}`,
+      source,
+      target,
+      label,
+      propertyId,
+    });
+  }
+
+  return out;
+}
+
+/** Sector caption anchors for the compass view (relative to root). */
+export function compassSectorLabels(
+  rootX: number,
+  rootY: number,
+): Array<{ id: string; label: string; x: number; y: number; color: string }> {
+  const r = 105;
+  return [
+    { id: "parent", label: "Parents", x: rootX, y: rootY - r, color: "#6B5CA8" },
+    { id: "child", label: "Children", x: rootX, y: rootY + r, color: "#C48A2A" },
+    { id: "spouse", label: "Spouses", x: rootX + r, y: rootY, color: "#C45A7A" },
+    { id: "sibling", label: "Siblings", x: rootX - r, y: rootY, color: "#2E8B57" },
+  ];
 }

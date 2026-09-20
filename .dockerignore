@@ -10,3 +10,4 @@ dist
 .cursor
 agent-transcripts
 deploy
+!deploy/docker-entrypoint.sh

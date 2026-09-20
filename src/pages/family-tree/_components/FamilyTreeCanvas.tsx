@@ -11,13 +11,13 @@
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import * as d3 from "d3";
-import { toast } from "sonner";
 import type { GraphNode, GraphEdge } from "@/lib/wikidata/types.ts";
 import {
   ARRANGE_MODES,
-  ARRANGE_MODE_LABEL,
   applyArrangeMode,
   layoutFamilyTree,
+  layoutOrbitCircles,
+  hopDistanceFromRoot,
   type ArrangeMode,
 } from "../_lib/rearrangeLayouts.ts";
 import {
@@ -39,6 +39,8 @@ const ROOT_W = 164;
 const ROOT_H = 58;
 const HUB_W = 86;
 const HUB_H = 28;
+const ORBIT_HUB_W = 118;
+const ORBIT_HUB_H = 36;
 
 // ── Role-based visual styles (light theme) ───────────────────────────────────
 type NodeRole = "root" | "ancestor" | "ancestor2" | "descendant" | "descendant2" | "spouse" | "sibling";
@@ -171,27 +173,84 @@ function personOrbitRelation(
   return null;
 }
 
+/** Attach edge to circle border. */
+function circleEdgePoint(
+  cx: number,
+  cy: number,
+  r: number,
+  tx: number,
+  ty: number,
+  pad = 0,
+): { x: number; y: number } {
+  const dx = tx - cx;
+  const dy = ty - cy;
+  const len = Math.sqrt(dx * dx + dy * dy) || 1;
+  const rad = r + pad;
+  return { x: cx + (dx / len) * rad, y: cy + (dy / len) * rad };
+}
+
 /**
- * Out = stored Wikidata-style label (child → father → parent).
- * In  = inverted label (parent → son/daughter → child) + reversed arrow.
+ * Out = arrow always points away from the focus (root → relative).
+ * In  = inverted label + reversed arrow.
  * Both = combined label, arrows on both ends.
  */
+function parentChildEnds(
+  edge: GraphEdge,
+): { parentId: string; childId: string } | null {
+  const sid = edgeEndpointId(edge.source);
+  const tid = edgeEndpointId(edge.target);
+  const lbl = edge.label.toLowerCase();
+  // COPARENT / explicit child: source is parent → target is child
+  if (edge.propertyId === "COPARENT" || lbl === "child" || edge.propertyId === "P40") {
+    return { parentId: sid, childId: tid };
+  }
+  // Normalized Wikidata: child → father/mother
+  if (lbl === "father" || lbl === "mother" || lbl === "parent" || edge.propertyId === "P22" || edge.propertyId === "P25") {
+    return { parentId: tid, childId: sid };
+  }
+  return null;
+}
+
 function displayRelation(
   edge: GraphEdge,
   nodes: GraphNode[],
   mode: ArrowDir,
+  rootId: string,
+  hops: Map<string, number>,
 ): { label: string; reverse: boolean } {
-  if (edge.propertyId === "COPARENT") {
-    return { label: edge.label || "parent", reverse: false };
-  }
-  if (!edge.label.trim() || edge.propertyId === "HUB") {
+  if (!edge.label.trim() || edge.propertyId === "HUB" || edge.propertyId === "HUB_SHARE") {
+    // Hub spoke: keep hub → person (outward)
     return { label: edge.label, reverse: false };
   }
   const lbl = edge.label.toLowerCase();
-  const src = nodes.find((n) => n.id === edgeEndpointId(edge.source));
-  const tgt = nodes.find((n) => n.id === edgeEndpointId(edge.target));
+  const sid = edgeEndpointId(edge.source);
+  const tid = edgeEndpointId(edge.target);
+  const src = nodes.find((n) => n.id === sid);
+  const tgt = nodes.find((n) => n.id === tid);
+
+  const invertLabel = (raw: string, from?: GraphNode, to?: GraphNode): string => {
+    const L = raw.toLowerCase();
+    if (L === "father" || L === "mother" || L === "parent") return childRoleLabel(from?.gender);
+    if (L === "child") {
+      const g = from?.gender;
+      return g === "female" ? "mother" : g === "male" ? "father" : "parent";
+    }
+    return raw;
+  };
 
   if (mode === "out") {
+    // Parent ↔ child: always draw parent → child labeled "child"
+    const pc = parentChildEnds(edge);
+    if (pc) {
+      const reverse = sid !== pc.parentId;
+      return { label: "child", reverse };
+    }
+    // Other bonds: closer-to-root → farther
+    const hs = hops.get(sid) ?? 99;
+    const ht = hops.get(tid) ?? 99;
+    if (sid === rootId) return { label: edge.label, reverse: false };
+    if (tid === rootId) return { label: invertLabel(edge.label, src, tgt), reverse: true };
+    if (hs > ht) return { label: invertLabel(edge.label, src, tgt), reverse: true };
     return { label: edge.label, reverse: false };
   }
 
@@ -299,6 +358,38 @@ function getRole(nodeId: string, rootId: string, gen: number, edges: GraphEdge[]
   return "sibling";
 }
 
+
+/** Orbit disc radius so the name fits inside the circle. */
+function orbitPersonRadius(label: string, isRoot: boolean): number {
+  const name = (label.split(/\n/)[0] ?? label).trim() || "?";
+  const words = name.split(/\s+/).filter(Boolean);
+  const line1 = words.length >= 2 ? words[0]! : name;
+  const line2 = words.length >= 2 ? words.slice(1).join(" ") : "";
+  const longest = Math.max(line1.length, line2.length, isRoot ? 8 : 6);
+  const charPx = isRoot ? 7.2 : 6.4;
+  const textW = longest * charPx;
+  // diameter ≈ text width + padding; clamp for readability
+  const r = textW / 2 + (isRoot ? 22 : 18);
+  return Math.max(isRoot ? 48 : 38, Math.min(isRoot ? 72 : 58, r));
+}
+
+function orbitNameLines(label: string, maxChars: number): { line1: string; line2: string } {
+  const full = (label.split(/\n/)[0] ?? label).trim();
+  const shown = full.length > maxChars ? `${full.slice(0, maxChars - 1)}…` : full;
+  const words = shown.split(/\s+/).filter(Boolean);
+  if (words.length >= 2) {
+    // Prefer first name on line 1, rest on line 2
+    return { line1: words[0]!, line2: words.slice(1).join(" ") };
+  }
+  if (shown.length > 10) {
+    const mid = Math.ceil(shown.length / 2);
+    return { line1: shown.slice(0, mid), line2: shown.slice(mid) };
+  }
+  return { line1: shown, line2: "" };
+}
+
+export type FamilyViewMode = "tree" | "orbit";
+
 // ── Props ────────────────────────────────────────────────────────────────────
 type Props = {
   nodes: GraphNode[];
@@ -311,6 +402,8 @@ type Props = {
   arrangeNonce?: number;
   /** Fan focus relations through parent/child/spouse/sibling hubs */
   useHubs?: boolean;
+  /** tree = hub petals; orbit = circular rings + round nodes */
+  viewMode?: FamilyViewMode;
 };
 
 // ── Component ────────────────────────────────────────────────────────────────
@@ -323,6 +416,7 @@ export default function FamilyTreeCanvas({
   arrowDir = "out",
   arrangeNonce = 0,
   useHubs = true,
+  viewMode = "tree",
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
@@ -332,21 +426,31 @@ export default function FamilyTreeCanvas({
   const [canvasH, setCanvasH] = useState(600);
   const draggedRef = useRef(false);
   const arrangeModeIdxRef = useRef(0);
+  const orbitPhaseRef = useRef(0);
   const lastArrangeModeRef = useRef<ArrangeMode>("family");
   const pinnedArrangeRef = useRef(false);
+  const isOrbit = viewMode === "orbit";
+  // Tree: optional hubs. Orbit: always Parent / Children / Spouses / Siblings portals.
+  const hubsOn = isOrbit || useHubs;
 
   const { nodes, edges } = useMemo(() => {
-    if (!useHubs) {
+    if (!(isOrbit || hubsOn)) {
       return {
         nodes: rawNodes.map((n) => ({ ...n })) as HubGraphNode[],
         edges: rawEdges,
       };
     }
+    // Same graph as tree (hubs + all people) — orbit only changes layout/look
     return toRelationHubs(rawNodes, rawEdges, rootId);
-  }, [rawNodes, rawEdges, useHubs, rootId]);
+  }, [rawNodes, rawEdges, hubsOn, rootId, isOrbit]);
 
   const gens = useMemo(
     () => assignGenerations(nodes, edges, rootId),
+    [nodes, edges, rootId],
+  );
+
+  const hops = useMemo(
+    () => hopDistanceFromRoot(nodes, edges, rootId),
     [nodes, edges, rootId],
   );
 
@@ -368,8 +472,44 @@ export default function FamilyTreeCanvas({
 
     simRef.current?.stop();
 
+    // Orbit: relation portals (Parents↑ Children↓ Spouses→ Siblings←) + round people
+    if (isOrbit) {
+      pinnedArrangeRef.current = true;
+      const bounds = layoutOrbitCircles(nodes, edges, rootId, W, H, {
+        phase: orbitPhaseRef.current,
+      });
+
+      const sim = d3
+        .forceSimulation<GraphNode>(nodes)
+        .force("col", null)
+        .alpha(0)
+        .stop();
+      simRef.current = sim;
+      tick((t) => t + 1);
+
+      requestAnimationFrame(() => {
+        const pad = 80;
+        const bw = Math.max(bounds.maxX - bounds.minX, 1);
+        const bh = Math.max(bounds.maxY - bounds.minY, 1);
+        const k = Math.min(1.15, Math.min((W - pad * 2) / bw, (H - pad * 2) / bh));
+        const midX = (bounds.minX + bounds.maxX) / 2;
+        const midY = (bounds.minY + bounds.maxY) / 2;
+        const tx = W / 2 - midX * k;
+        const ty = H / 2 - midY * k;
+        if (zoomRef.current && svgRef.current) {
+          d3.select(svgRef.current)
+            .transition()
+            .duration(420)
+            .call(zoomRef.current.transform, d3.zoomIdentity.translate(tx, ty).scale(k));
+        }
+      });
+      return () => {
+        sim.stop();
+      };
+    }
+
     // Hubs on: deterministic family layout (no force tangle)
-    if (useHubs) {
+    if (hubsOn) {
       pinnedArrangeRef.current = true;
       const bounds = layoutFamilyTree(nodes, edges, rootId, gens, W, H, {});
 
@@ -486,7 +626,7 @@ export default function FamilyTreeCanvas({
     return () => {
       sim.stop();
     };
-  }, [nodes, edges, rootId, gens, useHubs]);
+  }, [nodes, edges, rootId, gens, hubsOn, isOrbit]);
 
   // ── Zoom ────────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -523,13 +663,33 @@ export default function FamilyTreeCanvas({
       .call(zoomRef.current.transform, d3.zoomIdentity.translate(tx, ty).scale(k));
   }, []);
 
-  const autoArrange = useCallback((opts?: { toast?: boolean }) => {
+  const autoArrange = useCallback((_opts?: { toast?: boolean }) => {
     if (!svgRef.current || nodes.length === 0) return;
     const W = Math.max(svgRef.current.clientWidth || 0, 640);
     const H = Math.max(svgRef.current.clientHeight || 0, 480);
-    const showToast = opts?.toast !== false;
 
     pinnedArrangeRef.current = true;
+
+    if (isOrbit) {
+      orbitPhaseRef.current = (orbitPhaseRef.current + 1) % 4;
+      const bounds = layoutOrbitCircles(nodes, edges, rootId, W, H, {
+        phase: orbitPhaseRef.current,
+      });
+      const sim = d3
+        .forceSimulation<GraphNode>(nodes)
+        .force("col", null)
+        .alpha(0)
+        .stop();
+      for (const n of nodes) {
+        if (n.fx != null) n.x = n.fx;
+        if (n.fy != null) n.y = n.fy;
+      }
+      simRef.current?.stop();
+      simRef.current = sim;
+      tick((t) => t + 1);
+      fitToBounds(bounds);
+      return;
+    }
 
     // Cycle family / wide / mirror — always a clear rearrange
     const mode = ARRANGE_MODES[arrangeModeIdxRef.current % ARRANGE_MODES.length]!;
@@ -550,24 +710,34 @@ export default function FamilyTreeCanvas({
 
     tick((t) => t + 1);
     fitToBounds(bounds);
-    if (showToast) {
-      toast.success(`Rearranged · ${ARRANGE_MODE_LABEL[mode]}`);
-    }
-  }, [nodes, edges, rootId, gens, fitToBounds]);
+  }, [nodes, edges, rootId, gens, fitToBounds, isOrbit]);
+
+  const zoomBy = useCallback((factor: number) => {
+    if (!svgRef.current || !zoomRef.current) return;
+    d3.select(svgRef.current)
+      .transition()
+      .duration(220)
+      .call(zoomRef.current.scaleBy, factor);
+  }, []);
 
   useEffect(() => {
-    (window as unknown as Record<string, unknown>).__treeResetZoom = resetZoom;
+    const w = window as unknown as Record<string, unknown>;
+    w.__treeResetZoom = resetZoom;
+    w.__treeZoomBy = zoomBy;
+    w.__treeAutoArrange = () => autoArrange();
     return () => {
-      delete (window as unknown as Record<string, unknown>).__treeResetZoom;
+      delete w.__treeResetZoom;
+      delete w.__treeZoomBy;
+      delete w.__treeAutoArrange;
     };
-  }, [resetZoom]);
+  }, [resetZoom, zoomBy, autoArrange]);
 
-  // Explicit Auto arrange from toolbar (toast on)
+  // Explicit Auto arrange from toolbar
   const arrangeNonceRef = useRef(0);
   useEffect(() => {
     if (!arrangeNonce || arrangeNonce === arrangeNonceRef.current) return;
     arrangeNonceRef.current = arrangeNonce;
-    autoArrange({ toast: true });
+    autoArrange();
   }, [arrangeNonce, autoArrange]);
 
   // ── Drag ────────────────────────────────────────────────────────────────────
@@ -602,9 +772,14 @@ export default function FamilyTreeCanvas({
   const { x: tX, y: tY, k: tK } = zoom;
   const H = canvasH;
   const nodeSize = (n: GraphNode) => {
-    if (isHubNode(n)) return { w: HUB_W, h: HUB_H };
-    if (n.id === rootId) return { w: ROOT_W, h: ROOT_H };
-    return { w: NODE_W, h: NODE_H };
+    if (isOrbit) {
+      if (isHubNode(n)) return { w: ORBIT_HUB_W, h: ORBIT_HUB_H, r: 0 };
+      const r = orbitPersonRadius(n.label, n.id === rootId);
+      return { w: r * 2, h: r * 2, r };
+    }
+    if (isHubNode(n)) return { w: HUB_W, h: HUB_H, r: 0 };
+    if (n.id === rootId) return { w: ROOT_W, h: ROOT_H, r: 0 };
+    return { w: NODE_W, h: NODE_H, r: 0 };
   };
 
   return (
@@ -630,8 +805,10 @@ export default function FamilyTreeCanvas({
 
       <g transform={`translate(${tX},${tY}) scale(${tK})`}>
 
+        {/* Orbit labels live on the relation portal hubs */}
+
         {/* ── Generation bands (hubs off) ──────────────────────────────── */}
-        {!useHubs && uniqueGens.map(g => {
+        {!hubsOn && !isOrbit && uniqueGens.map(g => {
           const bandY = H / 2 + g * LEVEL_HEIGHT;
           const isAncestor = g < 0;
           const color = g === 0 ? "#4DBFEF" : isAncestor ? "#5B9FD8" : "#4DC48A";
@@ -664,7 +841,7 @@ export default function FamilyTreeCanvas({
           const tgt = typeof edge.target === "object" ? edge.target : nodes.find(n => n.id === edge.target);
           if (!src || !tgt || src.x === undefined || tgt.x === undefined) return null;
 
-          const { label: displayLabel, reverse } = displayRelation(edge, nodes, arrowDir);
+          const { label: displayLabel, reverse } = displayRelation(edge, nodes, arrowDir, rootId, hops);
           const from = reverse ? tgt : src;
           const to = reverse ? src : tgt;
           const fromSz = nodeSize(from);
@@ -679,10 +856,14 @@ export default function FamilyTreeCanvas({
           const isHubShare = edge.propertyId === "HUB_SHARE";
           const isCoParent = isCoParentEdge(edge);
           const isSpoke = isHubEdge && !edge.label.trim();
-          // Stop clearly outside the rect so tips aren't buried under the fill
-          const tipGap = isHubEdge && !isCoParent ? 1.5 : 5;
-          const p1 = rectEdgePoint(sx, sy, fromSz.w, fromSz.h, tx, ty, tipGap);
-          const p2 = rectEdgePoint(tx, ty, toSz.w, toSz.h, sx, sy, tipGap);
+          // Stop clearly outside the shape so tips aren't buried under the fill
+          const tipGap = isOrbit ? 2 : isHubEdge && !isCoParent ? 1.5 : 5;
+          const p1 = isOrbit && !isHubNode(from) && fromSz.r > 0
+            ? circleEdgePoint(sx, sy, fromSz.r, tx, ty, tipGap)
+            : rectEdgePoint(sx, sy, fromSz.w, fromSz.h, tx, ty, tipGap);
+          const p2 = isOrbit && !isHubNode(to) && toSz.r > 0
+            ? circleEdgePoint(tx, ty, toSz.r, sx, sy, tipGap)
+            : rectEdgePoint(tx, ty, toSz.w, toSz.h, sx, sy, tipGap);
           const x1 = p1.x, y1 = p1.y, x2 = p2.x, y2 = p2.y;
 
           const spokeRel =
@@ -699,7 +880,15 @@ export default function FamilyTreeCanvas({
 
           let pathD: string;
           const skip = new Set([from.id, to.id]);
-          if (useHubs) {
+          if (isOrbit) {
+            // Soft outward loft so ring edges stay readable
+            const mx = (x1 + x2) / 2;
+            const my = (y1 + y2) / 2;
+            const loft = Math.min(36, Math.max(10, len * 0.12));
+            const nx = -dy / len;
+            const ny = dx / len;
+            pathD = `M${x1},${y1} Q${mx + nx * loft},${my + ny * loft} ${x2},${y2}`;
+          } else if (hubsOn) {
             pathD = routeOrbitEdge(x1, y1, x2, y2, nodes, skip, {
               preferStraight: isHubEdge && !isCoParent,
               smoothOnly: isHubEdge || isCoParent,
@@ -719,14 +908,14 @@ export default function FamilyTreeCanvas({
               preferRadial: isHubEdge,
             });
           }
-          const { x: lx, y: ly } = useHubs
+          const { x: lx, y: ly } = hubsOn && !isOrbit
             ? routeLabelPoint(x1, y1, x2, y2, pathD)
             : edgeLabelPoint(x1, y1, x2, y2, pathD);
           const labelW = Math.max(36, displayLabel.length * 5.2 + 10);
           const showEdgeLabel =
             Boolean(displayLabel) &&
             len > 70 &&
-            !(useHubs && isHubEdge) &&
+            !(hubsOn && isHubEdge) &&
             !isCoParent;
 
           return (
@@ -748,11 +937,11 @@ export default function FamilyTreeCanvas({
                     ? `${color}aa`
                     : isHubShare
                       ? `${color}66`
-                      : useHubs
+                      : hubsOn
                         ? `${color}99`
                         : `${color}${isSpoke ? "50" : "70"}`
                 }
-                strokeWidth={isCoParent ? 2 : useHubs ? (isSpoke ? 1.75 : 2) : isSpoke ? 1.5 : 2}
+                strokeWidth={isCoParent ? 2 : hubsOn ? (isSpoke ? 1.75 : 2) : isSpoke ? 1.5 : 2}
                 strokeDasharray={isCoParent ? "5 7" : isHubShare ? "4 5" : undefined}
                 strokeLinecap="round"
               />
@@ -806,6 +995,95 @@ export default function FamilyTreeCanvas({
           const hubColor = HUB_FILL[hubRel ?? ""] ?? "#4DC48A";
 
           if (hub) {
+            let memberCount = 0;
+            for (const e of edges) {
+              const s = typeof e.source === "object" ? e.source.id : e.source;
+              const tgt = typeof e.target === "object" ? e.target.id : e.target;
+              if (s !== node.id) continue;
+              if (e.propertyId === "HUB" && !isHubId(tgt)) memberCount += 1;
+            }
+            const title = titleCase(node.label || hubRel || "family");
+
+            // Orbit: dark relation portals with counts. Tree: simple colored pills.
+            if (isOrbit) {
+              const ow = ORBIT_HUB_W;
+              const oh = ORBIT_HUB_H;
+              return (
+                <g
+                  key={node.id}
+                  ref={(el) => attachDrag(el, node)}
+                  transform={`translate(${x},${y})`}
+                  style={{ cursor: "grab" }}
+                  onClick={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
+                  <ellipse
+                    cx={0}
+                    cy={2}
+                    rx={ow / 2 + 12}
+                    ry={oh / 2 + 10}
+                    fill={hubColor}
+                    opacity={0.2}
+                    style={{ pointerEvents: "none" }}
+                  />
+                  <rect
+                    x={-ow / 2}
+                    y={-oh / 2}
+                    width={ow}
+                    height={oh}
+                    rx={18}
+                    fill="#0b1220"
+                    stroke={hubColor}
+                    strokeWidth={1.75}
+                  />
+                  <rect
+                    x={-ow / 2 + 3}
+                    y={-oh / 2 + 3}
+                    width={6}
+                    height={oh - 6}
+                    rx={3}
+                    fill={hubColor}
+                    style={{ pointerEvents: "none" }}
+                  />
+                  <text
+                    x={-4}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    style={{
+                      fontSize: "12px",
+                      fill: "#F8FAFC",
+                      fontFamily: "Georgia, 'Times New Roman', serif",
+                      fontWeight: 600,
+                      letterSpacing: "0.03em",
+                      pointerEvents: "none",
+                      userSelect: "none",
+                    }}
+                  >
+                    {title}
+                  </text>
+                  {memberCount > 0 && (
+                    <g transform={`translate(${ow / 2 - 18}, 0)`}>
+                      <circle r={12} fill={hubColor} />
+                      <text
+                        textAnchor="middle"
+                        dominantBaseline="middle"
+                        style={{
+                          fontSize: "10px",
+                          fill: "#FFFFFF",
+                          fontFamily: "'Space Grotesk', sans-serif",
+                          fontWeight: 700,
+                          pointerEvents: "none",
+                          userSelect: "none",
+                        }}
+                      >
+                        {memberCount}
+                      </text>
+                    </g>
+                  )}
+                </g>
+              );
+            }
+
             return (
               <g
                 key={node.id}
@@ -835,19 +1113,115 @@ export default function FamilyTreeCanvas({
                     userSelect: "none",
                   }}
                 >
-                  {titleCase(node.label)}
+                  {title}
                 </text>
               </g>
             );
           }
 
-          const orbitRel = useHubs && !isRoot ? personOrbitRelation(node.id, edges, nodes) : null;
+          const orbitRel = hubsOn && !isRoot ? personOrbitRelation(node.id, edges, nodes) : null;
           const accent = isRoot
             ? ROLE_STYLE.root.border
             : (orbitRel ? relColor(orbitRel) : style.border);
           const fill = isRoot ? ROLE_STYLE.root.bg : (orbitRel ? `${accent}18` : style.bg);
           const textMain = isRoot ? ROLE_STYLE.root.text : style.text;
           const textSub = isRoot ? ROLE_STYLE.root.sub : (orbitRel ? `${accent}` : style.sub);
+
+          if (isOrbit) {
+            const fullName = nameLine.trim() || node.label;
+            const r = orbitPersonRadius(fullName, isRoot);
+            const maxChars = isRoot ? 20 : 16;
+            const { line1, line2 } = orbitNameLines(fullName, maxChars);
+            const hasLife = Boolean(lifeLine);
+            const nameY = hasLife ? (line2 ? -10 : -6) : (line2 ? -6 : 1);
+            const nameY2 = hasLife ? 4 : 8;
+            const lifeY = line2 ? 16 : 12;
+            const fontSize = isRoot ? 12 : 11;
+            return (
+              <g
+                key={node.id}
+                ref={(el) => attachDrag(el, node)}
+                transform={`translate(${x},${y})`}
+                style={{ cursor: "pointer" }}
+                onClick={(e) => {
+                  if (draggedRef.current) { draggedRef.current = false; return; }
+                  e.stopPropagation();
+                  onNodeClick(node);
+                }}
+              >
+                {isRoot && (
+                  <circle r={r + 8} fill="none" stroke={accent} strokeWidth={1.25} opacity={0.35} />
+                )}
+                {isExpanding && (
+                  <circle
+                    r={r + 6}
+                    fill="none"
+                    stroke={accent}
+                    strokeWidth={1.5}
+                    strokeDasharray="6 4"
+                    opacity={0.85}
+                    style={{ animation: "ft-spin 1.2s linear infinite", transformOrigin: "0 0" }}
+                  />
+                )}
+                <circle
+                  r={r}
+                  fill={fill}
+                  stroke={accent}
+                  strokeWidth={isRoot ? 2.5 : 1.75}
+                />
+                <text
+                  y={nameY}
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                  style={{
+                    fontSize: `${fontSize}px`,
+                    fill: textMain,
+                    fontFamily: "'Space Grotesk', sans-serif",
+                    fontWeight: 700,
+                    pointerEvents: "none",
+                    userSelect: "none",
+                  }}
+                >
+                  {line1}
+                </text>
+                {line2 ? (
+                  <text
+                    y={nameY2}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    style={{
+                      fontSize: `${fontSize - 1}px`,
+                      fill: textMain,
+                      fontFamily: "'Space Grotesk', sans-serif",
+                      fontWeight: 700,
+                      pointerEvents: "none",
+                      userSelect: "none",
+                    }}
+                  >
+                    {line2.length > maxChars ? `${line2.slice(0, maxChars - 1)}…` : line2}
+                  </text>
+                ) : null}
+                {hasLife && (
+                  <text
+                    y={lifeY}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    style={{
+                      fontSize: "8px",
+                      fill: textSub,
+                      fontFamily: "'Space Grotesk', sans-serif",
+                      fontWeight: 500,
+                      pointerEvents: "none",
+                      userSelect: "none",
+                    }}
+                  >
+                    {lifeLine!.length > 14 ? `${lifeLine!.slice(0, 13)}…` : lifeLine}
+                  </text>
+                )}
+              </g>
+            );
+          }
+
           const nW = isRoot ? ROOT_W : NODE_W;
           const nH = isRoot ? ROOT_H : NODE_H;
           const rx = NODE_RX;
@@ -944,7 +1318,7 @@ export default function FamilyTreeCanvas({
           const tgt = typeof edge.target === "object" ? edge.target : nodes.find((n) => n.id === edge.target);
           if (!src || !tgt || src.x === undefined || tgt.x === undefined) return null;
 
-          const { label: displayLabel, reverse } = displayRelation(edge, nodes, arrowDir);
+          const { label: displayLabel, reverse } = displayRelation(edge, nodes, arrowDir, rootId, hops);
           const from = reverse ? tgt : src;
           const to = reverse ? src : tgt;
           const fromSz = nodeSize(from);
@@ -959,20 +1333,18 @@ export default function FamilyTreeCanvas({
           const isCoParent = isCoParentEdge(edge);
           const isSpoke = isHubEdge && !edge.label.trim();
 
-          // Hub spokes stay unmarked; show arrows for mother/father & labeled links
-          // (direction already applied via displayRelation reverse)
-          const showEnd =
-            isCoParent || (!(useHubs && isHubEdge) && !isSpoke);
-          const showStart =
-            !isCoParent &&
-            !(useHubs && isHubEdge) &&
-            !isSpoke &&
-            arrowDir === "both";
+          // Outward arrows tip on the outer person (hub spokes + orbit included)
+          const showEnd = true;
+          const showStart = !isOrbit && !isCoParent && !isHubEdge && arrowDir === "both";
           if (!showEnd && !showStart) return null;
 
-          const tipGap = isHubEdge && !isCoParent ? 1.5 : 5;
-          const p1 = rectEdgePoint(sx, sy, fromSz.w, fromSz.h, tx, ty, tipGap);
-          const p2 = rectEdgePoint(tx, ty, toSz.w, toSz.h, sx, sy, tipGap);
+          const tipGap = isOrbit ? 2 : isHubEdge && !isCoParent ? 1.5 : 5;
+          const p1 = isOrbit && !isHubNode(from) && fromSz.r > 0
+            ? circleEdgePoint(sx, sy, fromSz.r, tx, ty, tipGap)
+            : rectEdgePoint(sx, sy, fromSz.w, fromSz.h, tx, ty, tipGap);
+          const p2 = isOrbit && !isHubNode(to) && toSz.r > 0
+            ? circleEdgePoint(tx, ty, toSz.r, sx, sy, tipGap)
+            : rectEdgePoint(tx, ty, toSz.w, toSz.h, sx, sy, tipGap);
           const x1 = p1.x, y1 = p1.y, x2 = p2.x, y2 = p2.y;
 
           const spokeRel =
@@ -989,7 +1361,14 @@ export default function FamilyTreeCanvas({
 
           let pathD: string;
           const skip = new Set([from.id, to.id]);
-          if (useHubs) {
+          if (isOrbit) {
+            const mx = (x1 + x2) / 2;
+            const my = (y1 + y2) / 2;
+            const loft = Math.min(36, Math.max(10, len * 0.12));
+            const nx = -dy / len;
+            const ny = dx / len;
+            pathD = `M${x1},${y1} Q${mx + nx * loft},${my + ny * loft} ${x2},${y2}`;
+          } else if (hubsOn) {
             pathD = routeOrbitEdge(x1, y1, x2, y2, nodes, skip, {
               preferStraight: isHubEdge && !isCoParent,
               smoothOnly: isHubEdge || isCoParent,

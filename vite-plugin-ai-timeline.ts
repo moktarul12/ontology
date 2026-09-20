@@ -14,7 +14,7 @@ import { loadEnv } from "vite";
 import { cacheGet, cacheSet, cacheStats, hashKey } from "./src/server/responseCache";
 
 /** Bump when prompts / response shape change to invalidate cached AI JSON. */
-const CACHE_PROMPT_VERSION = "ai-v7-glance-achievements";
+const CACHE_PROMPT_VERSION = "ai-v9-cinematic-hero";
 
 type ProviderId = "groq" | "gemini" | "openai";
 
@@ -76,24 +76,38 @@ Rules:
 - fields: keep local.fields labels; lightly clarify values; do not add unsupported facts.
 - No markdown. Prefer complete valid JSON.`;
 
-const GLANCE_SYSTEM_PROMPT = `You write an "At a glance" SNAPSHOT for a knowledge explorer — NOT a Wikipedia infobox clone.
-Use only wikipediaLead, factsDigest, and local.*. Do NOT invent revenue, headcount, dates, CEOs, or products.
+const GLANCE_SYSTEM_PROMPT = `You write CINEMATIC HERO copy for a knowledge explorer — a magazine poster, not a Wikipedia infobox.
+Use wikipediaLead, factsDigest, and local.*. You MAY write vivid original prose and a well-known associated quote, lyric, motto, or epithet widely attributed to this entity. Do NOT invent revenue, headcount, store counts, award totals, or dates that contradict the sources.
 
 Return ONLY JSON:
 {
   "heading": string,
   "pulse": string,
   "metrics": [{ "label": string, "value": string, "note"?: string }],
-  "cards": [{ "label": string, "value": string, "tone"?: "hq"|"people"|"market"|"product"|"life"|"default" }],
+  "cards": [{ "label": string, "value": string, "note"?: string, "tone"?: "hq"|"people"|"market"|"product"|"life"|"default" }],
+  "bands": [{ "id": string, "title": string, "layout": "rows"|"tiles"|"roles", "items": [{ "label": string, "value": string, "note"?: string, "icon"?: string }] }],
+  "identity": {
+    "name": string,
+    "years"?: string,
+    "crafts"?: string,
+    "quote"?: string,
+    "quoteNative"?: string,
+    "featureTitle"?: string,
+    "bio"?: string
+  },
   "footnote"?: string
 }
 
 Rules:
-- pulse: 1–2 vivid HIGHLIGHT sentences (magazine tone). Never paste wiki parentheticals or citation junk.
-- Do NOT repeat the short Wikidata description (e.g. "Indian singer and actor (1929–1987)") or lifespan already shown beside the portrait.
-- Organizations: heading "Company highlights". metrics MUST include market cap / revenue / employees / locations / ticker when present in factsDigest or local.metrics. cards = HQ, Leadership, Industry, Products, Listed.
-- Persons: heading "Life snapshot". Do NOT write a biography pulse. metrics = awards / notable works / nominations. cards = Honours, Known for, Songs/Films — achievements only, never Born/Died/Family.
-- Prefer local.metrics / local.cards structure; polish wording, drop duplicates, keep numbers faithful.
+- pulse: 2–3 sentences for the featured story under featureTitle (e.g. Filmfare record + why they endure). Organizations: a scale story, not a metric dump.
+- identity.quote: a famous associated line (song lyric, motto, epithet). identity.quoteNative: original-script line when it exists (e.g. Hindi).
+- identity.featureTitle: poster headline, Title Case. Person singer in Indian cinema → "Legendary Voice of Indian Cinema". Org retail → "Retail at Continental Scale". Place → "The Character of This Place". Event → "What This Moment Changed". Work → "Why This Work Endures".
+- identity.bio: 2 short encyclopedia paragraphs separated by a blank line (who they are; why they matter). Not the stub "X is a … (years)".
+- identity.crafts: 4–6 roles/industries joined with " · " (e.g. Singer · Composer · Musician · Actor · Playback Singer).
+- Persons: bands id=roles layout=roles with EXACTLY 4 items when occupations allow (Versatile singer / Actor / Composer / Musician or the real crafts). Each note is 1 vivid sentence (e.g. "From romantic to comic, he could sing every emotion."). cards: Born (date + place note), Hometown, Active years, Filmfare/Honours, Languages with note "(and others)" when more than one.
+- Organizations: heading "Company highlights". metrics compact ($65B, 270K, 1,700+). bands id=scale (network, reach, digital, listed) and id=digital when retail/tech. Do not invent counts.
+- Places / events / works / concepts: same poster chassis — 5 pills as cards, 4 stage items with 1-sentence notes.
+- Prefer local.* structure; polish and enrich wording; keep numbers faithful.
 - No markdown. Prefer complete valid JSON.`;
 
 const RELATION_STORY_SYSTEM_PROMPT = `You are a feature writer for a premium culture magazine inside a knowledge explorer.
@@ -230,7 +244,7 @@ function listProviders(env: Record<string, string>): Provider[] {
     out.push({
       id: "gemini",
       apiKey: gemini,
-      model: env.GEMINI_MODEL?.trim() || "gemini-2.0-flash",
+      model: env.GEMINI_MODEL?.trim() || "gemini-3.6-flash",
     });
   }
   if (groq) {
@@ -250,8 +264,9 @@ function listProviders(env: Record<string, string>): Provider[] {
 
   const forced = (env.AI_PROVIDER || "").trim().toLowerCase() as ProviderId | "";
   if (forced === "groq" || forced === "gemini" || forced === "openai") {
-    const only = out.filter((p) => p.id === forced);
-    return only.length ? only : [];
+    const preferred = out.filter((p) => p.id === forced);
+    const rest = out.filter((p) => p.id !== forced);
+    if (preferred.length) return [...preferred, ...rest];
   }
   return out;
 }
@@ -397,7 +412,27 @@ async function callGemini(
 
 function isModelError(message: string): boolean {
   const m = message.toLowerCase();
-  return m.includes("model_not_found") || m.includes("does not exist") || m.includes("model not found");
+  return (
+    m.includes("model_not_found") ||
+    m.includes("does not exist") ||
+    m.includes("model not found") ||
+    m.includes("no longer available") ||
+    m.includes("is not found") ||
+    (m.includes('"code": 404') && m.includes("model"))
+  );
+}
+
+function isRetryableProviderError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    isModelError(message) ||
+    m.includes("unavailable") ||
+    m.includes("high demand") ||
+    m.includes("overloaded") ||
+    m.includes('"code": 503') ||
+    m.includes("json_validate_failed") ||
+    m.includes("max completion tokens")
+  );
 }
 
 /** Free-tier Groq chat models (post Aug 2026 deprecations). Tried in order on model_not_found. */
@@ -405,6 +440,12 @@ const GROQ_MODEL_FALLBACKS = [
   "openai/gpt-oss-20b",
   "openai/gpt-oss-120b",
   "qwen/qwen3-32b",
+];
+
+const GEMINI_MODEL_FALLBACKS = [
+  "gemini-3.6-flash",
+  "gemini-2.5-flash",
+  "gemini-flash-latest",
 ];
 
 async function generateWithProvider(
@@ -439,17 +480,34 @@ async function generateWithProvider(
             : new ProviderError(provider.id, err instanceof Error ? err.message : String(err));
         lastErr = pe;
         if (pe.authFailed) throw pe;
-        if (isModelError(pe.message)) continue;
+        if (isRetryableProviderError(pe.message)) continue;
         throw pe;
       }
     }
     throw lastErr ?? new ProviderError(provider.id, "No Groq model available");
   }
   if (provider.id === "gemini") {
-    return {
-      raw: await callGemini(provider, userContent, systemPrompt, maxTokens),
-      model: provider.model,
-    };
+    const models = [
+      provider.model,
+      ...GEMINI_MODEL_FALLBACKS.filter((m) => m !== provider.model),
+    ];
+    let lastErr: ProviderError | null = null;
+    for (const model of models) {
+      try {
+        const raw = await callGemini({ ...provider, model }, userContent, systemPrompt, maxTokens);
+        return { raw, model };
+      } catch (err) {
+        const pe =
+          err instanceof ProviderError
+            ? err
+            : new ProviderError(provider.id, err instanceof Error ? err.message : String(err));
+        lastErr = pe;
+        if (pe.authFailed) throw pe;
+        if (isRetryableProviderError(pe.message)) continue;
+        throw pe;
+      }
+    }
+    throw lastErr ?? new ProviderError(provider.id, "No Gemini model available");
   }
   return {
     raw: await callOpenAiCompatible(
@@ -536,6 +594,259 @@ async function handleRequest(
           ? "Add GROQ_API_KEY to .env (free at console.groq.com/keys), then restart Vite."
           : undefined,
     });
+    return;
+  }
+
+function pcm16ToWav(pcm: Buffer, sampleRate = 24000): Buffer {
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
+
+function concatWavs(wavs: Buffer[]): Buffer {
+  if (wavs.length === 1) return wavs[0]!;
+  const rate = wavs[0]!.readUInt32LE(24) || 24000;
+  const pcm = Buffer.concat(wavs.map((w) => w.subarray(44)));
+  return pcm16ToWav(pcm, rate);
+}
+
+function splitSpoken(text: string, max = 1100): string[] {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (clean.length <= max) return [clean];
+  const parts: string[] = [];
+  const bits = clean.split(/(?<=[।.!?…])\s+/);
+  let buf = "";
+  for (const bit of bits) {
+    if ((buf + " " + bit).trim().length > max && buf) {
+      parts.push(buf.trim());
+      buf = bit;
+    } else {
+      buf = (buf + " " + bit).trim();
+    }
+  }
+  if (buf.trim()) parts.push(buf.trim());
+  return parts.length ? parts : [clean.slice(0, max)];
+}
+
+function ttsSpeakLead(language: string, style: string): string {
+  if (language === "bn") {
+    return "Speak the following in fluent native Bengali (Bangla). Warm, natural, like a person from Kolkata telling a story. Do not speak English.";
+  }
+  if (language === "hi") {
+    return "Speak the following in fluent native Hindi. Warm, natural, like a person from India telling a story. Do not speak English.";
+  }
+  if (style === "filmi") {
+    return "Speak the following in warm Indian English, like a Hindi-film documentary narrator. Not American, not British RP.";
+  }
+  return "Speak the following in natural Indian English, like a native speaker telling a story.";
+}
+
+async function openaiSpeech(
+  apiKey: string,
+  model: string,
+  language: string,
+  style: string,
+  input: string,
+): Promise<Buffer | null> {
+  const tts = await fetch("https://api.openai.com/v1/audio/speech", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      voice: language === "bn" ? "nova" : language === "hi" || style === "filmi" ? "onyx" : "echo",
+      input,
+      instructions: ttsSpeakLead(language, style),
+    }),
+  });
+  if (!tts.ok) return null;
+  return Buffer.from(await tts.arrayBuffer());
+}
+
+async function geminiTtsWav(
+  apiKey: string,
+  model: string,
+  spokenText: string,
+  language: string,
+  style: string,
+): Promise<Buffer> {
+  const url =
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent` +
+    `?key=${encodeURIComponent(apiKey)}`;
+  const voiceName = language === "en" ? "Fenrir" : "Kore";
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ role: "user", parts: [{ text: `${ttsSpeakLead(language, style)}\n\n${spokenText}` }] }],
+      generationConfig: {
+        responseModalities: ["AUDIO"],
+        speechConfig: {
+          voiceConfig: { prebuiltVoiceConfig: { voiceName } },
+        },
+      },
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`${model}: ${res.status} ${(await res.text().catch(() => "")).slice(0, 180)}`);
+  }
+  const data = (await res.json()) as {
+    candidates?: Array<{
+      finishReason?: string;
+      content?: { parts?: Array<{ inlineData?: { data?: string; mimeType?: string }; text?: string }> };
+    }>;
+  };
+  const parts = data.candidates?.[0]?.content?.parts ?? [];
+  const inline = parts.find((p) => p.inlineData?.data)?.inlineData;
+  if (!inline?.data) {
+    throw new Error(
+      `${model}: no audio finish=${data.candidates?.[0]?.finishReason ?? "?"} keys=${JSON.stringify(parts.map((p) => Object.keys(p))).slice(0, 80)}`,
+    );
+  }
+  const raw = Buffer.from(inline.data, "base64");
+  const mime = (inline.mimeType ?? "").toLowerCase();
+  if (mime.includes("wav") || mime.includes("mpeg") || mime.includes("mp3")) return raw;
+  const rateMatch = mime.match(/rate=(\d+)/);
+  return pcm16ToWav(raw, rateMatch ? Number(rateMatch[1]) : 24000);
+}
+
+async function geminiSpokenScript(
+  apiKey: string,
+  models: string[],
+  language: string,
+  input: string,
+): Promise<string> {
+  if (language !== "bn" && language !== "hi") return input;
+  const langName =
+    language === "bn"
+      ? "Bengali (Bangla, Bengali script). Sound like a native speaker from Kolkata."
+      : "Hindi (Devanagari). Sound like a native speaker from India.";
+  for (const model of models) {
+    const gurl =
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent` +
+      `?key=${encodeURIComponent(apiKey)}`;
+    const gres = await fetch(gurl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                text: `Rewrite this biography as fluent spoken ${langName} Three short paragraphs, about 90 seconds of speech. A person telling the story, not a machine translation. Keep names and film titles. Return ONLY the spoken text.\n\n${input}`,
+              },
+            ],
+          },
+        ],
+        generationConfig: { temperature: 0.45, maxOutputTokens: 1024 },
+      }),
+    });
+    if (!gres.ok) continue;
+    const gdata = (await gres.json()) as {
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    };
+    const spokenText = (gdata.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "")
+      .replace(/^```[\w]*\n?|\n?```$/g, "")
+      .trim();
+    if (spokenText) return spokenText.slice(0, 2400);
+  }
+  return input;
+}
+
+  // POST /api/ai/speech — native Bengali / Hindi / English narration
+  if (req.method === "POST" && (url === "/speech" || url.endsWith("/speech"))) {
+    const openaiKey = env.OPENAI_API_KEY?.trim();
+    const geminiKey = env.GEMINI_API_KEY?.trim() || env.GOOGLE_API_KEY?.trim();
+    if (!openaiKey && !geminiKey) {
+      sendJson(res, 503, { error: "missing_key", message: "GEMINI_API_KEY or OPENAI_API_KEY required for AI speech." });
+      return;
+    }
+    let speechPayload: Record<string, unknown>;
+    try {
+      speechPayload = JSON.parse(await readBody(req)) as Record<string, unknown>;
+    } catch {
+      sendJson(res, 400, { error: "Invalid JSON body" });
+      return;
+    }
+    const input = String(speechPayload.text ?? "").replace(/\s+/g, " ").trim().slice(0, 1600);
+    if (!input) {
+      sendJson(res, 400, { error: "text required" });
+      return;
+    }
+    const language = String(speechPayload.language ?? "en").toLowerCase();
+    const style = String(speechPayload.style ?? "local");
+    const textModels = [
+      env.GEMINI_MODEL?.trim(),
+      "gemini-3.6-flash",
+      "gemini-2.5-flash",
+    ].filter((m, i, a): m is string => Boolean(m) && a.indexOf(m) === i);
+    const ttsModels = [
+      env.GEMINI_TTS_MODEL?.trim(),
+      "gemini-2.5-flash-preview-tts",
+      "gemini-2.5-pro-preview-tts",
+      "gemini-3.1-flash-tts-preview",
+    ].filter((m, i, a): m is string => Boolean(m) && a.indexOf(m) === i);
+    try {
+      let spoken = input;
+      if (geminiKey && (language === "bn" || language === "hi")) {
+        spoken = await geminiSpokenScript(geminiKey, textModels, language, input);
+      }
+      let buf: Buffer | null = null;
+      let contentType = "audio/wav";
+      if (openaiKey) {
+        buf = await openaiSpeech(openaiKey, env.OPENAI_TTS_MODEL?.trim() || "gpt-4o-mini-tts", language, style, spoken);
+        if (buf) contentType = "audio/mpeg";
+      }
+      if (!buf && geminiKey) {
+        const wavs: Buffer[] = [];
+        for (const chunk of splitSpoken(spoken, 1100)) {
+          let chunkBuf: Buffer | null = null;
+          for (const model of ttsModels) {
+            try {
+              chunkBuf = await geminiTtsWav(geminiKey, model, chunk, language, style);
+              break;
+            } catch {
+              /* try next TTS model */
+            }
+          }
+          if (!chunkBuf) break;
+          wavs.push(chunkBuf);
+        }
+        if (wavs.length) buf = concatWavs(wavs);
+      }
+      if (buf) {
+        res.statusCode = 200;
+        res.setHeader("Content-Type", contentType);
+        res.setHeader("Cache-Control", "no-store");
+        res.end(buf);
+        return;
+      }
+      if (spoken && (language === "bn" || language === "hi")) {
+        sendJson(res, 200, { text: spoken, language });
+        return;
+      }
+      sendJson(res, 502, { error: "tts_failed", message: "Native speech could not be generated." });
+    } catch (err) {
+      sendJson(res, 502, {
+        error: "tts_failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
     return;
   }
 
@@ -811,7 +1122,7 @@ function compactGlancePayload(payload: Record<string, unknown>): string {
     label: payload.label,
     description: payload.description,
     type: payload.type,
-    wikipediaLead: String(payload.wikipediaLead ?? "").slice(0, 900),
+    wikipediaLead: String(payload.wikipediaLead ?? "").slice(0, 1800),
     wikiRevisedAt: payload.wikiRevisedAt ?? null,
     factsDigest: Array.isArray(payload.factsDigest) ? payload.factsDigest.slice(0, 14) : [],
     local: payload.local ?? null,

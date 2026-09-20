@@ -2,17 +2,7 @@ import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "motion/react";
-import {
-  Building2,
-  ChevronRight,
-  ExternalLink,
-  Factory,
-  MapPin,
-  Package,
-  PenLine,
-  Sparkles,
-  Users,
-} from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
 import {
   buildLocalSectionBrief,
@@ -20,16 +10,13 @@ import {
 } from "@/lib/ai/enrich.ts";
 import {
   buildLocalGlance,
+  cinematicType,
   fetchGlanceSnapshot,
-  type GlanceCard,
-  type GlanceSnapshot,
 } from "@/lib/ai/glance.ts";
-import type { EntitySummary, EntityType, TimelineEvent } from "@/lib/wikidata/types.ts";
+import { GlanceBoard } from "@/pages/entity/_components/GlanceBoard.tsx";
+import { AiReadAloud } from "@/pages/entity/_components/AiReadAloud.tsx";
+import type { EntitySummary, EntityType } from "@/lib/wikidata/types.ts";
 import { isGenericTypeLabel } from "@/lib/wikidata/entity-types.ts";
-import {
-  buildLocalNarrative,
-  fetchNarrativeTimeline,
-} from "@/lib/ai/timeline.ts";
 import type { ComponentType } from "react";
 
 type TypeCfg = {
@@ -53,6 +40,14 @@ type WikiRow = {
 };
 
 type Tag = { id?: string; label: string };
+
+export type HeroExploreItem = {
+  id: string;
+  label: string;
+  icon: ComponentType<{ className?: string }>;
+  action: () => void;
+  selected?: boolean;
+};
 
 type Props = {
   entity: EntitySummary;
@@ -79,9 +74,10 @@ type Props = {
       tone?: string;
     }>;
   } | null;
-  /** Kept for API stability; glance builds from entity facts */
   wikiInfobox: WikiRow[];
   quickFacts: QuickFact[];
+  galleryUrls?: string[];
+  explore?: HeroExploreItem[];
 };
 
 const TYPE_BREADCRUMB: Record<EntityType, string> = {
@@ -94,287 +90,135 @@ const TYPE_BREADCRUMB: Record<EntityType, string> = {
   unknown: "Entities",
 };
 
-const CARD_TONE: Record<
-  NonNullable<GlanceCard["tone"]>,
-  { bar: string; icon: ComponentType<{ className?: string }> }
-> = {
-  hq: { bar: "from-teal-500 to-cyan-600", icon: MapPin },
-  people: { bar: "from-sky-500 to-blue-600", icon: Users },
-  market: { bar: "from-amber-500 to-orange-600", icon: Factory },
-  product: { bar: "from-emerald-500 to-teal-600", icon: Package },
-  life: { bar: "from-slate-500 to-slate-700", icon: Building2 },
-  default: { bar: "from-slate-400 to-slate-600", icon: Building2 },
+type HeroTheme = {
+  bg: string;
+  accent: string;
+  fade: string;
+  portraitWidth: string;
+  portraitFilter: string;
+  portraitPosition: string;
 };
 
-function GlanceBoard({
-  snapshot,
-  isFetching,
-  isOrg,
-  website,
-  lifeEvents,
-}: {
-  snapshot: GlanceSnapshot;
-  isFetching: boolean;
-  isOrg: boolean;
-  website?: string;
-  lifeEvents?: TimelineEvent[];
-}) {
-  const metrics = snapshot.metrics.filter(
-    (m) => m.label.toLowerCase() !== "lifespan",
-  );
-  const cards = snapshot.cards.filter(
-    (c) => isOrg || !/^(born|died|family|nationality)$/i.test(c.label),
-  );
-  const showPulse = isOrg && Boolean(snapshot.pulse);
+const THEME: Record<EntityType, HeroTheme> = {
+  person: {
+    bg: "#0b1220",
+    accent: "text-amber-300",
+    fade: "linear-gradient(90deg, transparent 40%, #0b1220 100%)",
+    portraitWidth: "w-full",
+    portraitFilter: "sepia(0.18) contrast(1.08) saturate(0.78) brightness(0.88)",
+    portraitPosition: "16% 8%",
+  },
+  organization: {
+    bg: "#07131f",
+    accent: "text-teal-300",
+    fade: "linear-gradient(90deg, transparent 30%, #07131f 100%)",
+    portraitWidth: "w-full",
+    portraitFilter: "none",
+    portraitPosition: "center",
+  },
+  place: {
+    bg: "#07140f",
+    accent: "text-emerald-300",
+    fade: "linear-gradient(90deg, transparent 35%, #07140f 100%)",
+    portraitWidth: "w-full",
+    portraitFilter: "saturate(0.8) contrast(1.06) brightness(0.72)",
+    portraitPosition: "center 40%",
+  },
+  event: {
+    bg: "#140c0a",
+    accent: "text-orange-300",
+    fade: "linear-gradient(90deg, transparent 35%, #140c0a 100%)",
+    portraitWidth: "w-full",
+    portraitFilter: "contrast(1.08) saturate(0.75) brightness(0.7)",
+    portraitPosition: "center 30%",
+  },
+  work: {
+    bg: "#140a12",
+    accent: "text-fuchsia-300",
+    fade: "linear-gradient(90deg, transparent 30%, #140a12 100%)",
+    portraitWidth: "w-full",
+    portraitFilter: "contrast(1.06) saturate(0.85) brightness(0.78)",
+    portraitPosition: "center top",
+  },
+  concept: {
+    bg: "#0a1020",
+    accent: "text-sky-300",
+    fade: "linear-gradient(90deg, transparent 30%, #0a1020 100%)",
+    portraitWidth: "w-full",
+    portraitFilter: "saturate(0.65) brightness(0.72)",
+    portraitPosition: "center",
+  },
+  unknown: {
+    bg: "#0b1220",
+    accent: "text-amber-300",
+    fade: "linear-gradient(90deg, transparent 35%, #0b1220 100%)",
+    portraitWidth: "w-full",
+    portraitFilter: "none",
+    portraitPosition: "center top",
+  },
+};
 
-  return (
-    <div
-      className={cn(
-        "border-t border-slate-100",
-        isOrg
-          ? "bg-gradient-to-br from-slate-900 via-slate-900 to-teal-950 text-slate-100"
-          : "bg-slate-50/80",
-      )}
-    >
-      <div className="px-4 py-4 sm:px-6 sm:py-5">
-        <div className="mb-3 flex flex-wrap items-center gap-2">
-          <Sparkles
-            className={cn("size-3.5", isOrg ? "text-teal-300" : "text-teal-600")}
-          />
-          <span
-            className={cn(
-              "text-[11px] font-semibold uppercase tracking-[0.16em]",
-              isOrg ? "text-teal-200/90" : "text-slate-500",
-            )}
-          >
-            {snapshot.heading}
-          </span>
-          {isFetching && (
-            <span className="text-[10px] text-slate-400">Briefing…</span>
-          )}
-          {!isFetching && !snapshot.fallback && (
-            <span
-              className={cn(
-                "rounded-full px-2 py-0.5 text-[10px] font-medium",
-                isOrg ? "bg-teal-400/20 text-teal-200" : "bg-teal-600/10 text-teal-800",
-              )}
-            >
-              AI
-            </span>
-          )}
-        </div>
+function splitDisplayName(label: string, type: EntityType): { lead: string; gold: string } {
+  if (type !== "person") return { lead: label, gold: "" };
+  const parts = label.trim().split(/\s+/);
+  if (parts.length < 2) return { lead: label, gold: "" };
+  return { lead: parts.slice(0, -1).join(" "), gold: parts[parts.length - 1]! };
+}
 
-        {showPulse && (
-          <p
-            className={cn(
-              "max-w-3xl text-[15px] sm:text-[16px] leading-[1.65]",
-              isOrg ? "text-slate-100" : "text-slate-800",
-            )}
-          >
-            {snapshot.pulse}
-          </p>
-        )}
+function compactHeroDate(label: string): string {
+  return label
+    .replace(/\bJanuary\b/g, "Jan").replace(/\bFebruary\b/g, "Feb")
+    .replace(/\bMarch\b/g, "Mar").replace(/\bApril\b/g, "Apr")
+    .replace(/\bJune\b/g, "Jun").replace(/\bJuly\b/g, "Jul")
+    .replace(/\bAugust\b/g, "Aug").replace(/\bSeptember\b/g, "Sep")
+    .replace(/\bOctober\b/g, "Oct").replace(/\bNovember\b/g, "Nov")
+    .replace(/\bDecember\b/g, "Dec")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
-        {metrics.length > 0 && (
-          <div
-            className={cn(
-              "grid gap-2",
-              showPulse || (lifeEvents && lifeEvents.length > 0) ? "mt-4" : "",
-              metrics.length >= 4
-                ? "grid-cols-2 sm:grid-cols-4"
-                : metrics.length === 3
-                  ? "grid-cols-3"
-                  : "grid-cols-2",
-            )}
-          >
-            {metrics.map((m) => (
-              <div
-                key={m.label}
-                className={cn(
-                  "rounded-xl px-3 py-3",
-                  isOrg
-                    ? "bg-white/[0.06] ring-1 ring-white/10"
-                    : "bg-white border border-slate-200/90 shadow-sm",
-                )}
-              >
-                <p
-                  className={cn(
-                    "text-[10px] font-semibold uppercase tracking-[0.14em]",
-                    isOrg ? "text-teal-300/80" : "text-slate-400",
-                  )}
-                >
-                  {m.label}
-                </p>
-                <p
-                  className={cn(
-                    "mt-1 font-serif text-[1.35rem] sm:text-[1.5rem] font-bold tabular-nums leading-none tracking-tight",
-                    isOrg ? "text-white" : "text-slate-900",
-                  )}
-                >
-                  {m.value}
-                </p>
-                {m.note && (
-                  <p className={cn("mt-1 text-[11px]", isOrg ? "text-slate-400" : "text-slate-500")}>
-                    {m.note}
-                  </p>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {lifeEvents && lifeEvents.length > 0 && (
-          <ol
-            className={cn(
-              "mt-4 grid gap-2",
-              lifeEvents.length > 3 ? "sm:grid-cols-2" : "grid-cols-1",
-            )}
-          >
-            {lifeEvents.map((ev) => (
-              <li
-                key={`${ev.sortKey}|${ev.title}`}
-                className={cn(
-                  "flex items-start gap-3 rounded-xl px-3 py-2.5",
-                  isOrg
-                    ? "bg-white/[0.06] ring-1 ring-white/10"
-                    : "bg-white border border-slate-200/90 shadow-sm",
-                )}
-              >
-                {ev.imageUrl ? (
-                  <img
-                    src={ev.imageUrl}
-                    alt=""
-                    referrerPolicy="no-referrer"
-                    className="size-14 sm:size-[4.25rem] shrink-0 rounded-lg object-cover object-top bg-slate-100"
-                  />
-                ) : (
-                  <span
-                    className={cn(
-                      "flex size-14 sm:size-[4.25rem] shrink-0 items-center justify-center rounded-lg font-mono text-[11px] tabular-nums",
-                      isOrg ? "bg-white/10 text-teal-200" : "bg-slate-100 text-slate-500",
-                    )}
-                  >
-                    {ev.year.replace(/[^\d–-]/g, "").slice(0, 4) || "—"}
-                  </span>
-                )}
-                <div className="min-w-0 pt-0.5">
-                  <p
-                    className={cn(
-                      "font-mono text-[11px] tabular-nums",
-                      isOrg ? "text-teal-300/80" : "text-slate-400",
-                    )}
-                  >
-                    {ev.year}
-                  </p>
-                  <p
-                    className={cn(
-                      "mt-0.5 text-[13.5px] font-semibold leading-snug",
-                      isOrg ? "text-slate-100" : "text-slate-800",
-                    )}
-                  >
-                    {ev.title}
-                  </p>
-                  {ev.highlights?.[0] && (
-                    <p className={cn("mt-0.5 text-[12px] leading-snug line-clamp-2", isOrg ? "text-slate-400" : "text-slate-500")}>
-                      {ev.highlights[0]}
-                    </p>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ol>
-        )}
-
-        {cards.length > 0 && (
-          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {cards.map((c) => {
-              const tone = CARD_TONE[c.tone ?? "default"];
-              const CIcon = tone.icon;
-              return (
-                <div
-                  key={`${c.label}-${c.value}`}
-                  className={cn(
-                    "relative overflow-hidden rounded-xl px-3.5 py-3",
-                    isOrg
-                      ? "bg-white/[0.05] ring-1 ring-white/10"
-                      : "bg-white border border-slate-200/90",
-                  )}
-                >
-                  <div
-                    className={cn(
-                      "absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b",
-                      tone.bar,
-                    )}
-                  />
-                  <div className="flex items-start gap-2 pl-2">
-                    <CIcon
-                      className={cn(
-                        "mt-0.5 size-3.5 shrink-0",
-                        isOrg ? "text-teal-300/80" : "text-slate-400",
-                      )}
-                    />
-                    <div className="min-w-0">
-                      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">
-                        {c.label}
-                      </p>
-                      <p
-                        className={cn(
-                          "mt-0.5 text-[13.5px] font-medium leading-snug",
-                          isOrg ? "text-slate-100" : "text-slate-800",
-                        )}
-                      >
-                        {c.value}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        {(website || snapshot.footnote) && (
-          <div className="mt-3 flex flex-wrap items-center gap-3">
-            {website && (
-              <a
-                href={website}
-                target="_blank"
-                rel="noopener noreferrer"
-                className={cn(
-                  "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-semibold transition-colors",
-                  isOrg
-                    ? "bg-teal-400 text-slate-950 hover:bg-teal-300"
-                    : "border border-slate-200 bg-white text-slate-700 hover:border-teal-400",
-                )}
-              >
-                <ExternalLink className="size-3.5" />
-                Official site
-              </a>
-            )}
-            {snapshot.footnote && (
-              <p className={cn("text-[11px]", isOrg ? "text-slate-500" : "text-slate-400")}>
-                {snapshot.footnote}
-              </p>
-            )}
-          </div>
-        )}
-
-        {snapshot.hint && (
-          <p className={cn("mt-2 text-[11px]", isOrg ? "text-slate-500" : "text-slate-400")}>
-            {snapshot.hint}
-          </p>
-        )}
-      </div>
-    </div>
+function isPlacePhoto(url: string): boolean {
+  return /house|home|kunj|building|temple|street|memorial|panoramio|logo|flag|signature|\bmap\b|stamp/i.test(
+    url,
   );
 }
 
+function pickAtmosphere(
+  type: EntityType,
+  portraitUrl: string | undefined,
+  galleryUrls: string[],
+): string | undefined {
+  const alts = galleryUrls.filter((u) => u && u !== portraitUrl);
+  if (type === "person") {
+    const people = alts.filter((u) => !isPlacePhoto(u));
+    const scene = people.find((u) => /and_|film|movie|with_|scene|still/i.test(u));
+    return scene || people[0] || portraitUrl;
+  }
+  return alts[0] || portraitUrl;
+}
+
+function pullQuote(entity: EntitySummary): { latin?: string; native?: string } {
+  const lead = entity.wikipedia?.lead ?? "";
+  const quoted = lead.match(/[“"']([^”"']{18,86})[”"']/);
+  if (quoted?.[1] && !/born|died|january|august|the most popular/i.test(quoted[1])) {
+    return { latin: quoted[1] };
+  }
+  const motto = entity.facts.find((f) => f.propertyId === "P1451" || f.propertyId === "P163")
+    ?.values[0]?.label;
+  if (motto && motto.length >= 8 && motto.length <= 90) return { latin: motto };
+  const song = entity.facts
+    .find((f) => f.propertyId === "CR_SONG" || f.propertyId === "P800")
+    ?.values.find((v) => /safar|zindagi|yeh |pyar|dil |love |life /i.test(v.label));
+  if (song?.label) return { latin: song.label };
+  const native = lead.match(/[\u0900-\u097F][^。.\n]{10,70}/);
+  return { native: native?.[0] };
+}
+
 /**
- * Light editorial hero: portrait + full AI about + AI company/life snapshot.
+ * Full-bleed cinematic hero — same chassis for every entity type.
  */
 export function EntityHero({
   entity,
-  qid,
   cfg,
   Icon,
   portraitUrl,
@@ -384,17 +228,21 @@ export function EntityHero({
   breadcrumbMid,
   tags,
   marketing,
+  galleryUrls = [],
+  explore = [],
 }: Props) {
   const navigate = useNavigate();
-  const isOrg = entity.type === "organization";
+  const type = cinematicType(entity);
+  const theme = THEME[type];
+  const accent = theme.accent;
+  const { lead, gold } = splitDisplayName(entity.label, type);
   const subtitle = marketing?.tagline || rolesLine;
   const chipTags = (marketing?.industries.length ? marketing.industries : tags).filter(
     (t) => !isGenericTypeLabel(t.label),
   );
-  const aliases = entity.aliases.filter(Boolean).slice(0, 10);
 
   const localAbout = useMemo(() => buildLocalSectionBrief("overview", entity), [entity]);
-  const { data: aboutBrief, isFetching: aboutFetching } = useQuery({
+  const { data: aboutBrief } = useQuery({
     queryKey: [
       "section-enrich",
       "overview",
@@ -411,22 +259,33 @@ export function EntityHero({
 
   const aboutParagraphs = useMemo(() => {
     const paras: string[] = [];
-    if (about.summary?.trim()) paras.push(about.summary.trim());
+    const isStub = (t: string) => {
+      if (/\(born\b/i.test(t) && /\d{4}/.test(t)) return true;
+      const named = new RegExp(
+        `^${entity.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+is\\b`,
+        "i",
+      ).test(t);
+      if (!named) return false;
+      return /\(\d{4}/.test(t) || t.length < 160;
+    };
+    if (about.summary?.trim() && !isStub(about.summary.trim())) {
+      paras.push(about.summary.trim());
+    }
     for (const p of about.paragraphs ?? []) {
       const t = p.trim();
-      if (t && !paras.includes(t)) paras.push(t);
+      if (t && !isStub(t) && !paras.includes(t)) paras.push(t);
     }
-    if (paras.join(" ").length < 280 && leadSnippet.trim()) {
+    if (paras.join(" ").length < 180 && leadSnippet.trim()) {
       const leadParas = leadSnippet
         .split(/\n{2,}|(?<=\.)\s+(?=[A-Z])/)
         .map((p) => p.trim())
-        .filter((p) => p.length > 40);
+        .filter((p) => p.length > 70 && !isStub(p));
       for (const p of leadParas) {
         if (!paras.some((x) => x.includes(p.slice(0, 48)))) paras.push(p);
       }
     }
-    return paras.slice(0, 5);
-  }, [about, leadSnippet]);
+    return paras.slice(0, 2);
+  }, [about, leadSnippet, entity.label]);
 
   const localGlance = useMemo(() => buildLocalGlance(entity), [entity]);
   const { data: glanceData, isFetching: glanceFetching } = useQuery({
@@ -434,250 +293,354 @@ export function EntityHero({
       "glance-snapshot",
       entity.id,
       entity.wikipedia?.revisedAt ?? "norev",
-      "v4",
+      "v8",
     ],
     queryFn: () => fetchGlanceSnapshot(entity),
     placeholderData: localGlance,
     staleTime: 1000 * 60 * 60,
     retry: 0,
   });
-  const glance = glanceData ?? localGlance;
-
-  const localTimeline = useMemo(() => buildLocalNarrative(entity), [entity]);
-  const { data: timelineData } = useQuery({
-    queryKey: [
-      "narrative-timeline",
-      entity.id,
-      entity.wikipedia?.revisedAt ?? "norev",
-      "v13-event-images",
-    ],
-    queryFn: () => fetchNarrativeTimeline(entity),
-    placeholderData: localTimeline,
-    staleTime: 1000 * 60 * 60,
-    retry: 0,
-  });
-  const lifeEvents = useMemo(() => {
-    const name = entity.label.toLowerCase();
-    const skip =
-      /^(birth|born|death|died|education|marriage|married|child|move into a public career)/i;
-    const isAchievement = (ev: TimelineEvent) => {
-      const t = ev.title.trim();
-      if (t.length > 58) return false;
-      if (t.toLowerCase().startsWith(name)) return false;
-      if (skip.test(t)) return false;
-      if (/\b(was|were|had worked|played the|directed by|as a result)\b/i.test(t)) return false;
-      if (isOrg) {
-        if (/^inception$/i.test(t)) return false;
-        return /found|listed|ipo|acquis|opened|stores|headquarters|ticker/i.test(t);
-      }
-      if (ev.kind === "award" || ev.kind === "work") return true;
-      return /award|nobel|filmfare|padma|grammy|oscar|relativity|annus|debut|album|playback|national award|theory of relativity/i.test(
-        t,
+  const glance = useMemo(() => {
+    const g = glanceData ?? localGlance;
+    const cards = g.cards.map((c) => {
+      const local = localGlance.cards.find(
+        (x) => x.label.toLowerCase() === c.label.toLowerCase(),
       );
-    };
-    const picked: TimelineEvent[] = [];
-    const seen = new Set<string>();
-    const take = (ev: TimelineEvent) => {
-      const k = ev.title.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 40);
-      if (seen.has(k) || !isAchievement(ev)) return;
-      seen.add(k);
-      picked.push(ev);
-    };
-    const pool = [
-      ...(localTimeline.events ?? []),
-      ...((timelineData?.events ?? []).filter(
-        (ev) => !localTimeline.events.some((l) => l.title === ev.title),
-      )),
-    ];
-    for (const ev of pool) {
-      if (ev.kind === "award" || ev.kind === "work") take(ev);
-      if (picked.length >= 8) break;
+      return local ? { ...c, value: local.value || c.value, note: local.note ?? c.note } : c;
+    });
+    for (const c of localGlance.cards) {
+      if (!cards.some((x) => x.label.toLowerCase() === c.label.toLowerCase())) cards.push(c);
     }
-    if (picked.length < 6) {
-      for (const ev of pool) {
-        take(ev);
-        if (picked.length >= 8) break;
+    const metrics = [...g.metrics];
+    for (const m of localGlance.metrics) {
+      if (!metrics.some((x) => x.label.toLowerCase() === m.label.toLowerCase())) metrics.push(m);
+    }
+    const bands = [...(g.bands ?? [])];
+    for (const b of localGlance.bands ?? []) {
+      const existing = bands.find((x) => x.id === b.id);
+      if (!existing) {
+        bands.push(b);
+        continue;
+      }
+      existing.items = existing.items.map((item, i) => {
+        const loc =
+          b.items.find((x) => x.label.toLowerCase() === item.label.toLowerCase()) ||
+          b.items[i];
+        const note =
+          item.note && item.note.length >= (loc?.note?.length ?? 0)
+            ? item.note
+            : loc?.note ?? item.note;
+        return { ...item, note, icon: item.icon || loc?.icon };
+      });
+      for (const loc of b.items) {
+        if (!existing.items.some((x) => x.label.toLowerCase() === loc.label.toLowerCase())) {
+          existing.items.push(loc);
+        }
       }
     }
-    return picked;
-  }, [isOrg, timelineData, localTimeline, entity.label]);
+    const identity = {
+      ...localGlance.identity,
+      ...g.identity,
+      name: g.identity?.name || localGlance.identity?.name || entity.label,
+      quote: g.identity?.quote || localGlance.identity?.quote,
+      quoteNative: g.identity?.quoteNative || localGlance.identity?.quoteNative,
+      featureTitle: g.identity?.featureTitle || localGlance.identity?.featureTitle,
+      bio: g.identity?.bio || localGlance.identity?.bio,
+      crafts: g.identity?.crafts || localGlance.identity?.crafts,
+    };
+    return {
+      ...g,
+      heading: g.heading || localGlance.heading,
+      pulse: (g.pulse && g.pulse.length >= (localGlance.pulse?.length ?? 0) ? g.pulse : localGlance.pulse) || g.pulse,
+      cards: cards.slice(0, 10),
+      metrics: metrics.slice(0, 8),
+      bands,
+      identity,
+    };
+  }, [glanceData, localGlance]);
+
+  const crafts =
+    glance.identity?.crafts ||
+    chipTags.map((t) => t.label).slice(0, 6).join(" · ") ||
+    subtitle;
+  const quote = {
+    latin: glance.identity?.quote || pullQuote(entity).latin,
+    native: glance.identity?.quoteNative || pullQuote(entity).native,
+  };
+  const bioParas = (() => {
+    const raw = (glance.identity?.bio ?? "").trim();
+    if (!raw) return aboutParagraphs;
+    const chunks = raw.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+    if (chunks.length >= 2) return chunks.slice(0, 2);
+    const sentences = raw.split(/(?<=\.)\s+/).filter(Boolean);
+    if (sentences.length >= 3) {
+      return [sentences.slice(0, 2).join(" "), sentences.slice(2).join(" ")];
+    }
+    return [raw];
+  })();
+  const displayParas = bioParas.slice(0, 2);
+  const atmosphereUrl = pickAtmosphere(type, portraitUrl, galleryUrls);
+  const years = glance.identity?.years || entity.lifespan?.replace(/[–-]/g, " — ");
+  const showPortraitContain = type === "organization";
+  const showAtmosphere =
+    Boolean(atmosphereUrl) &&
+    (type === "person" || type === "place" || type === "event" || type === "work");
+  const bgRgb = (() => {
+    const h = theme.bg.replace("#", "");
+    return `${parseInt(h.slice(0, 2), 16)} ${parseInt(h.slice(2, 4), 16)} ${parseInt(h.slice(4, 6), 16)}`;
+  })();
+  const bornCard = glance.cards.find((c) => /^born$/i.test(c.label));
+  const diedRaw = entity.facts.find((f) => f.propertyId === "P570")?.values[0]?.label;
+  const heroIntro = [
+    entity.description
+      ? `${entity.label} is ${entity.description.replace(/\.$/, "")}${
+          entity.lifespan && !/\(\d{4}/.test(entity.description)
+            ? ` (${entity.lifespan.replace(/[–-]/g, "–")})`
+            : ""
+        }.`
+      : "",
+    bornCard
+      ? `Born ${bornCard.value}${bornCard.note ? ` in ${bornCard.note.split(",")[0]}` : ""}.`
+      : "",
+    crafts
+      ? `Known professionally as ${crafts.replace(/ · /g, ", ").toLowerCase()}.`
+      : "",
+    diedRaw ? `Died ${compactHeroDate(diedRaw)}.` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const heroRest =
+    displayParas.find(
+      (p) =>
+        !/\(born\b/i.test(p) &&
+        !new RegExp(`^${entity.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s+is\\b`, "i").test(p),
+    ) ||
+    displayParas[0] ||
+    "";
+  const heroParas = [heroIntro, heroRest].filter(
+    (p, i, arr) => p && !arr.slice(0, i).some((x) => x.slice(0, 40) === p.slice(0, 40)),
+  );
+
 
   return (
-    <section className="border-b border-slate-200/80 bg-[#f4f7fb]">
-      <div className="mx-auto max-w-[1600px] px-4 py-6 sm:px-5 md:px-6 md:py-8">
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="rounded-2xl border border-slate-200/90 bg-white shadow-sm shadow-slate-200/50 overflow-hidden"
-        >
-          <div className="grid md:grid-cols-[240px_minmax(0,1fr)] gap-0">
-            <div className="relative flex flex-col items-center gap-3 border-b md:border-b-0 md:border-r border-slate-100 bg-gradient-to-b from-slate-50 to-white px-4 py-6">
-              <div
-                className="pointer-events-none absolute inset-0 opacity-60"
-                style={{
-                  background: `radial-gradient(ellipse 80% 50% at 50% 0%, ${cfg.color}18 0%, transparent 70%)`,
-                }}
-              />
-              {portraitUrl ? (
+    <section className="text-white" style={{ background: theme.bg }}>
+      <div className="relative min-h-[22rem] overflow-hidden md:min-h-[26rem]">
+        {portraitUrl && (
+          <div className="pointer-events-none absolute inset-y-0 left-0 hidden w-[min(38%,34rem)] overflow-hidden md:block">
+            <img
+              src={portraitUrl}
+              alt=""
+              referrerPolicy="no-referrer"
+              className={cn(
+                "absolute inset-0 size-full object-cover",
+                showPortraitContain && "object-contain bg-white/5 p-10",
+              )}
+              style={{
+                objectPosition: theme.portraitPosition,
+                filter: theme.portraitFilter === "none" ? undefined : theme.portraitFilter,
+              }}
+            />
+            <div
+              className="absolute inset-0"
+              style={{
+                background: `linear-gradient(90deg, transparent 18%, rgb(${bgRgb} / 0.38) 48%, rgb(${bgRgb} / 0.92) 78%, rgb(${bgRgb}) 100%)`,
+              }}
+            />
+          </div>
+        )}
+
+        {showAtmosphere && (
+          <div className="pointer-events-none absolute inset-y-0 right-0 hidden w-[min(42%,38rem)] overflow-hidden md:block">
+            <img
+              src={atmosphereUrl}
+              alt=""
+              referrerPolicy="no-referrer"
+              className="absolute inset-0 size-full scale-110 object-cover"
+              style={{
+                objectPosition: type === "person" ? "70% 18%" : "center 30%",
+                filter: "blur(2.5px) saturate(0.72) contrast(1.03) brightness(0.62)",
+              }}
+            />
+            <div
+              className="absolute inset-0"
+              style={{
+                background: `linear-gradient(90deg, rgb(${bgRgb}) 0%, rgb(${bgRgb} / 0.78) 16%, rgb(${bgRgb} / 0.52) 42%, rgb(${bgRgb} / 0.4) 100%)`,
+              }}
+            />
+            <div
+              className="absolute inset-0"
+              style={{
+                background: `linear-gradient(180deg, rgb(${bgRgb} / 0.18) 0%, transparent 32%, transparent 62%, rgb(${bgRgb} / 0.7) 100%)`,
+              }}
+            />
+          </div>
+        )}
+
+        <div
+          className="pointer-events-none absolute inset-x-0 bottom-0 h-24"
+          style={{ background: `linear-gradient(180deg, transparent, rgb(${bgRgb}))` }}
+        />
+
+        <div className="relative z-10 mx-auto flex min-h-[22rem] max-w-[1600px] flex-col px-4 pt-5 pb-5 sm:px-5 md:min-h-[24.5rem] md:px-7 md:pt-6 md:pb-6">
+          <nav className="mb-4 flex flex-wrap items-center gap-1 text-[11px] text-white/55 md:mb-5">
+            <button
+              type="button"
+              onClick={() => navigate("/")}
+              className="cursor-pointer hover:text-white"
+            >
+              {TYPE_BREADCRUMB[type]}
+            </button>
+            <ChevronRight className="size-3 opacity-40" />
+            {breadcrumbMid && (
+              <>
+                <span>{breadcrumbMid}</span>
+                <ChevronRight className="size-3 opacity-40" />
+              </>
+            )}
+            <span className="max-w-[220px] truncate text-white/80">{entity.label}</span>
+          </nav>
+
+          <div className="grid flex-1 items-start gap-5 md:grid-cols-[minmax(9rem,32%)_minmax(22rem,1.25fr)_minmax(16rem,26%)] md:gap-8">
+            <div className="md:hidden">
+              {portraitUrl && (
                 <img
                   src={portraitUrl}
                   alt={entity.label}
                   referrerPolicy="no-referrer"
-                  className={cn(
-                    "relative z-10 border border-slate-200 shadow-md",
-                    isOrg
-                      ? "size-28 object-contain p-3 bg-white rounded-2xl"
-                      : "h-40 w-32 sm:h-44 sm:w-36 object-cover object-top rounded-2xl bg-slate-100",
-                  )}
+                  className="mb-3 h-44 w-36 rounded-2xl object-cover object-top shadow-2xl"
                 />
-              ) : (
-                <div
-                  className={cn(
-                    "relative z-10 flex size-28 items-center justify-center rounded-2xl border border-dashed bg-white",
-                    cfg.borderClass,
-                  )}
-                >
-                  <Icon className={cn("size-10 opacity-35", cfg.textClass)} />
-                </div>
               )}
-              {signatureUrl && (
-                <figure className="relative z-10 w-full max-w-[9rem]">
-                  <div className="rounded-lg border border-slate-200 bg-[#f8fafc] px-2 py-1.5">
-                    <img
-                      src={signatureUrl}
-                      alt={`Signature of ${entity.label}`}
-                      referrerPolicy="no-referrer"
-                      className="mx-auto max-h-8 w-auto object-contain"
-                    />
-                  </div>
-                  <figcaption className="mt-1 flex items-center justify-center gap-1 text-[9px] uppercase tracking-wider text-slate-400">
-                    <PenLine className="size-2.5" /> Autograph
-                  </figcaption>
-                </figure>
-              )}
-              <div className="relative z-10 flex w-full items-start gap-2 px-0.5">
-                <span
-                  className={cn(
-                    "mt-0.5 shrink-0 rounded-full border px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em]",
-                    cfg.bgClass,
-                    cfg.textClass,
-                    cfg.borderClass,
-                  )}
-                >
-                  {cfg.label}
-                </span>
-                {(entity.description || subtitle) && (
-                  <p className="min-w-0 text-left text-[12px] leading-snug text-slate-600">
-                    {entity.description || subtitle}
-                  </p>
-                )}
-              </div>
             </div>
+            <div className="hidden md:block" aria-hidden />
 
-            <div className="px-5 py-5 sm:px-7 sm:py-6 min-w-0">
-              <nav className="mb-2 flex flex-wrap items-center gap-1 text-[11px] text-slate-500">
-                <button
-                  type="button"
-                  onClick={() => navigate("/")}
-                  className="hover:text-teal-700 cursor-pointer"
-                >
-                  {TYPE_BREADCRUMB[entity.type]}
-                </button>
-                <ChevronRight className="size-3 opacity-40" />
-                {breadcrumbMid && (
+            <div className="relative z-10 min-w-0 overflow-hidden pt-1 md:pt-3">
+              <motion.h1
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="font-serif text-[clamp(2.35rem,3.6vw,3.25rem)] font-bold leading-[1.04] tracking-tight text-white md:whitespace-nowrap"
+              >
+                <span>{lead}</span>
+                {gold && (
                   <>
-                    <span>{breadcrumbMid}</span>
-                    <ChevronRight className="size-3 opacity-40" />
+                    {" "}
+                    <span className={accent}>{gold}</span>
                   </>
                 )}
-                <span className="text-slate-700 truncate max-w-[200px]">{entity.label}</span>
-                <span className="font-mono text-[10px] text-slate-400">{qid}</span>
-              </nav>
-
-              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                <h1 className="font-serif text-[1.85rem] sm:text-[2.35rem] font-bold tracking-tight text-slate-900 leading-[1.08]">
-                  {entity.label}
-                </h1>
-                {entity.lifespan && (
-                  <span className="font-mono text-[13px] text-slate-500">
-                    {entity.lifespan}
-                  </span>
+              </motion.h1>
+              <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+                {years && (
+                  <p className="font-mono text-[13px] tracking-wide text-white/70">{years}</p>
                 )}
                 {marketing?.stock && (
-                  <span className="font-mono text-[12px] text-emerald-700">
-                    {marketing.stock}
-                  </span>
+                  <p className={cn("font-mono text-[12px]", accent)}>{marketing.stock}</p>
                 )}
               </div>
-
-              {subtitle && subtitle !== entity.description && (
-                <p className="mt-1.5 text-[15px] text-slate-600 font-medium">
-                  {subtitle}
-                </p>
+              {crafts && (
+                <p className="mt-2 text-[13.5px] text-white/72 line-clamp-1">{crafts}</p>
               )}
-
-              {aliases.length > 0 && (
-                <p className="mt-1 text-[12px] text-slate-400">
-                  Also known as {aliases.join(" · ")}
-                </p>
-              )}
-
-              <div className="mt-5 rounded-xl border border-teal-100 bg-gradient-to-br from-teal-50/80 via-white to-sky-50/40 px-4 py-4 sm:px-5 sm:py-5">
-                <div className="mb-2.5 flex flex-wrap items-center gap-2">
-                  <Sparkles className="size-3.5 text-teal-600" />
-                  <span className="text-[11px] font-semibold uppercase tracking-[0.16em] text-teal-800/80">
-                    About
-                  </span>
-                  {aboutFetching && (
-                    <span className="text-[10px] text-slate-400">Writing…</span>
-                  )}
-                  {!aboutFetching && !about.fallback && (
-                    <span className="rounded-full bg-teal-600/10 px-2 py-0.5 text-[10px] font-medium text-teal-800">
-                      AI
-                    </span>
-                  )}
-                </div>
-                <div className="space-y-3">
-                  {aboutParagraphs.map((p, i) => (
-                    <p
-                      key={i}
-                      className={cn(
-                        "leading-[1.75] text-slate-800",
-                        i === 0
-                          ? "text-[15.5px] sm:text-[16.5px]"
-                          : "text-[14.5px] sm:text-[15px] text-slate-700",
-                      )}
-                    >
-                      {p}
+              {(quote.latin || quote.native) && (
+                <blockquote className="mt-5 max-w-lg">
+                  {quote.latin && (
+                    <p className="font-serif text-[1.18rem] italic leading-snug text-white">
+                      “{quote.latin}”
                     </p>
-                  ))}
-                </div>
-              </div>
+                  )}
+                  {quote.native && (
+                    <p className="mt-1.5 text-[13px] text-white/60">{quote.native}</p>
+                  )}
+                </blockquote>
+              )}
+              <AiReadAloud
+                entity={entity}
+                text={[
+                  entity.label,
+                  years,
+                  crafts,
+                  quote.latin,
+                  ...heroParas,
+                ]
+                  .filter(Boolean)
+                  .join(". ")}
+              />
+            </div>
 
-              {chipTags.length > 0 && (
-                <div className="mt-4 flex flex-wrap gap-1.5">
-                  {chipTags.map((t) => (
-                    <span
-                      key={`tag-${t.label}`}
-                      className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-600"
-                    >
-                      {t.label}
-                    </span>
-                  ))}
+            <div className="relative z-20 min-w-0 pt-1 md:pt-3">
+              <div
+                className="space-y-3 text-[13.5px] leading-relaxed text-white/92"
+                style={{ textShadow: "0 1px 12px rgb(0 0 0 / 0.85), 0 0 2px rgb(0 0 0 / 0.7)" }}
+              >
+                {heroParas.map((p, i) => (
+                  <p key={i} className={i === 0 ? "line-clamp-5" : "line-clamp-4"}>
+                    {p}
+                  </p>
+                ))}
+              </div>
+              {signatureUrl && (
+                <img
+                  src={signatureUrl}
+                  alt=""
+                  referrerPolicy="no-referrer"
+                  className="mt-5 max-h-12 w-auto opacity-95 brightness-0 invert drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)]"
+                />
+              )}
+              {!signatureUrl && !heroParas.length && (
+                <div className="flex items-center gap-2 text-white/50">
+                  <Icon className="size-5" />
+                  <span className="text-[12px] uppercase tracking-wider">{cfg.label}</span>
                 </div>
               )}
             </div>
           </div>
 
-          <GlanceBoard
-            snapshot={glance}
-            isFetching={glanceFetching}
-            isOrg={isOrg}
-            website={marketing?.website}
-            lifeEvents={lifeEvents}
-          />
-        </motion.div>
+        </div>
       </div>
+
+      <div className="relative mx-auto max-w-[1600px] px-4 pb-5 pt-5 sm:px-5 md:px-7 md:pb-6 md:pt-6">
+        <GlanceBoard
+          snapshot={glance}
+          entityType={type}
+          isFetching={glanceFetching}
+          website={marketing?.website}
+          images={galleryUrls}
+          portraitUrl={portraitUrl}
+          onLearnMore={() => explore.find((e) => e.id === "overview")?.action()}
+          accentClass={accent}
+          description={`${entity.description ?? ""} ${entity.wikipedia?.lead ?? ""}`}
+        />
+      </div>
+
+      {explore.length > 0 && (
+        <div
+          className="relative z-20 border-y border-white/10"
+          style={{
+            background: `linear-gradient(180deg, rgb(${bgRgb} / 0.92), rgb(${bgRgb} / 0.98))`,
+            boxShadow:
+              "0 -12px 28px rgb(0 0 0 / 0.38), 0 12px 28px rgb(0 0 0 / 0.32), inset 0 1px 0 rgb(255 255 255 / 0.08), inset 0 -1px 0 rgb(0 0 0 / 0.35)",
+          }}
+        >
+          <div className="mx-auto flex max-w-[1600px] gap-2 overflow-x-auto px-4 py-2.5 sm:px-5 md:px-7">
+            {explore.map((item) => {
+              const ItemIcon = item.icon;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={item.action}
+                  className={cn(
+                    "inline-flex shrink-0 items-center gap-1.5 rounded-full px-4 py-2 text-[13px] font-semibold cursor-pointer transition-colors",
+                    item.selected
+                      ? "bg-white text-slate-900 shadow-md shadow-black/20"
+                      : "bg-white/[0.06] text-white/85 hover:bg-white/10",
+                  )}
+                >
+                  <ItemIcon className="size-3.5" />
+                  {item.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </section>
   );
 }
