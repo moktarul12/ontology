@@ -145,7 +145,7 @@ function RelationStoryPanel({
         )}
       </div>
       <h4 className="font-serif text-[1.05rem] font-bold leading-snug text-slate-900 tracking-tight">
-        {brief.title}
+        {brief.heading}
       </h4>
       {brief.summary && (
         <p className="mt-2 text-[13px] leading-relaxed text-slate-600">{brief.summary}</p>

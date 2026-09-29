@@ -1833,7 +1833,7 @@ export default function NewEntityPage() {
                           <div style={{ marginTop: 20, display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))" }}>
                             {stats.map((s) => (
                               <div key={s.label} className="dfw-stat">
-                                <s.icon className="size-4" style={{ color: "#fcd34d", marginBottom: 8 }} />
+                                <s.icon className="size-4 mb-2 text-amber-300" />
                                 <p style={{ margin: 0, fontSize: 22, fontWeight: 700, color: "#fff" }}>{s.value}</p>
                                 <p style={{ margin: "2px 0 0", fontSize: 11, color: "#94a3b8" }}>{s.label}</p>
                               </div>
