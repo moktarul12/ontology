@@ -1284,3 +1284,261 @@
   color: #64748b;
   margin-left: 0.25rem;
 }
+
+/* ── Compare page dynamic atmosphere ─────────────────────────────────────── */
+.cmp-page {
+  background: transparent;
+  isolation: isolate;
+}
+
+.cmp-atmosphere {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.cmp-atmosphere-base {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 90% 70% at 10% -10%, rgba(245, 197, 24, 0.22), transparent 50%),
+    radial-gradient(ellipse 90% 70% at 90% -10%, rgba(30, 107, 184, 0.2), transparent 50%),
+    radial-gradient(ellipse 60% 50% at 50% 100%, rgba(251, 191, 36, 0.08), transparent 55%),
+    linear-gradient(165deg, #fbf7ee 0%, #f3eee3 42%, #eef3f9 100%);
+}
+
+.cmp-orb {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(48px);
+  opacity: 0.55;
+  will-change: transform;
+}
+
+.cmp-orb-gold {
+  width: min(52vw, 420px);
+  height: min(52vw, 420px);
+  left: -8%;
+  top: 8%;
+  background: radial-gradient(circle, rgba(245, 197, 24, 0.55) 0%, rgba(245, 197, 24, 0) 70%);
+  animation: cmp-drift-a 22s ease-in-out infinite alternate;
+}
+
+.cmp-orb-blue {
+  width: min(48vw, 400px);
+  height: min(48vw, 400px);
+  right: -6%;
+  top: 18%;
+  background: radial-gradient(circle, rgba(56, 146, 214, 0.5) 0%, rgba(30, 107, 184, 0) 70%);
+  animation: cmp-drift-b 26s ease-in-out infinite alternate;
+}
+
+.cmp-orb-warm {
+  width: min(40vw, 320px);
+  height: min(40vw, 320px);
+  left: 35%;
+  bottom: 5%;
+  background: radial-gradient(circle, rgba(251, 146, 60, 0.28) 0%, transparent 70%);
+  animation: cmp-drift-c 30s ease-in-out infinite alternate;
+}
+
+.cmp-portrait {
+  position: absolute;
+  width: min(38vw, 340px);
+  height: min(38vw, 340px);
+  border-radius: 9999px;
+  overflow: hidden;
+  opacity: 0.14;
+  filter: blur(2px) saturate(1.15);
+  will-change: transform;
+}
+
+.cmp-portrait img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top;
+}
+
+.cmp-portrait-left {
+  left: -4%;
+  top: 12%;
+  animation: cmp-drift-a 28s ease-in-out infinite alternate;
+  mask-image: radial-gradient(circle, #000 35%, transparent 72%);
+}
+
+.cmp-portrait-right {
+  right: -4%;
+  top: 22%;
+  animation: cmp-drift-b 32s ease-in-out infinite alternate;
+  mask-image: radial-gradient(circle, #000 35%, transparent 72%);
+}
+
+.cmp-mesh {
+  position: absolute;
+  inset: 0;
+  opacity: 0.35;
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 30%, #000 20%, transparent 75%);
+  animation: cmp-mesh-shift 40s linear infinite;
+}
+
+.cmp-grain {
+  position: absolute;
+  inset: 0;
+  opacity: 0.045;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 180px 180px;
+  mix-blend-mode: multiply;
+}
+
+.cmp-vignette {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse 80% 70% at 50% 20%, transparent 40%, rgba(247, 244, 236, 0.55) 100%);
+}
+
+.cmp-notes {
+  position: absolute;
+  inset: 0;
+}
+
+.cmp-note {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px 2px 40% 40%;
+  background: rgba(184, 134, 11, 0.28);
+  left: calc(8% + (var(--i) * 11%));
+  bottom: 8%;
+  animation: cmp-float-note calc(9s + var(--i) * 1.1s) ease-in-out infinite;
+  animation-delay: calc(var(--i) * -1.2s);
+  box-shadow: 0 0 12px rgba(245, 197, 24, 0.25);
+}
+
+.cmp-note::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: -14px;
+  width: 2px;
+  height: 16px;
+  background: rgba(184, 134, 11, 0.35);
+}
+
+.cmp-frames {
+  position: absolute;
+  inset: 0;
+}
+
+.cmp-frame {
+  position: absolute;
+  width: 56px;
+  height: 36px;
+  border: 1px solid rgba(30, 107, 184, 0.22);
+  border-radius: 4px;
+  left: calc(12% + var(--i) * 16%);
+  top: calc(55% + (var(--i) % 3) * 8%);
+  animation: cmp-frame-pulse calc(6s + var(--i) * 0.8s) ease-in-out infinite;
+  animation-delay: calc(var(--i) * -0.9s);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.2), rgba(30, 107, 184, 0.06));
+}
+
+.cmp-gridlines {
+  position: absolute;
+  inset: 0;
+  opacity: 0.2;
+  background-image:
+    linear-gradient(rgba(30, 107, 184, 0.15) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(184, 134, 11, 0.12) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: linear-gradient(180deg, transparent, #000 30%, #000 70%, transparent);
+  animation: cmp-mesh-shift 50s linear infinite;
+}
+
+.cmp-hero-sheen {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 55% 80% at 18% 45%, rgba(245, 197, 24, 0.2), transparent 60%),
+    radial-gradient(ellipse 55% 80% at 82% 45%, rgba(30, 107, 184, 0.18), transparent 60%),
+    linear-gradient(180deg, rgba(251, 248, 240, 0.55) 0%, rgba(243, 239, 228, 0.35) 100%);
+  backdrop-filter: blur(0.5px);
+}
+
+.cmp-hero-beam {
+  position: absolute;
+  top: -20%;
+  width: 28%;
+  height: 140%;
+  filter: blur(40px);
+  opacity: 0.35;
+  animation: cmp-beam 14s ease-in-out infinite alternate;
+}
+
+.cmp-hero-beam-gold {
+  left: 5%;
+  background: linear-gradient(180deg, rgba(245, 197, 24, 0.45), transparent 70%);
+  transform: rotate(8deg);
+}
+
+.cmp-hero-beam-blue {
+  right: 5%;
+  background: linear-gradient(180deg, rgba(56, 146, 214, 0.4), transparent 70%);
+  transform: rotate(-8deg);
+  animation-delay: -4s;
+}
+
+@keyframes cmp-drift-a {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to { transform: translate3d(4%, 6%, 0) scale(1.08); }
+}
+
+@keyframes cmp-drift-b {
+  from { transform: translate3d(0, 0, 0) scale(1.05); }
+  to { transform: translate3d(-5%, 4%, 0) scale(1); }
+}
+
+@keyframes cmp-drift-c {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(6%, -5%, 0); }
+}
+
+@keyframes cmp-mesh-shift {
+  from { background-position: 0 0; }
+  to { background-position: 48px 48px; }
+}
+
+@keyframes cmp-float-note {
+  0% { transform: translateY(0) rotate(-6deg); opacity: 0; }
+  15% { opacity: 0.7; }
+  85% { opacity: 0.5; }
+  100% { transform: translateY(-70vh) rotate(12deg); opacity: 0; }
+}
+
+@keyframes cmp-frame-pulse {
+  0%, 100% { opacity: 0.25; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(1.06); }
+}
+
+@keyframes cmp-beam {
+  from { opacity: 0.22; filter: blur(36px); }
+  to { opacity: 0.42; filter: blur(52px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cmp-orb,
+  .cmp-portrait,
+  .cmp-note,
+  .cmp-frame,
+  .cmp-mesh,
+  .cmp-gridlines,
+  .cmp-hero-beam {
+    animation: none !important;
+  }
+}

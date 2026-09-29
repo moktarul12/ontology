@@ -1301,6 +1301,70 @@ export type FilmographyEntry = {
   thumbnail?: string;
 };
 
+/** How a person connects to a specific film / work. */
+export type PersonWorkLink = {
+  role: string;
+  pid: string;
+  character?: string;
+};
+
+/**
+ * Resolve cast / crew / performer / notable-work links between a person and one film.
+ * Used by the Movies detail pane (“how this movie relates to …”).
+ */
+export async function fetchHowPersonRelatesToWork(
+  personId: string,
+  workId: string,
+): Promise<PersonWorkLink[]> {
+  if (!/^Q\d+$/.test(personId) || !/^Q\d+$/.test(workId)) return [];
+  const sparql = `
+    SELECT ?role ?pid ?characterLabel WHERE {
+      {
+        BIND("Cast" AS ?role) BIND("P161" AS ?pid)
+        wd:${workId} p:P161 ?stmt .
+        ?stmt ps:P161 wd:${personId} .
+        OPTIONAL { ?stmt pq:P453 ?character . }
+      } UNION {
+        BIND("Director" AS ?role) BIND("P57" AS ?pid)
+        wd:${workId} wdt:P57 wd:${personId} .
+      } UNION {
+        BIND("Producer" AS ?role) BIND("P162" AS ?pid)
+        wd:${workId} wdt:P162 wd:${personId} .
+      } UNION {
+        BIND("Composer" AS ?role) BIND("P86" AS ?pid)
+        wd:${workId} wdt:P86 wd:${personId} .
+      } UNION {
+        BIND("Screenwriter" AS ?role) BIND("P58" AS ?pid)
+        wd:${workId} wdt:P58 wd:${personId} .
+      } UNION {
+        BIND("Notable work" AS ?role) BIND("P800" AS ?pid)
+        wd:${personId} wdt:P800 wd:${workId} .
+      } UNION {
+        BIND("Playback / performer" AS ?role) BIND("P175" AS ?pid)
+        ?song wdt:P175 wd:${personId} .
+        { ?song wdt:P1441 wd:${workId} } UNION { ?song wdt:P361 wd:${workId} }
+          UNION { ?song wdt:P179 wd:${workId} }
+      }
+      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+    }
+    LIMIT 24
+  `;
+  const rows = await runSparql(sparql);
+  const seen = new Set<string>();
+  const out: PersonWorkLink[] = [];
+  for (const row of rows) {
+    const role = row.role?.value?.trim();
+    const pid = row.pid?.value?.trim();
+    if (!role || !pid) continue;
+    const character = row.characterLabel?.value?.trim();
+    const key = `${pid}:${character ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ role, pid, character: character || undefined });
+  }
+  return out;
+}
+
 function commonsFilePathToThumb(url?: string, width = 320): string | undefined {
   if (!url) return undefined;
   try {
@@ -1404,6 +1468,253 @@ export async function fetchPersonFilmography(
     );
   }
   return out;
+}
+
+/** Song credit for a performer (playback singer etc.). */
+export type SongEntry = {
+  qid: string;
+  title: string;
+  year?: number;
+  film?: string;
+  filmQid?: string;
+  youtubeId?: string;
+  archiveId?: string;
+  /** Direct playable URL (mp3 / ogg) when known. */
+  audioUrl?: string;
+};
+
+function normalizeSongTitle(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[''`´]/g, "")
+    .replace(/[^a-z0-9\u0900-\u097f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function titlesLooselyMatch(a: string, b: string): boolean {
+  const na = normalizeSongTitle(a);
+  const nb = normalizeSongTitle(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  if (na.includes(nb) || nb.includes(na)) return true;
+  const wa = new Set(na.split(" ").filter((w) => w.length > 2));
+  const wb = nb.split(" ").filter((w) => w.length > 2);
+  if (!wa.size || !wb.length) return false;
+  const hit = wb.filter((w) => wa.has(w)).length;
+  return hit >= Math.min(2, wb.length) && hit / Math.max(wa.size, wb.length) >= 0.4;
+}
+
+async function fetchInternetArchiveMp3(identifier: string): Promise<string | undefined> {
+  try {
+    const res = await fetch(`https://archive.org/metadata/${encodeURIComponent(identifier)}`);
+    if (!res.ok) return undefined;
+    const data = await res.json() as {
+      files?: Array<{ name?: string; format?: string; source?: string }>;
+      metadata?: { identifier?: string };
+    };
+    const files = data.files ?? [];
+    const prefer = files.find(
+      (f) =>
+        f.name &&
+        /\.mp3$/i.test(f.name) &&
+        /vbr|mp3/i.test(f.format ?? "mp3") &&
+        f.source !== "metadata",
+    );
+    const anyMp3 = prefer ?? files.find((f) => f.name && /\.mp3$/i.test(f.name));
+    const ogg = files.find((f) => f.name && /\.ogg$/i.test(f.name));
+    const file = anyMp3 ?? ogg;
+    if (!file?.name) return undefined;
+    return `https://archive.org/download/${encodeURIComponent(identifier)}/${encodeURIComponent(file.name)}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Search Internet Archive audio by artist; return id+title pairs for matching. */
+async function searchArchiveAudioByArtist(
+  artist: string,
+  rows = 60,
+): Promise<Array<{ id: string; title: string }>> {
+  if (!artist.trim()) return [];
+  try {
+    const q = `creator:("${artist.replace(/"/g, "")}") AND mediatype:audio`;
+    const params = new URLSearchParams({
+      q,
+      "fl[]": "identifier",
+      output: "json",
+      rows: String(rows),
+      page: "1",
+    });
+    // fl[] needs duplicate — append title separately
+    const url =
+      `https://archive.org/advancedsearch.php?${params}&fl[]=title&sort[]=downloads+desc`;
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = await res.json() as {
+      response?: { docs?: Array<{ identifier?: string; title?: string }> };
+    };
+    const out: Array<{ id: string; title: string }> = [];
+    for (const doc of data.response?.docs ?? []) {
+      if (!doc.identifier || !doc.title) continue;
+      out.push({ id: doc.identifier, title: doc.title });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Songs performed by a person (Wikidata P175), with film/year and playable
+ * audio when Internet Archive or YouTube identifiers exist (or can be matched).
+ */
+export async function fetchPersonSongs(
+  personId: string,
+  opts?: { personLabel?: string; limit?: number },
+): Promise<SongEntry[]> {
+  if (!/^Q\d+$/.test(personId)) return [];
+  const limit = Math.min(Math.max(opts?.limit ?? 40, 8), 80);
+  const sparql = `
+    SELECT ?song ?songLabel ?year ?film ?filmLabel ?yt ?ia WHERE {
+      ?song wdt:P175 wd:${personId} .
+      MINUS { ?song wdt:P31 wd:Q482994 }
+      MINUS { ?song wdt:P31 wd:Q11424 }
+      OPTIONAL {
+        ?song wdt:P577 ?date .
+        BIND(YEAR(?date) AS ?year)
+      }
+      OPTIONAL {
+        ?song wdt:P1441|wdt:P361|wdt:P179 ?film .
+        ?film wdt:P31/wdt:P279* wd:Q11424 .
+      }
+      OPTIONAL { ?song wdt:P1651 ?yt . }
+      OPTIONAL { ?song wdt:P724 ?ia . }
+      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+    }
+    ORDER BY DESC(?year)
+    LIMIT ${limit}
+  `;
+  const rows = await runSparql(sparql, 12_000);
+  const seen = new Set<string>();
+  const songs: SongEntry[] = [];
+  for (const row of rows) {
+    const qid = row.song?.value?.split("/").pop();
+    if (!qid || seen.has(qid)) continue;
+    seen.add(qid);
+    const yearRaw = row.year?.value;
+    const year = yearRaw ? Number(yearRaw) : undefined;
+    songs.push({
+      qid,
+      title: row.songLabel?.value ?? qid,
+      year: year && Number.isFinite(year) ? year : undefined,
+      film: row.filmLabel?.value,
+      filmQid: row.film?.value?.split("/").pop(),
+      youtubeId: row.yt?.value?.trim() || undefined,
+      archiveId: row.ia?.value?.trim() || undefined,
+    });
+  }
+
+  // Resolve direct mp3 from known Archive IDs
+  await Promise.all(
+    songs
+      .filter((s) => s.archiveId && !s.audioUrl)
+      .slice(0, 16)
+      .map(async (s) => {
+        const url = await fetchInternetArchiveMp3(s.archiveId!);
+        if (url) s.audioUrl = url;
+      }),
+  );
+
+  // Match remaining songs to Archive.org recordings by this artist
+  const needAudio = songs.filter((s) => !s.audioUrl && !s.youtubeId);
+  const archiveHits = opts?.personLabel
+    ? await searchArchiveAudioByArtist(opts.personLabel, 80)
+    : [];
+
+  if (needAudio.length && archiveHits.length) {
+    const matched: Array<{ song: SongEntry; id: string }> = [];
+    for (const song of needAudio) {
+      const hit = archiveHits.find((a) => titlesLooselyMatch(a.title, song.title));
+      if (!hit) continue;
+      song.archiveId = hit.id;
+      matched.push({ song, id: hit.id });
+      if (matched.length >= 20) break;
+    }
+    await Promise.all(
+      matched.slice(0, 16).map(async ({ song, id }) => {
+        const url = await fetchInternetArchiveMp3(id);
+        if (url) song.audioUrl = url;
+      }),
+    );
+  }
+
+  // If Wikidata credits are thin, surface Archive.org tracks by this singer
+  if (songs.length < 12 && archiveHits.length) {
+    const used = new Set(
+      songs.map((s) => s.archiveId).filter(Boolean) as string[],
+    );
+    const extras: SongEntry[] = [];
+    for (const hit of archiveHits) {
+      if (used.has(hit.id)) continue;
+      if (songs.some((s) => titlesLooselyMatch(s.title, hit.title))) continue;
+      extras.push({
+        qid: `ia:${hit.id}`,
+        title: hit.title.replace(/\s+/g, " ").trim(),
+        archiveId: hit.id,
+      });
+      used.add(hit.id);
+      if (songs.length + extras.length >= 36) break;
+    }
+    await Promise.all(
+      extras.slice(0, 18).map(async (s) => {
+        const url = await fetchInternetArchiveMp3(s.archiveId!);
+        if (url) s.audioUrl = url;
+      }),
+    );
+    songs.push(...extras.filter((s) => s.audioUrl));
+  }
+
+  return songs;
+}
+
+/**
+ * Lazy YouTube video id for a song query (Piped / Invidious public search).
+ * Used when Wikidata has no P1651 / Archive mp3.
+ */
+export async function resolveSongYoutubeId(query: string): Promise<string | undefined> {
+  const q = query.trim();
+  if (!q) return undefined;
+  const endpoints = [
+    `https://pipedapi.kavin.rocks/search?q=${encodeURIComponent(q)}&filter=videos`,
+    `https://invidious.fdn.fr/api/v1/search?q=${encodeURIComponent(q)}&type=video`,
+  ];
+  for (const url of endpoints) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 6000);
+      const res = await fetch(url, { signal: ctrl.signal });
+      clearTimeout(timer);
+      if (!res.ok) continue;
+      const data = await res.json() as
+        | { items?: Array<{ url?: string; id?: string; type?: string }> }
+        | Array<{ videoId?: string; type?: string }>;
+      if (Array.isArray(data)) {
+        const hit = data.find((x) => x.videoId && (x.type === "video" || !x.type));
+        if (hit?.videoId) return hit.videoId;
+      } else {
+        for (const item of data.items ?? []) {
+          if (item.type && item.type !== "stream" && item.type !== "video") continue;
+          const fromUrl = item.url?.match(/(?:v=|\/watch\/|youtu\.be\/)([\w-]{11})/)?.[1];
+          const id = item.id?.replace(/^\/watch\?v=/, "") || fromUrl;
+          if (id && /^[\w-]{11}$/.test(id)) return id;
+        }
+      }
+    } catch {
+      /* try next */
+    }
+  }
+  return undefined;
 }
 
 /**

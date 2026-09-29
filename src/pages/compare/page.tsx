@@ -100,6 +100,59 @@ const ORG_SECTIONS: NavSection[] = [
   { id: "leadership", label: "Leadership", icon: Users },
 ];
 
+function CompareAtmosphere({
+  leftThumb,
+  rightThumb,
+  mood,
+}: {
+  leftThumb?: string;
+  rightThumb?: string;
+  mood: "music" | "film" | "org" | "default";
+}) {
+  return (
+    <div className="cmp-atmosphere" aria-hidden>
+      <div className="cmp-atmosphere-base" />
+      <div className="cmp-orb cmp-orb-gold" />
+      <div className="cmp-orb cmp-orb-blue" />
+      <div className="cmp-orb cmp-orb-warm" />
+
+      {leftThumb && (
+        <div className="cmp-portrait cmp-portrait-left">
+          <img src={leftThumb} alt="" />
+        </div>
+      )}
+      {rightThumb && (
+        <div className="cmp-portrait cmp-portrait-right">
+          <img src={rightThumb} alt="" />
+        </div>
+      )}
+
+      <div className="cmp-mesh" />
+      <div className="cmp-grain" />
+
+      {mood === "music" && (
+        <div className="cmp-notes">
+          {Array.from({ length: 8 }).map((_, i) => (
+            <span key={i} className="cmp-note" style={{ ["--i" as string]: i }} />
+          ))}
+        </div>
+      )}
+      {mood === "film" && (
+        <div className="cmp-frames">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <span key={i} className="cmp-frame" style={{ ["--i" as string]: i }} />
+          ))}
+        </div>
+      )}
+      {mood === "org" && (
+        <div className="cmp-gridlines" />
+      )}
+
+      <div className="cmp-vignette" />
+    </div>
+  );
+}
+
 function pick(entity: EntitySummary | undefined, pid: string) {
   return entity?.facts.find((f) => f.propertyId === pid)?.values.map((v) => v.label).join(" · ") ?? "—";
 }
@@ -1270,6 +1323,17 @@ export default function ComparePage() {
     left.data?.type === "person" &&
     (!right.data || right.data.type === "person");
 
+  const atmosphereMood = useMemo(() => {
+    if (bothOrgs) return "org" as const;
+    const singer = (e?: EntitySummary) =>
+      occupationsOf(e).some((o) => /singer|vocalist|playback/i.test(o));
+    const actor = (e?: EntitySummary) =>
+      occupationsOf(e).some((o) => /actor|actress|film/i.test(o));
+    if (singer(left.data) || singer(right.data)) return "music" as const;
+    if (actor(left.data) || actor(right.data)) return "film" as const;
+    return "default" as const;
+  }, [bothOrgs, left.data, right.data]);
+
   const onSectionIntersect = useEffectEvent((entries: IntersectionObserverEntry[]) => {
     const visible = entries
       .filter((e) => e.isIntersecting)
@@ -1428,7 +1492,13 @@ export default function ComparePage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#f7f4ec] text-slate-800 pb-20">
+    <div className="cmp-page min-h-screen text-slate-800 pb-20 relative">
+      <CompareAtmosphere
+        leftThumb={left.data?.thumbnail}
+        rightThumb={right.data?.thumbnail}
+        mood={atmosphereMood}
+      />
+
       {/* Chrome */}
       <header className="sticky top-0 z-40 border-b border-slate-800/80 bg-[#0b1220]/96 backdrop-blur-md">
         <div className="mx-auto flex max-w-[1480px] items-center gap-2 px-4 py-2.5 sm:gap-3 md:px-5">
@@ -1472,14 +1542,10 @@ export default function ComparePage() {
       </header>
 
       {/* Hero — circular portraits + VS */}
-      <section className="relative overflow-hidden border-b border-amber-200/40">
-        <div
-          className="absolute inset-0"
-          style={{
-            background:
-              "radial-gradient(ellipse 60% 80% at 15% 40%, rgba(245,197,24,0.18), transparent 55%), radial-gradient(ellipse 60% 80% at 85% 40%, rgba(30,107,184,0.16), transparent 55%), linear-gradient(180deg, #fbf8f0 0%, #f3efe4 100%)",
-          }}
-        />
+      <section className="relative overflow-hidden border-b border-amber-200/30 z-[1]">
+        <div className="cmp-hero-sheen" aria-hidden />
+        <div className="cmp-hero-beam cmp-hero-beam-gold" aria-hidden />
+        <div className="cmp-hero-beam cmp-hero-beam-blue" aria-hidden />
         <div className="relative mx-auto max-w-[1280px] px-4 py-8 md:px-6 md:py-12">
           <div className="grid items-start gap-6 md:grid-cols-[minmax(0,1fr)_minmax(0,1.35fr)_minmax(0,1fr)]">
             <HeroPortrait
@@ -1533,7 +1599,7 @@ export default function ComparePage() {
         </div>
       </section>
 
-      <div className="mx-auto max-w-[1280px] px-4 py-6 md:px-6 space-y-5" ref={mainRef}>
+      <div className="relative z-[1] mx-auto max-w-[1280px] px-4 py-6 md:px-6 space-y-5" ref={mainRef}>
         <QuickNavChips activeId={activeSection} onJump={jumpTo} sections={navSections} />
 
         <div className="flex gap-5 items-start">

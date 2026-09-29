@@ -12,6 +12,7 @@ import {
   Film,
   Flag,
   GitBranch,
+  Heart,
   Home,
   Layers,
   MapPin,
@@ -35,7 +36,7 @@ import {
   newEntityPath,
   parseEntityParam,
 } from "@/lib/entityPath.ts";
-import { fetchCreativeRolesForPerson, fetchEntitySummary, fetchEntityThumbnails } from "@/lib/wikidata/api.ts";
+import { fetchCreativeRolesForPerson, fetchEntitySummary, fetchEntityThumbnails, fetchCompareAwardHighlights, type CompareAwardHighlights, type FilmfareWin } from "@/lib/wikidata/api.ts";
 import type { EntityFact, EntitySummary, RelatedEntity } from "@/lib/wikidata/types.ts";
 import { cn } from "@/lib/utils.ts";
 import TimelinePanel from "@/pages/entity/_components/TimelinePanel.tsx";
@@ -164,12 +165,16 @@ function Avatar({
 }
 
 function Card({
+  id,
+  sectionKey,
   title,
   action,
   children,
   className,
   style,
 }: {
+  id?: string;
+  sectionKey?: string;
   title?: string;
   action?: ReactNode;
   children: ReactNode;
@@ -177,7 +182,12 @@ function Card({
   style?: CSSProperties;
 }) {
   return (
-    <section className={cn("dfw-card", className)} style={style}>
+    <section
+      id={id}
+      data-ov-section={sectionKey ?? id}
+      className={cn("dfw-card", className)}
+      style={{ scrollMarginTop: 96, ...style }}
+    >
       {(title || action) && (
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 16 }}>
           {title ? <h2 className="dfw-card-title" style={{ margin: 0 }}>{title}</h2> : <span />}
@@ -321,7 +331,7 @@ function AwardsList({ awards }: { awards: EntityFact["values"] }) {
   return (
     <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 10 }}>
       {awards.map((a) => (
-        <li key={a.id ?? a.label} style={{ display: "flex", gap: 10 }}>
+        <li key={`${a.id ?? a.label}-${a.year ?? ""}`} style={{ display: "flex", gap: 10 }}>
           <span
             style={{
               marginTop: 2,
@@ -339,16 +349,202 @@ function AwardsList({ awards }: { awards: EntityFact["values"] }) {
             <Star className="size-3.5" />
           </span>
           <div style={{ minWidth: 0 }}>
-            <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: "#f1f5f9" }}>{a.label}</p>
+            <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: "#f1f5f9" }}>
+              {a.label}
+              {a.year != null ? (
+                <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 700, color: "#fcd34d" }}>({a.year})</span>
+              ) : null}
+            </p>
             {a.qualifiers?.length ? (
               <p style={{ margin: "2px 0 0", fontSize: 11, color: "#64748b" }}>
-                {a.qualifiers.slice(0, 2).map((q) => q.label).join(" · ")}
+                {a.qualifiers.slice(0, 3).map((q) => `${q.property}: ${q.label}`).join(" · ")}
               </p>
             ) : null}
           </div>
         </li>
       ))}
     </ul>
+  );
+}
+
+function FilmfareWinsList({
+  wins,
+  categoryLabel,
+}: {
+  wins: FilmfareWin[];
+  categoryLabel?: string;
+}) {
+  if (!wins.length) return null;
+  const header = categoryLabel || (wins.some((w) => w.song) ? "Best Male Playback Singer" : "Filmfare Awards");
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+        <p style={{ margin: 0, fontSize: 28, fontWeight: 800, color: "#fcd34d", fontFamily: "Space Mono, monospace" }}>
+          {wins.length}×
+        </p>
+        <div>
+          <p style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#f1f5f9" }}>Filmfare Awards</p>
+          <p style={{ margin: "2px 0 0", fontSize: 12, color: "#94a3b8" }}>{header}</p>
+        </div>
+      </div>
+      <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 8 }}>
+        {wins.map((w) => {
+          const primary = w.song || w.film;
+          const secondary = w.song
+            ? [w.film, w.category && w.category !== header ? w.category : null].filter(Boolean).join(" · ")
+            : w.category && w.category !== header
+              ? w.category
+              : undefined;
+          return (
+            <li
+              key={`${w.year}-${w.song ?? ""}-${w.film}-${w.category ?? ""}`}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "64px minmax(0, 1fr)",
+                gap: 12,
+                alignItems: "start",
+                borderRadius: 12,
+                border: "1px solid rgba(255,255,255,0.06)",
+                background: "rgba(255,255,255,0.02)",
+                padding: "10px 12px",
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 14,
+                  fontWeight: 800,
+                  color: "#fcd34d",
+                  fontFamily: "Space Mono, monospace",
+                }}
+              >
+                {w.year}
+              </span>
+              <div style={{ minWidth: 0 }}>
+                <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#f8fafc", lineHeight: 1.35 }}>
+                  {primary}
+                </p>
+                {secondary ? (
+                  <p style={{ margin: "3px 0 0", fontSize: 11, color: "#94a3b8" }}>{secondary}</p>
+                ) : null}
+                {w.song ? (
+                  <p style={{ margin: "4px 0 0", fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "#64748b" }}>
+                    Song · Filmfare win
+                  </p>
+                ) : null}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function RichAwardsPanel({
+  awards,
+  highlights,
+  loading,
+}: {
+  awards: EntityFact["values"];
+  highlights?: CompareAwardHighlights | null;
+  loading?: boolean;
+}) {
+  const wins = highlights?.filmfareWins ?? [];
+  const other = highlights?.otherRecognition ?? [];
+  const showFilmfare = wins.length > 0;
+
+  if (loading && !showFilmfare && !awards.length) {
+    return (
+      <div style={{ display: "grid", gap: 10 }}>
+        <Skeleton className="h-8 w-48" style={{ background: "rgba(255,255,255,0.06)" }} />
+        <Skeleton className="h-16 w-full rounded-xl" style={{ background: "rgba(255,255,255,0.06)" }} />
+        <Skeleton className="h-16 w-full rounded-xl" style={{ background: "rgba(255,255,255,0.06)" }} />
+      </div>
+    );
+  }
+
+  if (!showFilmfare && !awards.length && !other.length) {
+    return <p style={{ margin: 0, fontSize: 13, color: "#64748b" }}>No awards listed yet.</p>;
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 22 }}>
+      {showFilmfare && (
+        <FilmfareWinsList wins={wins} categoryLabel={highlights?.filmfareCategory} />
+      )}
+
+      {!showFilmfare && awards.length > 0 && <AwardsList awards={awards} />}
+
+      {showFilmfare && awards.length > 0 && (
+        <div>
+          <p
+            style={{
+              margin: "0 0 10px",
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+              color: "#64748b",
+            }}
+          >
+            Also on Wikidata
+          </p>
+          <AwardsList awards={awards.slice(0, 8)} />
+        </div>
+      )}
+
+      {other.length > 0 && (
+        <div>
+          <p
+            style={{
+              margin: "0 0 10px",
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+              color: "#64748b",
+            }}
+          >
+            Other recognition
+          </p>
+          <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 8 }}>
+            {other.map((t) => (
+              <li
+                key={t}
+                style={{
+                  display: "flex",
+                  gap: 10,
+                  fontSize: 13,
+                  color: "#cbd5e1",
+                  lineHeight: 1.45,
+                }}
+              >
+                <span
+                  style={{
+                    marginTop: 7,
+                    width: 6,
+                    height: 6,
+                    borderRadius: 999,
+                    flexShrink: 0,
+                    background: "#fbbf24",
+                  }}
+                />
+                {t}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {highlights?.source && (
+        <p style={{ margin: 0, fontSize: 11, color: "#475569" }}>
+          Details via digidarpan.com · Wikipedia · {highlights.source}
+        </p>
+      )}
+      {!highlights?.source && (
+        <p style={{ margin: 0, fontSize: 11, color: "#475569" }}>Tagged on digidarpan.com</p>
+      )}
+    </div>
   );
 }
 
@@ -359,11 +555,9 @@ export default function NewEntityPage() {
   const id = parsed.qid ?? undefined;
   const [tab, setTab] = useState<TabId>("overview");
   const [copied, setCopied] = useState(false);
-  const [filtersOpen, setFiltersOpen] = useState(true);
+  const [highlightsOpen, setHighlightsOpen] = useState(true);
   const [activeRelationFilters, setActiveRelationFilters] = useState<Set<string>>(new Set());
-  const [activeOccupationFilters, setActiveOccupationFilters] = useState<Set<string>>(new Set());
-  const [activeDecadeFilters, setActiveDecadeFilters] = useState<Set<string>>(new Set());
-  const [activeNationalityFilters, setActiveNationalityFilters] = useState<Set<string>>(new Set());
+  const [activeSection, setActiveSection] = useState<string>("ov-about");
 
   const { data: entity, isLoading, error } = useQuery({
     queryKey: ["entity", id],
@@ -378,6 +572,13 @@ export default function NewEntityPage() {
     queryFn: () => fetchCreativeRolesForPerson(id!),
     enabled: Boolean(id && rootIsPerson),
     staleTime: 1000 * 60 * 15,
+  });
+
+  const { data: awardHighlights, isLoading: awardsLoading } = useQuery({
+    queryKey: ["entity-award-highlights", id, entity?.label],
+    queryFn: () => fetchCompareAwardHighlights(id!, entity!.label),
+    enabled: Boolean(id && entity?.label && rootIsPerson),
+    staleTime: 1000 * 60 * 60,
   });
 
   useEffect(() => {
@@ -554,13 +755,10 @@ export default function NewEntityPage() {
     return { relations, occupations, decades, nationalities };
   }, [entity]);
 
-  // Seed filters once entity content arrives (all on by default)
+  // Seed relation filters once entity content arrives (all on by default)
   useEffect(() => {
     if (!entity) return;
     setActiveRelationFilters(new Set(dynamicFilters.relations.map((r) => r.key)));
-    setActiveOccupationFilters(new Set(dynamicFilters.occupations));
-    setActiveDecadeFilters(new Set(dynamicFilters.decades));
-    setActiveNationalityFilters(new Set(dynamicFilters.nationalities));
   }, [entity?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const filteredRelatedPeople = useMemo(() => {
@@ -740,6 +938,197 @@ export default function NewEntityPage() {
     }
   }
 
+  const lifeHighlights = useMemo(() => {
+    if (!entity) {
+      return {
+        pulse: "",
+        craft: [] as string[],
+        sparks: [] as Array<{
+          id: string;
+          title: string;
+          body: string;
+          sectionId?: string;
+          accent: string;
+        }>,
+        faces: [] as Array<{ id: string; label: string; relation: string }>,
+        whisper: "",
+      };
+    }
+
+    const died = valuesOf(entity, "P570", 1)[0]?.label;
+    const bornY = yearFromLabel(born);
+    const diedY = yearFromLabel(died);
+    const pulseParts = [
+      bornY && diedY ? `${bornY}–${diedY}` : bornY ? `b. ${bornY}` : null,
+      birthplace,
+      occupations[0]?.label,
+    ].filter(Boolean);
+    const pulse = pulseParts.join(" · ");
+
+    const craft = occupations.map((o) => o.label).slice(0, 6);
+
+    const sparks: Array<{
+      id: string;
+      title: string;
+      body: string;
+      sectionId?: string;
+      accent: string;
+    }> = [];
+
+    if (born || birthplace) {
+      sparks.push({
+        id: "spark-origin",
+        title: "Where it began",
+        body: [born, birthplace ? `in ${birthplace}` : null].filter(Boolean).join(" "),
+        sectionId: "ov-facts",
+        accent: "#38bdf8",
+      });
+    }
+
+    const spouseNames = familyGroups.spouse.map((s) => s.label).slice(0, 3);
+    if (spouseNames.length) {
+      sparks.push({
+        id: "spark-love",
+        title: spouseNames.length > 1 ? "Loves & marriages" : "Married to",
+        body: spouseNames.join(" · "),
+        sectionId: "ov-family",
+        accent: "#f472b6",
+      });
+    }
+
+    const startWork = entity.timeline.find((t) => /start of work|debut|career/i.test(t.label));
+    if (startWork) {
+      sparks.push({
+        id: "spark-debut",
+        title: "First light",
+        body: `${startWork.label}${startWork.date ? ` · ${startWork.date}` : startWork.value ? ` · ${startWork.value}` : ""}`,
+        sectionId: "ov-career",
+        accent: "#a78bfa",
+      });
+    } else if (careerHighlights[0]) {
+      sparks.push({
+        id: "spark-debut",
+        title: "Career spark",
+        body: careerHighlights[0].title,
+        sectionId: "ov-career",
+        accent: "#a78bfa",
+      });
+    }
+
+    if (allAwards.length) {
+      const top = allAwards[0]!;
+      sparks.push({
+        id: "spark-laurel",
+        title: allAwards.length > 1 ? `${allAwards.length} honours on record` : "Recognised for",
+        body: top.label,
+        sectionId: "ov-awards",
+        accent: "#fbbf24",
+      });
+    }
+
+    if (notableWorks[0]) {
+      sparks.push({
+        id: "spark-work",
+        title: "On the reel",
+        body: notableWorks
+          .slice(0, 3)
+          .map((w) => w.label)
+          .join(" · "),
+        sectionId: "ov-works",
+        accent: "#34d399",
+      });
+    }
+
+    if (nationality) {
+      sparks.push({
+        id: "spark-roots",
+        title: "Belonging",
+        body: nationality,
+        sectionId: "ov-facts",
+        accent: "#22d3ee",
+      });
+    }
+
+    const faces = [
+      ...familyGroups.spouse,
+      ...familyGroups.parents,
+      ...familyGroups.siblings,
+    ]
+      .filter((p) => /^Q\d+$/.test(p.id))
+      .slice(0, 6)
+      .map((p) => ({ id: p.id, label: p.label, relation: p.relation }));
+
+    const whisper =
+      (quote && quote.length > 28 ? quote : "") ||
+      (about
+        ? about.replace(/\s+/g, " ").trim().slice(0, 140) + (about.length > 140 ? "…" : "")
+        : "");
+
+    return { pulse, craft, sparks: sparks.slice(0, 6), faces, whisper };
+  }, [
+    entity,
+    born,
+    birthplace,
+    occupations,
+    familyGroups,
+    careerHighlights,
+    allAwards,
+    notableWorks,
+    nationality,
+    quote,
+    about,
+  ]);
+
+  const overviewSectionIds = useMemo(
+    () => [
+      "ov-about",
+      "ov-facts",
+      "ov-family",
+      "ov-career",
+      "ov-awards",
+      "ov-echo",
+      "ov-timeline",
+      "ov-related",
+      "ov-works",
+    ],
+    [],
+  );
+
+  const jumpToSection = (sectionId: string) => {
+    setActiveSection(sectionId);
+    const run = () => {
+      const nodes = [...document.querySelectorAll<HTMLElement>(`[data-ov-section="${sectionId}"]`)];
+      const el = nodes.find((n) => n.getClientRects().length > 0) ?? nodes[0];
+      el?.scrollIntoView({ behavior: "smooth", block: "start" });
+    };
+    if (tab !== "overview") {
+      setTab("overview");
+      window.setTimeout(run, 80);
+    } else {
+      run();
+    }
+  };
+
+  useEffect(() => {
+    if (tab !== "overview") return;
+    const nodes = overviewSectionIds
+      .flatMap((id) => [...document.querySelectorAll<HTMLElement>(`[data-ov-section="${id}"]`)])
+      .filter((n) => n.getClientRects().length > 0);
+    if (!nodes.length) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => b.intersectionRatio - a.intersectionRatio);
+        const top = visible[0]?.target.getAttribute("data-ov-section");
+        if (top) setActiveSection(top);
+      },
+      { rootMargin: "-18% 0px -58% 0px", threshold: [0.1, 0.35, 0.6] },
+    );
+    for (const n of nodes) io.observe(n);
+    return () => io.disconnect();
+  }, [tab, overviewSectionIds, entity?.id]);
+
   const share = () => {
     navigator.clipboard.writeText(window.location.href).then(() => {
       setCopied(true);
@@ -777,8 +1166,8 @@ export default function NewEntityPage() {
             <TreePine className="size-4" />
           </div>
           <div style={{ minWidth: 0 }}>
-            <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#fff" }}>Digital Family Wiki</p>
-            <p style={{ margin: 0, fontSize: 10, color: "#64748b" }}>Explore · Connect · Remember</p>
+            <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "#fff" }}>Digidarpan</p>
+            <p style={{ margin: 0, fontSize: 10, color: "#64748b" }}>digidarpan.com</p>
           </div>
         </div>
 
@@ -815,7 +1204,7 @@ export default function NewEntityPage() {
         <div style={{ marginTop: 20, borderTop: "1px solid rgba(255,255,255,0.06)", padding: "16px 12px 0" }}>
           <button
             type="button"
-            onClick={() => setFiltersOpen((v) => !v)}
+            onClick={() => setHighlightsOpen((v) => !v)}
             style={{
               marginBottom: 8,
               display: "flex",
@@ -832,15 +1221,168 @@ export default function NewEntityPage() {
               cursor: "pointer",
             }}
           >
-            Filters
-            <ChevronDown className="size-3.5" style={{ transform: filtersOpen ? "rotate(180deg)" : undefined }} />
+            Highlights
+            <ChevronDown className="size-3.5" style={{ transform: highlightsOpen ? "rotate(180deg)" : undefined }} />
           </button>
-          {filtersOpen && (
+          {highlightsOpen && (
             <div style={{ display: "grid", gap: 14 }}>
+              {lifeHighlights.pulse && (
+                <div
+                  style={{
+                    borderRadius: 14,
+                    border: "1px solid rgba(251,191,36,0.22)",
+                    background: "linear-gradient(145deg, rgba(251,191,36,0.1), rgba(14,165,233,0.05))",
+                    padding: "12px 12px",
+                  }}
+                >
+                  <p style={{ margin: 0, fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", color: "#fbbf24" }}>
+                    Pulse
+                  </p>
+                  <p style={{ margin: "6px 0 0", fontSize: 13, fontWeight: 600, color: "#f8fafc", lineHeight: 1.4 }}>
+                    {lifeHighlights.pulse}
+                  </p>
+                </div>
+              )}
+
+              {lifeHighlights.whisper && (
+                <p
+                  style={{
+                    margin: 0,
+                    fontSize: 12,
+                    lineHeight: 1.55,
+                    color: "#94a3b8",
+                    fontStyle: "italic",
+                    borderLeft: "2px solid rgba(251,191,36,0.35)",
+                    paddingLeft: 10,
+                  }}
+                >
+                  {lifeHighlights.whisper.length > 160
+                    ? `${lifeHighlights.whisper.slice(0, 157)}…`
+                    : lifeHighlights.whisper}
+                </p>
+              )}
+
+              {lifeHighlights.sparks.length > 0 && (
+                <div>
+                  <p style={{ margin: "0 0 8px", fontSize: 11, fontWeight: 500, color: "#94a3b8" }}>
+                    Worth a look
+                  </p>
+                  <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 6 }}>
+                    {lifeHighlights.sparks.map((spark) => {
+                      const active = spark.sectionId ? activeSection === spark.sectionId : false;
+                      return (
+                        <li key={spark.id}>
+                          <button
+                            type="button"
+                            onClick={() => spark.sectionId && jumpToSection(spark.sectionId)}
+                            style={{
+                              display: "block",
+                              width: "100%",
+                              textAlign: "left",
+                              borderRadius: 12,
+                              border: active
+                                ? `1px solid ${spark.accent}66`
+                                : "1px solid rgba(255,255,255,0.06)",
+                              background: active ? `${spark.accent}14` : "rgba(255,255,255,0.02)",
+                              padding: "10px 11px",
+                              cursor: spark.sectionId ? "pointer" : "default",
+                              color: "inherit",
+                            }}
+                          >
+                            <span
+                              style={{
+                                display: "block",
+                                fontSize: 10,
+                                fontWeight: 700,
+                                letterSpacing: "0.08em",
+                                textTransform: "uppercase",
+                                color: spark.accent,
+                              }}
+                            >
+                              {spark.title}
+                            </span>
+                            <span
+                              style={{
+                                display: "block",
+                                marginTop: 4,
+                                fontSize: 12,
+                                color: "#cbd5e1",
+                                lineHeight: 1.4,
+                              }}
+                            >
+                              {spark.body}
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              )}
+
+              {lifeHighlights.faces.length > 0 && (
+                <div>
+                  <p style={{ margin: "0 0 8px", fontSize: 11, fontWeight: 500, color: "#94a3b8" }}>
+                    People nearby
+                  </p>
+                  <div style={{ display: "grid", gap: 6 }}>
+                    {lifeHighlights.faces.map((face) => (
+                      <button
+                        key={face.id}
+                        type="button"
+                        onClick={() => openEntity(face.id, face.label)}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          width: "100%",
+                          borderRadius: 10,
+                          border: "1px solid rgba(255,255,255,0.06)",
+                          background: "rgba(255,255,255,0.02)",
+                          padding: "6px 8px",
+                          cursor: "pointer",
+                          color: "inherit",
+                          textAlign: "left",
+                        }}
+                      >
+                        <Avatar label={face.label} src={entityThumbs?.[face.id]} size="sm" />
+                        <span style={{ minWidth: 0, flex: 1 }}>
+                          <span style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#f1f5f9", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {face.label}
+                          </span>
+                          <span style={{ display: "block", fontSize: 10, color: "#64748b" }}>{face.relation}</span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {lifeHighlights.craft.length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {lifeHighlights.craft.map((c) => (
+                    <span
+                      key={c}
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 600,
+                        color: "#94a3b8",
+                        borderRadius: 999,
+                        border: "1px solid rgba(255,255,255,0.08)",
+                        background: "rgba(255,255,255,0.03)",
+                        padding: "3px 8px",
+                      }}
+                    >
+                      {c}
+                    </span>
+                  ))}
+                </div>
+              )}
+
               {dynamicFilters.relations.length > 0 && (
                 <div>
                   <p style={{ margin: "0 0 6px", fontSize: 11, fontWeight: 500, color: "#94a3b8" }}>
-                    Relationship Type
+                    Related people filter
                   </p>
                   <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 4 }}>
                     {dynamicFilters.relations.map((r) => {
@@ -883,146 +1425,11 @@ export default function NewEntityPage() {
                 </div>
               )}
 
-              {dynamicFilters.occupations.length > 0 && (
-                <div>
-                  <p style={{ margin: "0 0 6px", fontSize: 11, fontWeight: 500, color: "#94a3b8" }}>
-                    Occupation
-                  </p>
-                  <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 4 }}>
-                    {dynamicFilters.occupations.map((o) => {
-                      const checked = activeOccupationFilters.has(o);
-                      return (
-                        <li key={o}>
-                          <label
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 8,
-                              borderRadius: 8,
-                              padding: "4px 6px",
-                              fontSize: 12,
-                              color: "#cbd5e1",
-                              cursor: "pointer",
-                            }}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => {
-                                setActiveOccupationFilters((prev) => {
-                                  const next = new Set(prev);
-                                  if (next.has(o)) next.delete(o);
-                                  else next.add(o);
-                                  return next;
-                                });
-                              }}
-                              style={{ accentColor: "#38bdf8" }}
-                            />
-                            {o}
-                          </label>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
+              {!entity && (
+                <p style={{ margin: 0, fontSize: 12, color: "#64748b" }}>
+                  Highlights appear once this profile loads.
+                </p>
               )}
-
-              {dynamicFilters.nationalities.length > 0 && (
-                <div>
-                  <p style={{ margin: "0 0 6px", fontSize: 11, fontWeight: 500, color: "#94a3b8" }}>
-                    Nationality
-                  </p>
-                  <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 4 }}>
-                    {dynamicFilters.nationalities.map((n) => {
-                      const checked = activeNationalityFilters.has(n);
-                      return (
-                        <li key={n}>
-                          <label
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 8,
-                              borderRadius: 8,
-                              padding: "4px 6px",
-                              fontSize: 12,
-                              color: "#cbd5e1",
-                              cursor: "pointer",
-                            }}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => {
-                                setActiveNationalityFilters((prev) => {
-                                  const next = new Set(prev);
-                                  if (next.has(n)) next.delete(n);
-                                  else next.add(n);
-                                  return next;
-                                });
-                              }}
-                              style={{ accentColor: "#38bdf8" }}
-                            />
-                            {n}
-                          </label>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-              )}
-
-              {dynamicFilters.decades.length > 0 && (
-                <div>
-                  <p style={{ margin: "0 0 6px", fontSize: 11, fontWeight: 500, color: "#94a3b8" }}>
-                    Time Period
-                  </p>
-                  <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 4 }}>
-                    {dynamicFilters.decades.map((d) => {
-                      const checked = activeDecadeFilters.has(d);
-                      return (
-                        <li key={d}>
-                          <label
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 8,
-                              borderRadius: 8,
-                              padding: "4px 6px",
-                              fontSize: 12,
-                              color: "#cbd5e1",
-                              cursor: "pointer",
-                            }}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => {
-                                setActiveDecadeFilters((prev) => {
-                                  const next = new Set(prev);
-                                  if (next.has(d)) next.delete(d);
-                                  else next.add(d);
-                                  return next;
-                                });
-                              }}
-                              style={{ accentColor: "#38bdf8" }}
-                            />
-                            {d}
-                          </label>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-              )}
-
-              {!dynamicFilters.relations.length &&
-                !dynamicFilters.occupations.length &&
-                !dynamicFilters.nationalities.length &&
-                !dynamicFilters.decades.length && (
-                  <p style={{ margin: 0, fontSize: 12, color: "#64748b" }}>
-                    Filters appear when this profile has relationships, occupations, or dated events.
-                  </p>
-                )}
             </div>
           )}
         </div>
@@ -1053,7 +1460,15 @@ export default function NewEntityPage() {
             <Sparkles className="size-4" />
           </div>
           <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: "#cbd5e1" }}>
-            Explore the stories behind the people who shaped our world.
+            Stories, songs &amp; family memory — tagged on{" "}
+            <a
+              href="https://digidarpan.com"
+              target="_blank"
+              rel="noreferrer"
+              style={{ color: "#fcd34d", textDecoration: "none", fontWeight: 600 }}
+            >
+              digidarpan.com
+            </a>
           </p>
         </div>
       </aside>
@@ -1280,18 +1695,29 @@ export default function NewEntityPage() {
                   )}
 
                   {tab === "movies" && (
-                    <MoviesPanel personId={id} onOpenWork={openEntity} />
+                    <MoviesPanel
+                      personId={id}
+                      personLabel={entity.label}
+                      personThumb={entity.thumbnail}
+                      onOpenWork={openEntity}
+                    />
                   )}
 
                   {tab === "awards" && (
-                    <Card title={`Awards & recognition${allAwards.length ? ` · ${allAwards.length}` : ""}`}>
-                      {allAwards.length === 0 ? (
-                        <p style={{ margin: 0, fontSize: 13, color: "#64748b" }}>
-                          No awards listed on Wikidata for this person yet.
-                        </p>
-                      ) : (
-                        <AwardsList awards={allAwards} />
-                      )}
+                    <Card
+                      title={`Awards & recognition${
+                        (awardHighlights?.filmfareWins.length || allAwards.length)
+                          ? ` · ${(awardHighlights?.filmfareWins.length || 0) > allAwards.length
+                              ? awardHighlights!.filmfareWins.length
+                              : Math.max(allAwards.length, awardHighlights?.filmfareWins.length ?? 0)}`
+                          : ""
+                      }`}
+                    >
+                      <RichAwardsPanel
+                        awards={allAwards}
+                        highlights={awardHighlights}
+                        loading={awardsLoading}
+                      />
                     </Card>
                   )}
 
@@ -1549,9 +1975,30 @@ export default function NewEntityPage() {
                     </Card>
                   )}
 
-                  {tab === "overview" && allAwards.length > 0 && (
-                    <Card title="Awards & recognition" className="dfw-awards-mobile">
-                      <AwardsList awards={allAwards.slice(0, 8)} />
+                  {tab === "overview" && (allAwards.length > 0 || (awardHighlights?.filmfareWins.length ?? 0) > 0) && (
+                    <Card title="Awards & recognition" className="dfw-awards-mobile" sectionKey="ov-awards">
+                      <RichAwardsPanel
+                        awards={allAwards.slice(0, 6)}
+                        highlights={
+                          awardHighlights
+                            ? {
+                                ...awardHighlights,
+                                filmfareWins: awardHighlights.filmfareWins.slice(0, 8),
+                                otherRecognition: awardHighlights.otherRecognition.slice(0, 4),
+                              }
+                            : awardHighlights
+                        }
+                        loading={awardsLoading}
+                      />
+                      {(awardHighlights?.filmfareWins.length ?? 0) > 8 && (
+                        <button
+                          type="button"
+                          onClick={() => setTab("awards")}
+                          style={{ marginTop: 14, fontSize: 12, fontWeight: 600, color: "#7dd3fc", background: "none", border: 0, cursor: "pointer" }}
+                        >
+                          View all awards
+                        </button>
+                      )}
                     </Card>
                   )}
 
@@ -1734,8 +2181,9 @@ export default function NewEntityPage() {
 
                   <Card
                     title="Awards & recognition"
+                    sectionKey="ov-awards"
                     action={
-                      allAwards.length > 4 ? (
+                      (awardHighlights?.filmfareWins.length ?? allAwards.length) > 4 ? (
                         <button
                           type="button"
                           onClick={() => setTab("awards")}
@@ -1747,7 +2195,19 @@ export default function NewEntityPage() {
                     }
                     className="dfw-awards-desk"
                   >
-                    <AwardsList awards={allAwards.slice(0, 5)} />
+                    <RichAwardsPanel
+                      awards={allAwards.slice(0, 4)}
+                      highlights={
+                        awardHighlights
+                          ? {
+                              ...awardHighlights,
+                              filmfareWins: awardHighlights.filmfareWins.slice(0, 6),
+                              otherRecognition: awardHighlights.otherRecognition.slice(0, 3),
+                            }
+                          : awardHighlights
+                      }
+                      loading={awardsLoading}
+                    />
                   </Card>
                 </aside>
                 )}
