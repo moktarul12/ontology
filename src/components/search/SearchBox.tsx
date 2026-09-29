@@ -25,6 +25,9 @@ type SearchBoxProps = {
   size?: "lg" | "md";
   placeholder?: string;
   autoFocus?: boolean;
+  /** Override where a result navigates (default: /entity/…) */
+  hrefFor?: (id: string, label: string) => string;
+  className?: string;
 };
 
 function ResultThumb({
@@ -60,7 +63,13 @@ function ResultThumb({
   );
 }
 
-export default function SearchBox({ size = "lg", placeholder = "Search any person, place, concept, organization…", autoFocus = false }: SearchBoxProps) {
+export default function SearchBox({
+  size = "lg",
+  placeholder = "Search any person, place, concept, organization…",
+  autoFocus = false,
+  hrefFor = entityPath,
+  className,
+}: SearchBoxProps) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -106,7 +115,7 @@ export default function SearchBox({ size = "lg", placeholder = "Search any perso
   const handleSelect = (result: SearchResult) => {
     setOpen(false);
     setQuery(result.label);
-    navigate(entityPath(result.id, result.label));
+    navigate(hrefFor(result.id, result.label));
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -115,7 +124,7 @@ export default function SearchBox({ size = "lg", placeholder = "Search any perso
   };
 
   return (
-    <div ref={containerRef} className={cn("relative w-full", size === "lg" ? "max-w-2xl" : "max-w-lg")}>
+    <div ref={containerRef} className={cn("relative w-full", size === "lg" ? "max-w-2xl" : "max-w-lg", className)}>
       {/* Input */}
       <div
         className={cn(

@@ -1,7 +1,13 @@
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { fetchEntitySummary, resolveWikipediaTitleToQid, searchEntities } from "@/lib/wikidata/api.ts";
-import { entityPath, parseEntityParam } from "@/lib/entityPath.ts";
+import {
+  fetchEntitySummary,
+  fetchEntityMainArticles,
+  fetchEntityOtherLanguages,
+  resolveWikipediaTitleToQid,
+  searchEntities,
+} from "@/lib/wikidata/api.ts";
+import { entityPath, graphPath, familyTreePath, parseEntityParam } from "@/lib/entityPath.ts";
 import { getEntityTypeConfig, isGenericTypeLabel } from "@/lib/wikidata/entity-types.ts";
 import {
   sectionOrderForType,
@@ -20,12 +26,12 @@ import {
   Image as ImageIcon, Link2, Clock, Film, Languages,
   Briefcase, Heart, Tag, GraduationCap, Landmark, Star, FlaskConical,
   List, Quote, ShieldCheck, Users, Globe2, Factory, Award, Layers,
-  TrendingUp, DollarSign, BarChart3,
+  TrendingUp, DollarSign, BarChart3, Moon, Sun,
 } from "lucide-react";
 import SearchBox from "@/components/search/SearchBox.tsx";
 import { SearchNamePeers } from "@/components/search/SearchNamePeers.tsx";
 import { cn } from "@/lib/utils.ts";
-import type { EntityType, EntityFact, EntitySummary, WikipediaArticle } from "@/lib/wikidata/types.ts";
+import type { EntityType, EntityFact, EntitySummary, WikipediaArticle, WikiTocItem } from "@/lib/wikidata/types.ts";
 import { useMemo, useState, useCallback, useEffect, type MouseEvent, type ComponentType } from "react";
 import { toast } from "sonner";
 import TimelinePanel from "@/pages/entity/_components/TimelinePanel.tsx";
@@ -48,6 +54,19 @@ const TYPE_ICONS: Record<EntityType, ComponentType<{ className?: string }>> = {
   work: Film,
   unknown: HelpCircle,
 };
+
+type BodyView = "cosmic" | "light";
+const BODY_VIEW_KEY = "entity-body-view";
+
+function loadBodyView(): BodyView {
+  try {
+    const v = localStorage.getItem(BODY_VIEW_KEY);
+    if (v === "light" || v === "cosmic") return v;
+  } catch {
+    /* ignore */
+  }
+  return "cosmic";
+}
 
 
 type QuickFact = {
@@ -375,6 +394,16 @@ export default function EntityPage() {
   const [copied, setCopied] = useState(false);
   const [activeTab, setActiveTab] = useState("timeline");
   const [resolvingLink, setResolvingLink] = useState(false);
+  const [bodyView, setBodyView] = useState<BodyView>(loadBodyView);
+  const cosmic = bodyView === "cosmic";
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(BODY_VIEW_KEY, bodyView);
+    } catch {
+      /* ignore */
+    }
+  }, [bodyView]);
 
   const parsed = useMemo(() => parseEntityParam(rawParam ?? ""), [rawParam]);
 
@@ -383,7 +412,7 @@ export default function EntityPage() {
     queryFn: async () => {
       const q = (parsed.slug ?? "").replace(/-/g, " ").trim();
       if (!q) return null;
-      const hits = await searchEntities(q, 8);
+      const hits = await searchEntities(q, 3);
       return hits[0]?.id ?? null;
     },
     enabled: !parsed.qid && Boolean(parsed.slug),
@@ -392,12 +421,56 @@ export default function EntityPage() {
 
   const qid = parsed.qid ?? slugQid ?? undefined;
 
-  const { data: entity, isLoading, error } = useQuery({
-    queryKey: ["entity", qid, "v15-hero-main-full"],
-    queryFn: () => fetchEntitySummary(qid!),
+  const { data: baseEntity, isLoading, error } = useQuery({
+    queryKey: ["entity", qid],
+    queryFn: () =>
+      fetchEntitySummary(qid!, {
+        includeMainArticles: false,
+        includeOtherLanguages: false,
+      }),
     enabled: Boolean(qid),
     staleTime: 1000 * 60 * 30,
   });
+
+  // Defer non-critical Wikipedia extras until Overview / Languages need them
+  const wikiTitle = baseEntity?.wikipedia?.title;
+  const wikiRev = baseEntity?.wikipedia?.revisedAt ?? "norev";
+  const mainHints = baseEntity?.wikipedia?.mainArticleHints ?? [];
+
+  const { data: deferredMainArticles } = useQuery({
+    queryKey: ["wiki-main-articles", qid, wikiTitle, wikiRev, "v1"],
+    queryFn: () => fetchEntityMainArticles(mainHints),
+    enabled:
+      Boolean(qid && wikiTitle && mainHints.length) &&
+      activeTab === "overview",
+    staleTime: 1000 * 60 * 60,
+  });
+
+  const { data: deferredOtherLanguages, isFetching: langsFetching, isFetched: langsFetched } = useQuery({
+    queryKey: ["wiki-other-langs", qid, wikiTitle, wikiRev, "v1"],
+    queryFn: () => fetchEntityOtherLanguages(wikiTitle!),
+    enabled: Boolean(qid && wikiTitle) && activeTab === "languages",
+    staleTime: 1000 * 60 * 60,
+  });
+
+  const entity = useMemo(() => {
+    if (!baseEntity) return undefined;
+    const wiki = baseEntity.wikipedia;
+    if (!wiki) return baseEntity;
+    const mainArticles = deferredMainArticles ?? wiki.mainArticles;
+    const otherLanguages = deferredOtherLanguages ?? wiki.otherLanguages;
+    if (mainArticles === wiki.mainArticles && otherLanguages === wiki.otherLanguages) {
+      return baseEntity;
+    }
+    let toc = wiki.toc;
+    if (toc && mainArticles?.length) {
+      toc = annotateTocWithMainArticles(toc, mainArticles);
+    }
+    return {
+      ...baseEntity,
+      wikipedia: { ...wiki, mainArticles, otherLanguages, toc },
+    };
+  }, [baseEntity, deferredMainArticles, deferredOtherLanguages]);
 
   // Prefer /entity/albert-einstein-Q9458 over bare /entity/Q9458
   useEffect(() => {
@@ -520,11 +593,11 @@ export default function EntityPage() {
     if (entity.images.length) {
       tabs.push({ id: "media", title: "Related Images", count: entity.images.length, kind: "media" });
     }
-    if (entity.wikipedia?.otherLanguages?.length) {
+    if (entity.wikipedia?.title) {
       tabs.push({
         id: "languages",
         title: "Languages",
-        count: entity.wikipedia.otherLanguages.length,
+        count: entity.wikipedia.otherLanguages?.length,
         kind: "languages",
       });
     }
@@ -662,8 +735,13 @@ export default function EntityPage() {
           id: "graph",
           label: "Knowledge Graph",
           icon: Network,
-          action: () => navigate(`/graph/${qid}`),
+          action: () => navigate(graphPath(qid, entity.label)),
           selected: false,
+          preview: {
+            visual: "graph",
+            image: portraitUrl ?? entity.thumbnail,
+            subtitle: "Explore relations & works",
+          },
         },
         ...(entity.type === "person"
           ? [
@@ -671,8 +749,13 @@ export default function EntityPage() {
                 id: "family-tree",
                 label: "Family Tree",
                 icon: GitBranch,
-                action: () => navigate(`/family-tree/${qid}`),
+                action: () => navigate(familyTreePath(qid, entity.label)),
                 selected: false,
+                preview: {
+                  visual: "family" as const,
+                  image: portraitUrl ?? entity.thumbnail,
+                  subtitle: "Parents, spouses & children",
+                },
               },
             ]
           : []),
@@ -719,7 +802,7 @@ export default function EntityPage() {
             <div className="ml-auto flex shrink-0 items-center gap-0.5 sm:gap-1">
               <button
                 type="button"
-                onClick={() => navigate(`/graph/${qid}`)}
+                onClick={() => navigate(graphPath(qid, entity.label))}
                 className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 sm:px-2.5 py-1.5 text-[11px] sm:text-[12px] font-medium text-slate-300 hover:bg-white/[0.08] hover:text-white transition-colors cursor-pointer"
                 title="Knowledge graph"
               >
@@ -729,7 +812,7 @@ export default function EntityPage() {
               {entity.type === "person" && (
                 <button
                   type="button"
-                  onClick={() => navigate(`/family-tree/${qid}`)}
+                  onClick={() => navigate(familyTreePath(qid, entity.label))}
                   className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 sm:px-2.5 py-1.5 text-[11px] sm:text-[12px] font-medium text-slate-300 hover:bg-white/[0.08] hover:text-white transition-colors cursor-pointer"
                   title="Family tree"
                 >
@@ -753,6 +836,20 @@ export default function EntityPage() {
                   .filter(Boolean)
                   .join(". ")}
               />
+              <button
+                type="button"
+                onClick={() => setBodyView((v) => (v === "cosmic" ? "light" : "cosmic"))}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-2 sm:px-2.5 py-1.5 text-[11px] sm:text-[12px] font-medium text-slate-300 hover:bg-white/[0.08] hover:text-white transition-colors cursor-pointer"
+                title={cosmic ? "Switch to light view" : "Switch to cosmic view"}
+                aria-pressed={!cosmic}
+              >
+                {cosmic ? (
+                  <Sun className="size-3.5 text-amber-300 shrink-0" />
+                ) : (
+                  <Moon className="size-3.5 text-sky-300 shrink-0" />
+                )}
+                <span className="hidden lg:inline">{cosmic ? "Light" : "Cosmic"}</span>
+              </button>
             </div>
           )}
           <button
@@ -829,45 +926,73 @@ export default function EntityPage() {
             explore={explore}
           />
 
-          {/* ═══════════════ BODY (light reading surface) ═══════════════ */}
+          {/* ═══════════════ BODY (cosmic / light) ═══════════════ */}
           <section
             id="entity-main"
-            className="entity-body relative isolate overflow-hidden text-slate-800 min-h-[70vh] scroll-mt-28 bg-[#f1efe9]"
+            className={cn(
+              "entity-body relative isolate overflow-hidden min-h-[70vh] scroll-mt-28",
+              cosmic ? "entity-body-cosmic" : "bg-[#f1efe9] text-slate-800",
+            )}
           >
-            {/* Ink / paper atmosphere — scoped below the dark hero */}
-            <div className="pointer-events-none absolute inset-0" aria-hidden>
-              <div
-                className="absolute inset-0"
-                style={{
-                  background: `
-                    radial-gradient(ellipse 90% 50% at 50% -5%, rgba(71, 85, 105, 0.1), transparent 55%),
-                    radial-gradient(ellipse 42% 38% at 100% 22%, rgba(15, 118, 110, 0.055), transparent 52%),
-                    radial-gradient(ellipse 38% 32% at 0% 78%, rgba(100, 80, 50, 0.045), transparent 50%),
-                    linear-gradient(180deg, #e8e5de 0%, #f1efe9 22%, #f4f2ed 100%)
-                  `,
-                }}
-              />
-              <svg className="absolute inset-0 h-full w-full opacity-[0.4]" xmlns="http://www.w3.org/2000/svg">
-                <defs>
-                  <pattern id="entity-paper-dots" width="20" height="20" patternUnits="userSpaceOnUse">
-                    <circle cx="1" cy="1" r="0.9" fill="#64748b" opacity="0.3" />
-                  </pattern>
-                </defs>
-                <rect width="100%" height="100%" fill="url(#entity-paper-dots)" />
-              </svg>
-            </div>
-            {/* Soft seam from dark hero into paper */}
-            <div
-              className="pointer-events-none absolute inset-x-0 top-0 h-28 z-[1]"
-              style={{
-                background:
-                  "linear-gradient(180deg, rgba(11,18,32,0.18) 0%, rgba(11,18,32,0.06) 40%, transparent 100%)",
-              }}
-              aria-hidden
-            />
+            {cosmic ? (
+              <>
+                <div className="pointer-events-none absolute inset-0" aria-hidden>
+                  <div className="entity-body-cosmic-sky" />
+                  <div className="entity-body-cosmic-stars" />
+                  <div className="entity-body-cosmic-veil" />
+                </div>
+                <div
+                  className="pointer-events-none absolute inset-x-0 top-0 h-32 z-[1]"
+                  style={{
+                    background:
+                      "linear-gradient(180deg, rgba(5,10,20,0.85) 0%, rgba(5,10,20,0.35) 45%, transparent 100%)",
+                  }}
+                  aria-hidden
+                />
+              </>
+            ) : (
+              <>
+                <div className="pointer-events-none absolute inset-0" aria-hidden>
+                  <div
+                    className="absolute inset-0"
+                    style={{
+                      background: `
+                        radial-gradient(ellipse 90% 50% at 50% -5%, rgba(71, 85, 105, 0.1), transparent 55%),
+                        radial-gradient(ellipse 42% 38% at 100% 22%, rgba(15, 118, 110, 0.055), transparent 52%),
+                        radial-gradient(ellipse 38% 32% at 0% 78%, rgba(100, 80, 50, 0.045), transparent 50%),
+                        linear-gradient(180deg, #e8e5de 0%, #f1efe9 22%, #f4f2ed 100%)
+                      `,
+                    }}
+                  />
+                  <svg className="absolute inset-0 h-full w-full opacity-[0.4]" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                      <pattern id="entity-paper-dots" width="20" height="20" patternUnits="userSpaceOnUse">
+                        <circle cx="1" cy="1" r="0.9" fill="#64748b" opacity="0.3" />
+                      </pattern>
+                    </defs>
+                    <rect width="100%" height="100%" fill="url(#entity-paper-dots)" />
+                  </svg>
+                </div>
+                <div
+                  className="pointer-events-none absolute inset-x-0 top-0 h-28 z-[1]"
+                  style={{
+                    background:
+                      "linear-gradient(180deg, rgba(11,18,32,0.18) 0%, rgba(11,18,32,0.06) 40%, transparent 100%)",
+                  }}
+                  aria-hidden
+                />
+              </>
+            )}
             <div className="relative z-[2] mx-auto max-w-[1600px] px-4 py-6 sm:px-5 md:px-6 md:py-8 pb-24">
               {resolvingLink && (
-                <p className="mb-3 text-xs text-cyan-700 animate-pulse">Opening linked entity…</p>
+                <p
+                  className={cn(
+                    "mb-3 text-xs animate-pulse",
+                    cosmic ? "text-sky-300" : "text-cyan-700",
+                  )}
+                >
+                  Opening linked entity…
+                </p>
               )}
 
               {/* Mobile TOC / section pills */}
@@ -887,7 +1012,12 @@ export default function EntityPage() {
                               block: "start",
                             });
                           }}
-                          className="inline-flex items-center gap-1.5 rounded-full border border-stone-300/80 bg-[#faf9f6] px-3 py-1.5 text-xs font-medium text-teal-900 shadow-sm shadow-stone-400/10 cursor-pointer"
+                          className={cn(
+                            "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium shadow-sm cursor-pointer",
+                            cosmic
+                              ? "border-white/12 bg-white/[0.06] text-sky-100 backdrop-blur-md hover:bg-white/10"
+                              : "border-stone-300/80 bg-[#faf9f6] text-teal-900 shadow-stone-400/10",
+                          )}
                         >
                           {item.title}
                         </button>
@@ -901,9 +1031,14 @@ export default function EntityPage() {
                             onClick={() => setActiveTab(cat.id)}
                             className={cn(
                               "inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium cursor-pointer transition-all",
+                              cosmic && "backdrop-blur-md",
                               selected
-                                ? "border-transparent bg-slate-800 text-white shadow-md shadow-stone-500/20"
-                                : "border-stone-300/80 bg-[#faf9f6] text-stone-600 hover:text-stone-900"
+                                ? cosmic
+                                  ? "border-sky-400/40 bg-sky-500/20 text-white shadow-md shadow-sky-900/30"
+                                  : "border-transparent bg-slate-800 text-white shadow-md shadow-stone-500/20"
+                                : cosmic
+                                  ? "border-white/12 bg-white/[0.05] text-slate-300 hover:text-white hover:bg-white/10"
+                                  : "border-stone-300/80 bg-[#faf9f6] text-stone-600 hover:text-stone-900",
                             )}
                           >
                             <CatIcon className={cn("size-3.5", selected ? "opacity-95" : "opacity-70")} />
@@ -926,12 +1061,35 @@ export default function EntityPage() {
                 {activeTab !== "timeline" && (
                 <div className="hidden lg:block sticky top-[4.5rem] space-y-3">
                   {activeTab === "overview" && wiki?.toc && wiki.toc.length > 0 ? (
-                    <WikiTocNav toc={wiki.toc} readingMins={readingMins} />
+                    <WikiTocNav
+                      toc={wiki.toc}
+                      readingMins={readingMins}
+                      variant={cosmic ? "dark" : "light"}
+                    />
                   ) : (
-                    <nav className="rounded-2xl border border-stone-300/70 bg-[#faf9f6]/95 shadow-sm shadow-stone-400/15 overflow-hidden backdrop-blur-sm">
-                      <div className="flex items-center gap-2 px-4 py-3 border-b border-stone-200/80">
-                        <List className="size-4 text-teal-700" />
-                        <p className="text-xs font-semibold uppercase tracking-wider text-stone-500">Contents</p>
+                    <nav
+                      className={cn(
+                        "rounded-2xl overflow-hidden backdrop-blur-sm",
+                        cosmic
+                          ? "border border-white/10 bg-[#0b1524]/75 shadow-lg shadow-black/30 backdrop-blur-md"
+                          : "border border-stone-300/70 bg-[#faf9f6]/95 shadow-sm shadow-stone-400/15",
+                      )}
+                    >
+                      <div
+                        className={cn(
+                          "flex items-center gap-2 px-4 py-3 border-b",
+                          cosmic ? "border-white/8" : "border-stone-200/80",
+                        )}
+                      >
+                        <List className={cn("size-4", cosmic ? "text-sky-400" : "text-teal-700")} />
+                        <p
+                          className={cn(
+                            "text-xs font-semibold uppercase tracking-wider",
+                            cosmic ? "text-slate-400" : "text-stone-500",
+                          )}
+                        >
+                          Contents
+                        </p>
                       </div>
                       <ul className="p-2 space-y-0.5 max-h-[calc(100vh-12rem)] overflow-auto">
                         {categories.map((cat) => {
@@ -944,105 +1102,213 @@ export default function EntityPage() {
                                 className={cn(
                                   "relative flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 pl-3.5 text-left text-sm cursor-pointer transition-all",
                                   selected
-                                    ? "bg-gradient-to-r from-stone-100 via-[#f3f1ec] to-[#faf9f6] text-stone-900 font-semibold shadow-sm ring-1 ring-stone-300/80"
-                                    : "text-stone-600 hover:bg-stone-100/70 hover:text-stone-900"
+                                    ? cosmic
+                                      ? "bg-white/[0.08] text-white font-semibold ring-1 ring-sky-400/30"
+                                      : "bg-gradient-to-r from-stone-100 via-[#f3f1ec] to-[#faf9f6] text-stone-900 font-semibold shadow-sm ring-1 ring-stone-300/80"
+                                    : cosmic
+                                      ? "text-slate-400 hover:bg-white/[0.05] hover:text-slate-100"
+                                      : "text-stone-600 hover:bg-stone-100/70 hover:text-stone-900",
                                 )}
                               >
                                 {selected && (
-                                  <span className="absolute inset-y-1.5 left-1 w-1 rounded-full bg-gradient-to-b from-teal-600 to-slate-700" />
+                                  <span
+                                    className={cn(
+                                      "absolute inset-y-1.5 left-1 w-1 rounded-full",
+                                      cosmic
+                                        ? "bg-gradient-to-b from-sky-400 to-violet-500"
+                                        : "bg-gradient-to-b from-teal-600 to-slate-700",
+                                    )}
+                                  />
                                 )}
                                 <span
                                   className={cn(
                                     "flex size-7 shrink-0 items-center justify-center rounded-lg",
                                     selected
-                                      ? "bg-slate-800 text-white"
-                                      : "bg-stone-200/80 text-stone-500",
+                                      ? cosmic
+                                        ? "bg-sky-500/20 text-sky-200"
+                                        : "bg-slate-800 text-white"
+                                      : cosmic
+                                        ? "bg-white/5 text-slate-500"
+                                        : "bg-stone-200/80 text-stone-500",
                                   )}
                                 >
                                   <CatIcon className="size-3.5" />
                                 </span>
                                 <span className="flex-1 truncate">{cat.title}</span>
                                 {selected && (
-                                  <span className="size-1.5 shrink-0 rounded-full bg-teal-700" />
+                                  <span
+                                    className={cn(
+                                      "size-1.5 shrink-0 rounded-full",
+                                      cosmic ? "bg-sky-400" : "bg-teal-700",
+                                    )}
+                                  />
                                 )}
                               </button>
                             </li>
                           );
                         })}
                       </ul>
-                      <div className="border-t border-stone-200/80 px-4 py-3 flex items-center gap-2 text-xs text-stone-500">
+                      <div
+                        className={cn(
+                          "border-t px-4 py-3 flex items-center gap-2 text-xs",
+                          cosmic ? "border-white/8 text-slate-500" : "border-stone-200/80 text-stone-500",
+                        )}
+                      >
                         <Clock className="size-3.5" />
                         {readingMins} min read
                       </div>
                     </nav>
                   )}
                   {activeTab === "overview" && wiki?.toc && wiki.toc.length > 0 && (
-                    <div className="rounded-2xl border border-stone-300/70 bg-[#faf9f6]/90 px-3 py-2.5 text-[11px] text-stone-500">
+                    <div
+                      className={cn(
+                        "rounded-2xl px-3 py-2.5 text-[11px]",
+                        cosmic
+                          ? "border border-white/10 bg-[#0b1524]/70 text-slate-400 backdrop-blur-md"
+                          : "border border-stone-300/70 bg-[#faf9f6]/90 text-stone-500",
+                      )}
+                    >
                       <button
                         type="button"
-                        className="font-medium text-teal-800 hover:underline cursor-pointer"
+                        className={cn(
+                          "font-medium hover:underline cursor-pointer",
+                          cosmic ? "text-sky-300" : "text-teal-800",
+                        )}
                         onClick={() => setActiveTab("timeline")}
                       >
                         More sections →
                       </button>
-                      <span className="mx-1.5 text-stone-300">·</span>
+                      <span className={cn("mx-1.5", cosmic ? "text-slate-600" : "text-stone-300")}>·</span>
                       Facts, timeline, media
                     </div>
                   )}
                 </div>
                 )}
 
-                <div className="min-w-0 w-full rounded-2xl border border-stone-300/70 bg-[#faf9f6]/95 shadow-sm shadow-stone-400/15 backdrop-blur-sm">
-                  <div className="flex items-center justify-between gap-3 border-b border-stone-200/80 px-5 sm:px-8 py-3.5 bg-gradient-to-r from-stone-100/80 to-[#f1efe9] rounded-t-2xl">
+                <div
+                  className={cn(
+                    "min-w-0 w-full rounded-2xl backdrop-blur-md",
+                    cosmic
+                      ? activeTab === "timeline"
+                        ? "border border-white/10 bg-[#0b1524]/55 shadow-[0_24px_60px_-28px_rgba(0,0,0,0.55)] ring-1 ring-white/5"
+                        : "border border-white/12 bg-[#f7f5ef]/94 shadow-[0_24px_60px_-28px_rgba(0,0,0,0.55)] ring-1 ring-white/10"
+                      : "border border-stone-300/70 bg-[#faf9f6]/95 shadow-sm shadow-stone-400/15",
+                  )}
+                >
+                  <div
+                    className={cn(
+                      "flex items-center justify-between gap-3 px-5 sm:px-8 py-3.5 rounded-t-2xl",
+                      cosmic && activeTab === "timeline"
+                        ? "border-b border-white/8 bg-gradient-to-r from-white/[0.04] to-transparent"
+                        : "border-b border-stone-200/70 bg-gradient-to-r from-white/80 to-[#f1efe9]/90",
+                    )}
+                  >
                     <div className="flex items-center gap-2 min-w-0">
                       <button
                         onClick={() => goTab(-1)}
                         disabled={activeIdx <= 0}
-                        className="flex size-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 disabled:opacity-40 cursor-pointer hover:text-slate-800"
+                        className={cn(
+                          "flex size-8 items-center justify-center rounded-lg border disabled:opacity-40 cursor-pointer",
+                          cosmic && activeTab === "timeline"
+                            ? "border-white/12 bg-white/[0.04] text-slate-400 hover:text-white hover:bg-white/10"
+                            : "border-slate-200 bg-white text-slate-500 hover:text-slate-800",
+                        )}
                       >
                         <ChevronLeft className="size-4" />
                       </button>
                       <button
                         onClick={() => goTab(1)}
                         disabled={activeIdx >= categories.length - 1}
-                        className="flex size-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 disabled:opacity-40 cursor-pointer hover:text-slate-800"
+                        className={cn(
+                          "flex size-8 items-center justify-center rounded-lg border disabled:opacity-40 cursor-pointer",
+                          cosmic && activeTab === "timeline"
+                            ? "border-white/12 bg-white/[0.04] text-slate-400 hover:text-white hover:bg-white/10"
+                            : "border-slate-200 bg-white text-slate-500 hover:text-slate-800",
+                        )}
                       >
                         <ChevronRight className="size-4" />
                       </button>
-                      <span className="text-sm text-slate-500 font-medium truncate">
+                      <span
+                        className={cn(
+                          "text-sm font-medium truncate",
+                          cosmic && activeTab === "timeline" ? "text-slate-400" : "text-slate-500",
+                        )}
+                      >
                         {activeIdx + 1} / {categories.length}
                       </span>
                     </div>
-                    <div className="hidden sm:block h-1.5 flex-1 max-w-[200px] rounded-full bg-slate-200 overflow-hidden">
+                    <div
+                      className={cn(
+                        "hidden sm:block h-1.5 flex-1 max-w-[200px] rounded-full overflow-hidden",
+                        cosmic && activeTab === "timeline" ? "bg-white/10" : "bg-slate-200",
+                      )}
+                    >
                       <div
-                        className="h-full rounded-full bg-cyan-500 transition-all"
+                        className={cn(
+                          "h-full rounded-full transition-all",
+                          cosmic && activeTab === "timeline" ? "bg-sky-400" : "bg-sky-500",
+                        )}
                         style={{ width: `${((activeIdx + 1) / Math.max(categories.length, 1)) * 100}%` }}
                       />
                     </div>
                   </div>
 
-                  <div className="px-5 sm:px-8 lg:px-10 py-7 sm:py-9">
-                    <div className="mb-8 flex flex-wrap items-end justify-between gap-4 border-b border-slate-100 pb-6">
+                  <div className={cn(
+                    "px-5 sm:px-8 lg:px-10 py-7 sm:py-9",
+                    activeTab === "timeline" && "pt-5",
+                  )}>
+                    <div
+                      className={cn(
+                        "mb-8 flex flex-wrap items-end justify-between gap-4 pb-6",
+                        cosmic && activeTab === "timeline"
+                          ? "border-b border-white/10"
+                          : "border-b border-slate-100",
+                      )}
+                    >
                       <div className="flex items-center gap-3.5 min-w-0">
                         {(() => {
                           const TabIcon = SECTION_ICONS[active?.id ?? "overview"] ?? BookOpen;
                           return (
-                            <div className="flex size-12 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-50 to-slate-50 text-cyan-700 border border-cyan-100 shadow-sm">
+                            <div
+                              className={cn(
+                                "flex size-12 items-center justify-center rounded-2xl border shadow-sm",
+                                cosmic && activeTab === "timeline"
+                                  ? "bg-sky-500/15 text-sky-200 border-sky-400/25"
+                                  : "bg-gradient-to-br from-cyan-50 to-slate-50 text-cyan-700 border-cyan-100",
+                              )}
+                            >
                               <TabIcon className="size-6" />
                             </div>
                           );
                         })()}
                         <div className="min-w-0">
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-cyan-700/80 mb-1">
+                          <p
+                            className={cn(
+                              "text-[11px] font-semibold uppercase tracking-[0.16em] mb-1",
+                              cosmic && activeTab === "timeline" ? "text-sky-300/80" : "text-cyan-700/80",
+                            )}
+                          >
                             {entity.label}
                           </p>
-                          <h2 className="font-serif text-3xl md:text-4xl font-bold text-slate-900 tracking-tight">
+                          <h2
+                            className={cn(
+                              "font-serif text-3xl md:text-4xl font-bold tracking-tight",
+                              cosmic && activeTab === "timeline" ? "text-white" : "text-slate-900",
+                            )}
+                          >
                             {active?.title ?? "Overview"}
                           </h2>
                         </div>
                       </div>
                       {active?.count != null && active.count > 0 && (
-                        <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-sm font-mono text-slate-600">
+                        <span
+                          className={cn(
+                            "rounded-full border px-3 py-1 text-sm font-mono",
+                            cosmic && activeTab === "timeline"
+                              ? "border-white/15 bg-white/5 text-slate-300"
+                              : "border-slate-200 bg-slate-50 text-slate-600",
+                          )}
+                        >
                           {active.count} items
                         </span>
                       )}
@@ -1123,9 +1389,18 @@ export default function EntityPage() {
                           </div>
                         )}
 
-                        {active?.kind === "languages" && wiki?.otherLanguages && (
+                        {active?.kind === "languages" && (
                           <div className="grid md:grid-cols-2 gap-5">
-                            {wiki.otherLanguages.map((lang) => (
+                            {(langsFetching || (!langsFetched && !wiki?.otherLanguages?.length)) ? (
+                              <p className="col-span-full text-sm text-slate-500">
+                                Loading language extracts…
+                              </p>
+                            ) : !wiki?.otherLanguages?.length ? (
+                              <p className="col-span-full text-sm text-slate-500">
+                                No other-language extracts available.
+                              </p>
+                            ) : (
+                              wiki.otherLanguages.map((lang) => (
                               <div
                                 key={lang.lang}
                                 className="rounded-2xl border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-6 shadow-sm"
@@ -1141,7 +1416,8 @@ export default function EntityPage() {
                                   {lang.extract}
                                 </p>
                               </div>
-                            ))}
+                            ))
+                            )}
                           </div>
                         )}
 
@@ -1423,4 +1699,18 @@ function FactsPanel({
       </div>
     </div>
   );
+}
+
+function annotateTocWithMainArticles(
+  toc: WikiTocItem[],
+  articles: Array<{ parentSectionId: string; title: string }>,
+): WikiTocItem[] {
+  const byParent = new Map(articles.map((a) => [a.parentSectionId, a.title]));
+  const walk = (items: WikiTocItem[]): WikiTocItem[] =>
+    items.map((item) => ({
+      ...item,
+      mainArticleTitle: byParent.get(item.id) ?? item.mainArticleTitle,
+      children: item.children?.length ? walk(item.children) : item.children,
+    }));
+  return walk(toc);
 }

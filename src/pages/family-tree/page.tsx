@@ -1,5 +1,5 @@
 import { useParams, useNavigate } from "react-router-dom";
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -10,11 +10,11 @@ import SearchBox from "@/components/search/SearchBox.tsx";
 import { SearchNamePeers } from "@/components/search/SearchNamePeers.tsx";
 import FamilyTreeCanvas, { type FamilyViewMode } from "./_components/FamilyTreeCanvas.tsx";
 import NodeDetailModal from "@/pages/graph/_components/NodeDetailModal.tsx";
-import { fetchEntitySummary, fetchFamilyData, dedupeFamilyEdges } from "@/lib/wikidata/api.ts";
+import { fetchEntityLite, fetchFamilyData, dedupeFamilyEdges } from "@/lib/wikidata/api.ts";
 import type { GraphNode } from "@/lib/wikidata/types.ts";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { cn } from "@/lib/utils.ts";
-import { entityPath } from "@/lib/entityPath.ts";
+import { entityPath, graphPath, familyTreePath, parseEntityParam } from "@/lib/entityPath.ts";
 
 function canvasCall(name: string, ...args: unknown[]) {
   const fn = (window as unknown as Record<string, unknown>)[name];
@@ -22,57 +22,73 @@ function canvasCall(name: string, ...args: unknown[]) {
 }
 
 export default function FamilyTreePage() {
-  const { id } = useParams<{ id: string }>();
+  const { id: rawParam } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const parsed = useMemo(() => parseEntityParam(rawParam ?? ""), [rawParam]);
+  const id = parsed.qid ?? undefined;
 
   const [nodes, setNodes] = useState<GraphNode[]>([]);
   const [edges, setEdges] = useState<import("@/lib/wikidata/types.ts").GraphEdge[]>([]);
   const [loadedIds, setLoadedIds] = useState<Set<string>>(new Set());
   const [expandingIds, setExpandingIds] = useState<Set<string>>(new Set());
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [depth, setDepth] = useState(3);
+  const [depth, setDepth] = useState(2);
   const [arrangeNonce, setArrangeNonce] = useState(0);
   const [useHubs] = useState(true);
   const [viewMode, setViewMode] = useState<FamilyViewMode>("tree");
   const [copied, setCopied] = useState(false);
 
   const { data: rootEntity } = useQuery({
-    queryKey: ["entity", id],
-    queryFn: () => fetchEntitySummary(id!),
+    queryKey: ["entity-lite", id],
+    queryFn: () => fetchEntityLite(id!),
     enabled: Boolean(id),
+    staleTime: 1000 * 60 * 30,
   });
 
-  const loadTree = useCallback(async (
-    rootId: string,
-    hops: number,
-    opts?: { clear?: boolean },
-  ) => {
-    setLoading(true);
+  useEffect(() => {
+    if (!id || !rootEntity || !rawParam) return;
+    const canonical = familyTreePath(id, rootEntity.label).replace(/^\/family-tree\//, "");
+    if (rawParam !== canonical) {
+      navigate(`/family-tree/${canonical}`, { replace: true });
+    }
+  }, [id, rootEntity, rawParam, navigate]);
+
+  const {
+    data: familyPayload,
+    isLoading: familyQueryLoading,
+    isFetching: familyQueryFetching,
+    error: familyError,
+  } = useQuery({
+    queryKey: ["family", id, depth],
+    queryFn: () => fetchFamilyData(id!, depth, new Set()),
+    enabled: Boolean(id),
+    staleTime: 1000 * 60 * 15,
+  });
+
+  useEffect(() => {
+    if (!familyPayload) return;
+    setNodes(familyPayload.nodes);
+    setEdges(familyPayload.edges);
+    setLoadedIds(new Set(familyPayload.nodes.map((n) => n.id)));
     setSelectedNode(null);
-    if (opts?.clear) {
-      setNodes([]);
-      setEdges([]);
-      setLoadedIds(new Set());
-    }
-    try {
-      const data = await fetchFamilyData(rootId, hops, new Set());
-      setNodes(data.nodes);
-      setEdges(data.edges);
-      setLoadedIds(new Set(data.nodes.map((n) => n.id)));
-    } catch {
-      toast.error("Failed to load family data");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  }, [familyPayload]);
+
+  useEffect(() => {
+    if (familyError) toast.error("Failed to load family data");
+  }, [familyError]);
 
   useEffect(() => {
     if (!id) return;
-    setDepth(3);
-    loadTree(id, 3, { clear: true });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    setDepth(2);
+    setExpandingIds(new Set());
+    setNodes([]);
+    setEdges([]);
+    setLoadedIds(new Set());
+    setSelectedNode(null);
   }, [id]);
+
+  const loading = familyQueryLoading && nodes.length === 0;
+  const depthBusy = familyQueryFetching && !familyQueryLoading && nodes.length > 0;
 
   const expandNode = useCallback(async (node: GraphNode) => {
     if (expandingIds.has(node.id)) return;
@@ -112,7 +128,6 @@ export default function FamilyTreePage() {
     const next = Math.max(1, Math.min(3, depth + delta));
     if (next === depth || !id) return;
     setDepth(next);
-    loadTree(id, next);
   };
 
   const navBtn =
@@ -161,7 +176,7 @@ export default function FamilyTreePage() {
             <div className="ml-auto flex shrink-0 items-center gap-0.5 sm:gap-1">
               <button
                 type="button"
-                onClick={() => navigate(`/graph/${id}`)}
+                onClick={() => navigate(graphPath(id!, rootEntity?.label))}
                 className={navBtn}
                 title="Knowledge graph"
               >
@@ -269,7 +284,7 @@ export default function FamilyTreePage() {
           <rect width="100%" height="100%" fill="url(#ft-dots-lg)" />
         </svg>
 
-        {loading && nodes.length === 0 && (
+        {loading && (
           <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-5 bg-[#f4f7fb]/80 backdrop-blur-[2px]">
             <div className="flex items-center gap-3">
               <div className="size-5 rounded-full border-2 border-cyan-500 border-t-transparent animate-spin" />
@@ -278,7 +293,7 @@ export default function FamilyTreePage() {
             <Skeleton className="h-11 w-32 rounded-lg border-2 border-cyan-300/40 bg-slate-200/80" />
           </div>
         )}
-        {loading && nodes.length > 0 && (
+        {depthBusy && (
           <div className="absolute top-4 left-1/2 z-20 -translate-x-1/2 pointer-events-none">
             <div className="flex items-center gap-2.5 rounded-full border border-slate-200/80 bg-white/90 px-3.5 py-2 shadow-sm">
               <div className="size-3.5 rounded-full border-2 border-cyan-500 border-t-transparent animate-spin" />
@@ -287,7 +302,7 @@ export default function FamilyTreePage() {
           </div>
         )}
 
-        {!loading && nodes.length === 0 && (
+        {!loading && !depthBusy && nodes.length === 0 && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-center px-6">
             <div className="flex size-14 items-center justify-center rounded-2xl border border-slate-200/80 bg-white shadow-sm">
               <Info className="size-6 text-slate-400" />
@@ -328,7 +343,7 @@ export default function FamilyTreePage() {
               <button
                 type="button"
                 onClick={() => bumpDepth(-1)}
-                disabled={loading || depth <= 1}
+                disabled={loading || depthBusy || depth <= 1}
                 className={canvasBtn}
                 title="Fewer hops"
               >
@@ -340,7 +355,7 @@ export default function FamilyTreePage() {
               <button
                 type="button"
                 onClick={() => bumpDepth(1)}
-                disabled={loading || depth >= 3}
+                disabled={loading || depthBusy || depth >= 3}
                 className={canvasBtn}
                 title="More hops"
               >

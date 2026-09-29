@@ -5,7 +5,7 @@ const TYPES: EntityType[] = ["person", "place", "organization", "concept", "even
 
 export default function GraphLegend() {
   return (
-    <div className="flex flex-wrap gap-2">
+    <div className="flex flex-wrap gap-3">
       {TYPES.map((type) => {
         const cfg = ENTITY_TYPE_CONFIG[type];
         return (
@@ -14,7 +14,7 @@ export default function GraphLegend() {
               className="size-2.5 rounded-[3px] border"
               style={{ background: `${cfg.hex}30`, borderColor: cfg.hex }}
             />
-            <span className="text-[10px] text-muted-foreground">{cfg.label}</span>
+            <span className="text-[10px] text-slate-500">{cfg.label}</span>
           </div>
         );
       })}

@@ -1,7 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import { Network, GitBranch, GitCompareArrows } from "lucide-react";
 import { cn } from "@/lib/utils.ts";
-import { entityPath } from "@/lib/entityPath.ts";
+import { entityPath, graphPath, familyTreePath } from "@/lib/entityPath.ts";
 import type { EntityType } from "@/lib/wikidata/types.ts";
 import type { ComponentType, ReactNode } from "react";
 
@@ -23,7 +23,7 @@ const ITEMS: ExploreItem[] = [
     label: "Knowledge graph",
     hint: "Relations · expand on click",
     icon: Network,
-    path: (qid, label) => `/graph/${qid}`,
+    path: (qid, label) => graphPath(qid, label),
     show: () => true,
     featured: () => true,
   },
@@ -32,7 +32,7 @@ const ITEMS: ExploreItem[] = [
     label: "Family tree",
     hint: "Parents · spouses · children",
     icon: GitBranch,
-    path: (qid) => `/family-tree/${qid}`,
+    path: (qid, label) => familyTreePath(qid, label),
     show: (type) => type === "person",
     featured: (type) => type === "person",
   },

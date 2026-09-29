@@ -1,6 +1,9 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, type ComponentType, type CSSProperties } from "react";
 import * as d3 from "d3";
-import type { GraphNode, GraphEdge } from "@/lib/wikidata/types.ts";
+import {
+  User, MapPin, Building2, Lightbulb, Calendar, HelpCircle, Film, Award, Layers,
+} from "lucide-react";
+import type { EntityType, GraphNode, GraphEdge } from "@/lib/wikidata/types.ts";
 import { getEntityTypeConfig } from "@/lib/wikidata/entity-types.ts";
 import {
   isKnowledgeHub,
@@ -14,6 +17,24 @@ import {
   knowledgeEdgeLabelPoint,
 } from "../_lib/knowledgeEdges.ts";
 
+const TYPE_ICONS: Record<EntityType, ComponentType<{ className?: string; style?: CSSProperties }>> = {
+  person: User,
+  place: MapPin,
+  organization: Building2,
+  concept: Lightbulb,
+  event: Calendar,
+  work: Film,
+  unknown: HelpCircle,
+};
+
+function iconForNode(node: GraphNode) {
+  if (isKnowledgeHub(node)) return Layers;
+  if (/award|prize|padma|oscar|filmfare/i.test(node.label) || node.hubPropertyId === "P166") {
+    return Award;
+  }
+  return TYPE_ICONS[node.type] ?? HelpCircle;
+}
+
 type Props = {
   nodes: GraphNode[];
   edges: GraphEdge[];
@@ -26,14 +47,17 @@ type Props = {
   arrangeMode?: GraphArrangeMode;
   /** Bump to force re-layout + fit after drag mess */
   arrangeNonce?: number;
+  /** Portrait for the focus root card */
+  rootThumbnail?: string;
+  rootSubtitle?: string;
 };
 
 type ZoomTransform = { x: number; y: number; k: number };
 
-const HUB_SIZE = { w: 96, h: 34, rx: 14 };
-const ROOT_SIZE = { w: 132, h: 48, rx: 12 };
-const NEAR_SIZE = { w: 112, h: 42, rx: 10 };
-const FAR_SIZE = { w: 96, h: 36, rx: 9 };
+const HUB_SIZE = { w: 118, h: 34, rx: 17 };
+const ROOT_SIZE = { w: 200, h: 72, rx: 16 };
+const NEAR_SIZE = { w: 158, h: 52, rx: 12 };
+const FAR_SIZE = { w: 138, h: 46, rx: 11 };
 
 function idOf(v: string | GraphNode): string {
   return typeof v === "object" ? v.id : v;
@@ -80,13 +104,12 @@ function getNodeSize(node: GraphNode, rootId: string, edges: GraphEdge[]) {
     return { w: Math.max(HUB_SIZE.w, labelWidth(node.label, 10, 24)), h: HUB_SIZE.h, rx: HUB_SIZE.rx };
   }
   if (isKnowledgeHub(node)) {
-    const w = Math.min(200, Math.max(HUB_SIZE.w, labelWidth(node.label, 10, 26)));
-    const h = node.hubTotal != null ? 36 : HUB_SIZE.h;
-    return { w, h, rx: HUB_SIZE.rx };
+    const w = Math.min(220, Math.max(HUB_SIZE.w, labelWidth(node.label, 10, 48)));
+    return { w, h: HUB_SIZE.h, rx: HUB_SIZE.rx };
   }
   if (node.id === rootId) {
     return {
-      w: Math.min(240, Math.max(ROOT_SIZE.w, labelWidth(node.label, 11, 36))),
+      w: Math.min(240, Math.max(ROOT_SIZE.w, labelWidth(node.label, 13, 88))),
       h: ROOT_SIZE.h,
       rx: ROOT_SIZE.rx,
     };
@@ -104,7 +127,7 @@ function getNodeSize(node: GraphNode, rootId: string, edges: GraphEdge[]) {
   const base = isDirectNeighbor ? NEAR_SIZE : FAR_SIZE;
   const fontSize = isDirectNeighbor ? 10 : 9;
   return {
-    w: Math.min(220, Math.max(base.w, labelWidth(node.label, fontSize, 32))),
+    w: Math.min(230, Math.max(base.w, labelWidth(node.label, fontSize, 56))),
     h: base.h,
     rx: base.rx,
   };
@@ -169,12 +192,12 @@ function HoverExpandChip({
     >
       {/* Soft bloom */}
       <circle r={18} fill={color} opacity={0.16} style={{ animation: "kg-pulse 1.6s ease-in-out infinite" }} />
-      <circle r={14} fill="#0B1220" stroke={color} strokeWidth={1.75} />
+      <circle r={14} fill="#FFFFFF" stroke={color} strokeWidth={1.75} />
       {/* Plus / branching mark */}
       {!busy ? (
         <>
-          <line x1={-5} y1={0} x2={5} y2={0} stroke="#F8FAFC" strokeWidth={2.1} strokeLinecap="round" />
-          <line x1={0} y1={-5} x2={0} y2={5} stroke="#F8FAFC" strokeWidth={2.1} strokeLinecap="round" />
+          <line x1={-5} y1={0} x2={5} y2={0} stroke={color} strokeWidth={2.1} strokeLinecap="round" />
+          <line x1={0} y1={-5} x2={0} y2={5} stroke={color} strokeWidth={2.1} strokeLinecap="round" />
           <circle r={2.2} fill={color} cx={0} cy={0} opacity={0.95} />
         </>
       ) : (
@@ -195,10 +218,10 @@ function HoverExpandChip({
           width={56}
           height={16}
           rx={8}
-          fill="#0B1220"
+          fill="#FFFFFF"
           stroke={color}
           strokeWidth={1}
-          opacity={0.95}
+          opacity={0.98}
         />
         <text
           textAnchor="middle"
@@ -206,7 +229,7 @@ function HoverExpandChip({
           style={{
             fontSize: "8px",
             fontWeight: 700,
-            fill: "#F8FAFC",
+            fill: "#0f172a",
             fontFamily: "'Space Grotesk', sans-serif",
             letterSpacing: "0.06em",
             pointerEvents: "none",
@@ -230,6 +253,8 @@ export default function GraphCanvas({
   expandingIds,
   arrangeMode = "orbit",
   arrangeNonce = 0,
+  rootThumbnail,
+  rootSubtitle,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
@@ -582,6 +607,7 @@ export default function GraphCanvas({
                     : !isMore && node.hubTotal != null
                       ? `${node.hubTotal}`
                       : null;
+              const HubIcon = iconForNode(node);
               return (
                 <g
                   key={node.id}
@@ -613,63 +639,62 @@ export default function GraphCanvas({
                         opacity={0.85}
                         style={{ animation: "spin 0.85s linear infinite", transformOrigin: "0 0" }}
                       />
-                      <circle
-                        r={Math.max(sz.w, sz.h) / 2 + 4}
-                        fill="none"
-                        stroke={color}
-                        strokeWidth={1.25}
-                        strokeDasharray="4 6"
-                        opacity={0.45}
-                        style={{ animation: "spin 1.4s linear infinite reverse", transformOrigin: "0 0" }}
-                      />
                     </g>
                   )}
                   <rect
+                    x={-sz.w / 2 + 1.5}
+                    y={-sz.h / 2 + 2}
+                    width={sz.w}
+                    height={sz.h}
+                    rx={sz.rx}
+                    fill="rgba(15,23,42,0.08)"
+                  />
+                  <foreignObject
                     x={-sz.w / 2}
                     y={-sz.h / 2}
                     width={sz.w}
                     height={sz.h}
-                    rx={sz.rx}
-                    fill={isMore ? "#FFFFFF" : color}
-                    stroke={color}
-                    strokeWidth={isMore || isCollapsed ? 1.75 : 1}
-                    strokeDasharray={isMore || isCollapsed ? "4 3" : undefined}
-                    opacity={isCollapsed ? 0.92 : 1}
-                  />
-                  <text
-                    y={countLabel ? -5 : 0}
-                    textAnchor="middle"
-                    dominantBaseline="middle"
-                    style={{
-                      fontSize: "10px",
-                      fill: isMore ? color : "#FFFFFF",
-                      fontFamily: "'Space Grotesk', sans-serif",
-                      fontWeight: 700,
-                      letterSpacing: "0.02em",
-                      pointerEvents: "none",
-                      userSelect: "none",
-                    }}
+                    style={{ overflow: "visible", pointerEvents: "none" }}
                   >
-                    {node.label}
-                  </text>
-                  {countLabel && (
-                    <text
-                      y={8}
-                      textAnchor="middle"
-                      dominantBaseline="middle"
+                    <div
+                      xmlns="http://www.w3.org/1999/xhtml"
                       style={{
-                        fontSize: "8px",
-                        fill: isMore ? color : "#FFFFFF",
-                        fontFamily: "'Space Grotesk', sans-serif",
-                        fontWeight: 600,
-                        opacity: 0.9,
-                        pointerEvents: "none",
-                        userSelect: "none",
+                        width: "100%",
+                        height: "100%",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: 5,
+                        padding: "0 10px",
+                        boxSizing: "border-box",
+                        borderRadius: sz.rx,
+                        background: isMore ? "#FFFFFF" : color,
+                        border: `1.5px ${isMore || isCollapsed ? "dashed" : "solid"} ${color}`,
+                        boxShadow: isMore ? "0 4px 12px rgba(15,23,42,0.08)" : "0 6px 14px rgba(15,23,42,0.12)",
+                        fontFamily: "'Space Grotesk', system-ui, sans-serif",
+                        opacity: isCollapsed ? 0.92 : 1,
                       }}
                     >
-                      {countLabel}
-                    </text>
-                  )}
+                      <HubIcon
+                        className="size-3.5 shrink-0"
+                        style={{ color: isMore ? color : "#FFFFFF" }}
+                      />
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 700,
+                          letterSpacing: "0.02em",
+                          color: isMore ? color : "#FFFFFF",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {node.label}
+                        {countLabel ? ` · ${countLabel}` : ""}
+                      </span>
+                    </div>
+                  </foreignObject>
                   <HoverExpandChip
                     visible={hoveredId === node.id}
                     color={color}
@@ -682,8 +707,14 @@ export default function GraphCanvas({
               );
             }
 
-            const fill = isRoot ? `${cfg.hex}22` : "#FFFFFF";
-            const textColor = isRoot ? "#123048" : "#1A2438";
+            const accent = cfg.hex;
+            const LeafIcon = iconForNode(node);
+            const title = node.label.length > 28 ? `${node.label.slice(0, 26)}…` : node.label;
+            const subtitle = isRoot
+              ? (rootSubtitle || node.description || cfg.label)
+              : (node.description
+                  ? (node.description.length > 32 ? `${node.description.slice(0, 30)}…` : node.description)
+                  : cfg.label);
 
             return (
               <g
@@ -707,15 +738,15 @@ export default function GraphCanvas({
               >
                 {isRoot && (
                   <rect
-                    x={-sz.w / 2 - 5}
-                    y={-sz.h / 2 - 5}
-                    width={sz.w + 10}
-                    height={sz.h + 10}
-                    rx={sz.rx + 3}
+                    x={-sz.w / 2 - 6}
+                    y={-sz.h / 2 - 6}
+                    width={sz.w + 12}
+                    height={sz.h + 12}
+                    rx={sz.rx + 4}
                     fill="none"
-                    stroke={cfg.hex}
-                    strokeWidth={1}
-                    opacity={0.35}
+                    stroke={accent}
+                    strokeWidth={1.25}
+                    opacity={0.28}
                   />
                 )}
 
@@ -724,78 +755,117 @@ export default function GraphCanvas({
                     <circle
                       r={Math.max(sz.w, sz.h) / 2 + 12}
                       fill="none"
-                      stroke={cfg.hex}
+                      stroke={accent}
                       strokeWidth={2.25}
                       strokeDasharray="10 8"
                       opacity={0.85}
                       style={{ animation: "spin 0.85s linear infinite", transformOrigin: "0 0" }}
                     />
-                    <circle
-                      r={Math.max(sz.w, sz.h) / 2 + 5}
-                      fill="none"
-                      stroke={cfg.hex}
-                      strokeWidth={1.25}
-                      strokeDasharray="4 6"
-                      opacity={0.4}
-                      style={{ animation: "spin 1.4s linear infinite reverse", transformOrigin: "0 0" }}
-                    />
                   </g>
                 )}
 
                 <rect
+                  x={-sz.w / 2 + 2}
+                  y={-sz.h / 2 + 3}
+                  width={sz.w}
+                  height={sz.h}
+                  rx={sz.rx}
+                  fill="rgba(15,23,42,0.07)"
+                />
+
+                <foreignObject
                   x={-sz.w / 2}
                   y={-sz.h / 2}
                   width={sz.w}
                   height={sz.h}
-                  rx={sz.rx}
-                  fill={fill}
-                  stroke={cfg.hex}
-                  strokeWidth={isRoot ? 2.5 : 1.75}
-                />
-                <rect
-                  x={-sz.w / 2}
-                  y={-sz.h / 2 + sz.rx}
-                  width={3}
-                  height={sz.h - sz.rx * 2}
-                  fill={cfg.hex}
-                  opacity={0.8}
-                />
-
-                <text
-                  y={-5}
-                  textAnchor="middle"
-                  dominantBaseline="middle"
-                  style={{
-                    fontSize: isRoot ? "11px" : sz.w > 100 ? "10px" : "9px",
-                    fill: textColor,
-                    fontFamily: "'Space Grotesk', sans-serif",
-                    fontWeight: 700,
-                    pointerEvents: "none",
-                    userSelect: "none",
-                  }}
+                  style={{ overflow: "visible", pointerEvents: "none" }}
                 >
-                  {node.label}
-                </text>
-                <text
-                  y={10}
-                  textAnchor="middle"
-                  dominantBaseline="middle"
-                  style={{
-                    fontSize: "8px",
-                    fill: cfg.hex,
-                    fontFamily: "'Space Grotesk', sans-serif",
-                    fontWeight: 600,
-                    letterSpacing: "0.04em",
-                    pointerEvents: "none",
-                    userSelect: "none",
-                    textTransform: "uppercase",
-                  }}
-                >
-                  {cfg.label}
-                </text>
+                  <div
+                    xmlns="http://www.w3.org/1999/xhtml"
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: isRoot ? 10 : 8,
+                      padding: isRoot ? "8px 12px" : "6px 10px",
+                      boxSizing: "border-box",
+                      borderRadius: sz.rx,
+                      background: "#FFFFFF",
+                      border: `1.75px solid ${accent}`,
+                      boxShadow: isRoot
+                        ? "0 10px 28px rgba(15,23,42,0.14)"
+                        : "0 6px 16px rgba(15,23,42,0.1)",
+                      fontFamily: "'Space Grotesk', system-ui, sans-serif",
+                    }}
+                  >
+                    {isRoot && rootThumbnail ? (
+                      <img
+                        src={rootThumbnail}
+                        alt=""
+                        style={{
+                          width: 48,
+                          height: 48,
+                          borderRadius: "50%",
+                          objectFit: "cover",
+                          objectPosition: "top",
+                          flexShrink: 0,
+                          border: `2px solid ${accent}55`,
+                        }}
+                      />
+                    ) : (
+                      <span
+                        style={{
+                          width: isRoot ? 40 : 28,
+                          height: isRoot ? 40 : 28,
+                          borderRadius: isRoot ? "50%" : 8,
+                          flexShrink: 0,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          background: `${accent}18`,
+                          color: accent,
+                        }}
+                      >
+                        <LeafIcon className={isRoot ? "size-5" : "size-3.5"} />
+                      </span>
+                    )}
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div
+                        style={{
+                          fontSize: isRoot ? 13 : 11,
+                          fontWeight: 700,
+                          color: "#0f172a",
+                          lineHeight: 1.2,
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {title}
+                      </div>
+                      {subtitle && (
+                        <div
+                          style={{
+                            marginTop: 2,
+                            fontSize: isRoot ? 10 : 9,
+                            fontWeight: 500,
+                            color: "#64748b",
+                            lineHeight: 1.25,
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
+                        >
+                          {subtitle}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </foreignObject>
                 <HoverExpandChip
                   visible={hoveredId === node.id}
-                  color={cfg.hex}
+                  color={accent}
                   x={sz.w / 2 + 2}
                   y={-sz.h / 2 - 2}
                   busy={isExpanding}

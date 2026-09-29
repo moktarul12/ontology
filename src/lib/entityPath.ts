@@ -1,6 +1,7 @@
 /**
  * Readable entity URLs: /entity/albert-einstein-Q9458
  * Still accepts bare /entity/Q9458 and redirects to the named form.
+ * Graph / family use the same slug-Qid pattern.
  */
 
 const BARE_QID = /^Q\d+$/i;
@@ -22,11 +23,30 @@ export function normalizeQid(id: string): string {
   return m ? `Q${m[1]}` : id.trim();
 }
 
+function namedPath(base: string, id: string, label?: string | null): string {
+  const qid = normalizeQid(id);
+  if (!label?.trim()) return `${base}/${qid}`;
+  return `${base}/${slugifyLabel(label)}-${qid}`;
+}
+
 /** Build /entity/… path; prefers name-Qid when a label is known. */
 export function entityPath(id: string, label?: string | null): string {
-  const qid = normalizeQid(id);
-  if (!label?.trim()) return `/entity/${qid}`;
-  return `/entity/${slugifyLabel(label)}-${qid}`;
+  return namedPath("/entity", id, label);
+}
+
+/** Experimental redesign under /new/entity/… */
+export function newEntityPath(id: string, label?: string | null): string {
+  return namedPath("/new/entity", id, label);
+}
+
+/** Build /graph/… path with the same slug-Qid form as overview. */
+export function graphPath(id: string, label?: string | null): string {
+  return namedPath("/graph", id, label);
+}
+
+/** Build /family-tree/… path with the same slug-Qid form as overview. */
+export function familyTreePath(id: string, label?: string | null): string {
+  return namedPath("/family-tree", id, label);
 }
 
 export type ParsedEntityParam = {

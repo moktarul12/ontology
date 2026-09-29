@@ -42,10 +42,11 @@ const HUB_H = 28;
 const ORBIT_HUB_W = 118;
 const ORBIT_HUB_H = 36;
 
-// ── Role-based visual styles (light theme) ───────────────────────────────────
+// ── Role-based visual styles ─────────────────────────────────────────────────
 type NodeRole = "root" | "ancestor" | "ancestor2" | "descendant" | "descendant2" | "spouse" | "sibling";
+type RoleStyle = { border: string; bg: string; text: string; sub: string; strokeW: number };
 
-const ROLE_STYLE: Record<NodeRole, { border: string; bg: string; text: string; sub: string; strokeW: number }> = {
+const ROLE_STYLE_LIGHT: Record<NodeRole, RoleStyle> = {
   root:        { border: "#1D6F9F", bg: "#E8F5FC", text: "#0F3A55",  sub: "#3A7A9E",  strokeW: 2.5 },
   ancestor:    { border: "#5B6BB5", bg: "#EEF0FA", text: "#2A3270",  sub: "#5C6498",  strokeW: 1.5 },
   ancestor2:   { border: "#6B7AB0", bg: "#F2F4FA", text: "#3A4570",  sub: "#6A7498",  strokeW: 1   },
@@ -54,6 +55,18 @@ const ROLE_STYLE: Record<NodeRole, { border: string; bg: string; text: string; s
   spouse:      { border: "#C45A7A", bg: "#FCEEF2", text: "#6A2038",  sub: "#A05068",  strokeW: 1.5 },
   sibling:     { border: "#2E8B57", bg: "#EAF6EF", text: "#145030",  sub: "#3A7A52",  strokeW: 1.5 },
 };
+
+const ROLE_STYLE_DARK: Record<NodeRole, RoleStyle> = {
+  root:        { border: "#38bdf8", bg: "#0c4a6e", text: "#e0f2fe",  sub: "#7dd3fc",  strokeW: 2.5 },
+  ancestor:    { border: "#818cf8", bg: "#1e1b4b", text: "#e0e7ff",  sub: "#a5b4fc",  strokeW: 1.5 },
+  ancestor2:   { border: "#6366f1", bg: "#17153a", text: "#c7d2fe",  sub: "#818cf8",  strokeW: 1   },
+  descendant:  { border: "#34d399", bg: "#064e3b", text: "#d1fae5",  sub: "#6ee7b7",  strokeW: 1.5 },
+  descendant2: { border: "#10b981", bg: "#022c22", text: "#a7f3d0",  sub: "#34d399",  strokeW: 1   },
+  spouse:      { border: "#f472b6", bg: "#4a044e", text: "#fce7f3",  sub: "#f9a8d4",  strokeW: 1.5 },
+  sibling:     { border: "#4ade80", bg: "#14532d", text: "#dcfce7",  sub: "#86efac",  strokeW: 1.5 },
+};
+
+export type CanvasTheme = "dark" | "light";
 
 // ── Relation edge / hub colors (light-friendly) ─────────────────────────────
 const REL_COLORS: Record<string, string> = {
@@ -68,6 +81,18 @@ const REL_COLORS: Record<string, string> = {
 };
 const REL_DEFAULT = "#6A7A96";
 
+const REL_COLORS_DARK: Record<string, string> = {
+  father:   "#a78bfa",
+  mother:   "#a78bfa",
+  parent:   "#a78bfa",
+  spouse:   "#f472b6",
+  child:    "#fbbf24",
+  son:      "#fbbf24",
+  daughter: "#fbbf24",
+  sibling:  "#4ade80",
+};
+const REL_DEFAULT_DARK = "#94a3b8";
+
 const HUB_FILL: Record<string, string> = {
   parent: "#6B5CA8",
   spouse: "#C45A7A",
@@ -75,11 +100,20 @@ const HUB_FILL: Record<string, string> = {
   sibling: "#2E8B57",
 };
 
+const HUB_FILL_DARK: Record<string, string> = {
+  parent: "#7c3aed",
+  spouse: "#db2777",
+  child: "#d97706",
+  sibling: "#16a34a",
+};
+
 export type ArrowDir = "in" | "out" | "both";
 
-function relColor(label: string): string {
+function relColor(label: string, dark = false): string {
   const key = label.toLowerCase().split(/\s*\/\s*/)[0]?.trim() ?? label;
-  return REL_COLORS[key] ?? REL_DEFAULT;
+  const map = dark ? REL_COLORS_DARK : REL_COLORS;
+  const fallback = dark ? REL_DEFAULT_DARK : REL_DEFAULT;
+  return map[key] ?? fallback;
 }
 
 /** Attach edge to rounded-rect border (not a circle approx). */
@@ -404,6 +438,8 @@ type Props = {
   useHubs?: boolean;
   /** tree = hub petals; orbit = circular rings + round nodes */
   viewMode?: FamilyViewMode;
+  /** Canvas chrome — dark matches Digital Family Wiki embed */
+  theme?: CanvasTheme;
 };
 
 // ── Component ────────────────────────────────────────────────────────────────
@@ -417,7 +453,13 @@ export default function FamilyTreeCanvas({
   arrangeNonce = 0,
   useHubs = true,
   viewMode = "tree",
+  theme = "light",
 }: Props) {
+  const dark = theme === "dark";
+  const ROLE_STYLE = dark ? ROLE_STYLE_DARK : ROLE_STYLE_LIGHT;
+  const hubFillMap = dark ? HUB_FILL_DARK : HUB_FILL;
+  const relMap = dark ? REL_COLORS_DARK : REL_COLORS;
+  const relDefault = dark ? REL_DEFAULT_DARK : REL_DEFAULT;
   const svgRef = useRef<SVGSVGElement>(null);
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
   const simRef = useRef<d3.Simulation<GraphNode, d3.SimulationLinkDatum<GraphNode>> | null>(null);
@@ -783,9 +825,13 @@ export default function FamilyTreeCanvas({
   };
 
   return (
-    <svg ref={svgRef} className="absolute inset-0 w-full h-full" style={{ cursor: "grab" }}>
+    <svg
+      ref={svgRef}
+      className="absolute inset-0 w-full h-full"
+      style={{ cursor: "grab", background: dark ? "#070b14" : "transparent" }}
+    >
       <defs>
-        {Object.entries(REL_COLORS).map(([rel, color]) => (
+        {Object.entries(relMap).map(([rel, color]) => (
           <g key={rel}>
             <marker id={`ft-arr-${rel}`} viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto">
               <path d="M 0 0 L 10 5 L 0 10 z" fill={color} opacity={0.7} />
@@ -796,10 +842,10 @@ export default function FamilyTreeCanvas({
           </g>
         ))}
         <marker id="ft-arr-default" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto">
-          <path d="M 0 0 L 10 5 L 0 10 z" fill={REL_DEFAULT} opacity={0.5} />
+          <path d="M 0 0 L 10 5 L 0 10 z" fill={relDefault} opacity={0.5} />
         </marker>
         <marker id="ft-arr-start-default" viewBox="0 0 10 10" refX="2" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
-          <path d="M 0 0 L 10 5 L 0 10 z" fill={REL_DEFAULT} opacity={0.5} />
+          <path d="M 0 0 L 10 5 L 0 10 z" fill={relDefault} opacity={0.5} />
         </marker>
       </defs>
 
@@ -871,12 +917,12 @@ export default function FamilyTreeCanvas({
             (tgt as HubGraphNode).hubRelation ??
             "child";
           const color = isCoParent
-            ? relColor(displayLabel || "mother")
+            ? relColor(displayLabel || "mother", dark)
             : displayLabel
-              ? relColor(displayLabel)
+              ? relColor(displayLabel, dark)
               : isHubNode(src) || isHubNode(tgt)
-                ? relColor(spokeRel === "parent" ? "parent" : spokeRel)
-                : REL_DEFAULT;
+                ? relColor(spokeRel === "parent" ? "parent" : spokeRel, dark)
+                : relDefault;
 
           let pathD: string;
           const skip = new Set([from.id, to.id]);
@@ -967,7 +1013,7 @@ export default function FamilyTreeCanvas({
               )}
               {showEdgeLabel && (
                 <g>
-                  <rect x={lx - labelW / 2} y={ly - 8} width={labelW} height={14} rx={4} fill="#FFFFFF" opacity={0.92} stroke="#D0D8E4" strokeWidth={0.75} />
+                  <rect x={lx - labelW / 2} y={ly - 8} width={labelW} height={14} rx={4} fill={dark ? "#0f172a" : "#FFFFFF"} opacity={0.92} stroke={dark ? "#334155" : "#D0D8E4"} strokeWidth={0.75} />
                   <text
                     x={lx} y={ly}
                     textAnchor="middle" dominantBaseline="middle"
@@ -992,7 +1038,7 @@ export default function FamilyTreeCanvas({
           const x = node.x ?? 0, y = node.y ?? 0;
           const [nameLine, lifeLine] = splitLabel(node.label);
           const hubRel = (node as HubGraphNode).hubRelation;
-          const hubColor = HUB_FILL[hubRel ?? ""] ?? "#4DC48A";
+          const hubColor = hubFillMap[hubRel ?? ""] ?? (dark ? "#34d399" : "#4DC48A");
 
           if (hub) {
             let memberCount = 0;
@@ -1122,7 +1168,7 @@ export default function FamilyTreeCanvas({
           const orbitRel = hubsOn && !isRoot ? personOrbitRelation(node.id, edges, nodes) : null;
           const accent = isRoot
             ? ROLE_STYLE.root.border
-            : (orbitRel ? relColor(orbitRel) : style.border);
+            : (orbitRel ? relColor(orbitRel, dark) : style.border);
           const fill = isRoot ? ROLE_STYLE.root.bg : (orbitRel ? `${accent}18` : style.bg);
           const textMain = isRoot ? ROLE_STYLE.root.text : style.text;
           const textSub = isRoot ? ROLE_STYLE.root.sub : (orbitRel ? `${accent}` : style.sub);
@@ -1352,12 +1398,12 @@ export default function FamilyTreeCanvas({
             (tgt as HubGraphNode).hubRelation ??
             "child";
           const color = isCoParent
-            ? relColor(displayLabel || "mother")
+            ? relColor(displayLabel || "mother", dark)
             : displayLabel
-              ? relColor(displayLabel)
+              ? relColor(displayLabel, dark)
               : isHubNode(src) || isHubNode(tgt)
-                ? relColor(spokeRel === "parent" ? "parent" : spokeRel)
-                : REL_DEFAULT;
+                ? relColor(spokeRel === "parent" ? "parent" : spokeRel, dark)
+                : relDefault;
 
           let pathD: string;
           const skip = new Set([from.id, to.id]);

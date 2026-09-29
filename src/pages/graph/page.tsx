@@ -13,9 +13,11 @@ import GraphCanvas from "./_components/GraphCanvas.tsx";
 import NodeDetailModal from "./_components/NodeDetailModal.tsx";
 import GraphLegend from "./_components/GraphLegend.tsx";
 import {
-  fetchEntitySummary,
+  fetchEntityLite,
   fetchGraphData,
   fetchCreativeRoleExpansion,
+  fetchCreativeRolesForPerson,
+  creativeHitsToGraphData,
   isCreativeRoleProperty,
 } from "@/lib/wikidata/api.ts";
 import type { GraphNode, GraphEdge } from "@/lib/wikidata/types.ts";
@@ -27,7 +29,7 @@ import {
   GRAPH_ARRANGE_LABEL,
   type GraphArrangeMode,
 } from "./_lib/knowledgeLayout.ts";
-import { entityPath } from "@/lib/entityPath.ts";
+import { entityPath, graphPath, familyTreePath, parseEntityParam } from "@/lib/entityPath.ts";
 
 function edgeEndpointId(v: string | GraphNode): string {
   return typeof v === "object" ? v.id : v;
@@ -58,8 +60,10 @@ function expandVisibleHubPages(
 }
 
 export default function GraphPage() {
-  const { id } = useParams<{ id: string }>();
+  const { id: rawParam } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const parsed = useMemo(() => parseEntityParam(rawParam ?? ""), [rawParam]);
+  const id = parsed.qid ?? undefined;
 
   // ── Graph state ────────────────────────────────────────────────────────────
   const [nodes, setNodes] = useState<GraphNode[]>([]);
@@ -69,10 +73,6 @@ export default function GraphPage() {
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [depth, setDepth] = useState(1);
   const [showLegend, setShowLegend] = useState(false);
-  const [graphLoading, setGraphLoading] = useState(true);
-  /** Hop change while an existing graph is on screen — keep canvas, show top banner. */
-  const [depthRefreshing, setDepthRefreshing] = useState(false);
-  const [fetchingDepth, setFetchingDepth] = useState<number | null>(null);
   /** Unchecked relation property IDs are hidden from the canvas. */
   const [hiddenRelations, setHiddenRelations] = useState<Set<string>>(() => new Set());
   const [relationsOpen, setRelationsOpen] = useState(false);
@@ -85,44 +85,106 @@ export default function GraphPage() {
   /** Family & life filter panel — collapsed by default. */
   const [lifeFamilyOpen, setLifeFamilyOpen] = useState(false);
 
-  // ── Load root entity label ─────────────────────────────────────────────────
+  // ── Load root entity label (lite — no Wikipedia HTML dossier) ─────────────
   const { data: rootEntity } = useQuery({
-    queryKey: ["entity", id],
-    queryFn: () => fetchEntitySummary(id!),
+    queryKey: ["entity-lite", id],
+    queryFn: () => fetchEntityLite(id!),
     enabled: Boolean(id),
+    staleTime: 1000 * 60 * 30,
   });
 
-  // ── Initial graph load ─────────────────────────────────────────────────────
+  // Canonical /graph/name-Qid URL
   useEffect(() => {
-    if (!id) return;
-    setGraphLoading(true);
+    if (!id || !rootEntity || !rawParam) return;
+    const canonical = graphPath(id, rootEntity.label).replace(/^\/graph\//, "");
+    if (rawParam !== canonical) {
+      navigate(`/graph/${canonical}`, { replace: true });
+    }
+  }, [id, rootEntity, rawParam, navigate]);
+
+  // ── Graph payload (claims only — paints fast; filmography merges later) ───
+  const {
+    data: graphPayload,
+    isLoading: graphQueryLoading,
+    isFetching: graphQueryFetching,
+    error: graphError,
+  } = useQuery({
+    queryKey: ["graph", id, depth],
+    queryFn: () => fetchGraphData(id!, depth, new Set(), { includeCreativeRoles: false }),
+    enabled: Boolean(id),
+    staleTime: 1000 * 60 * 15,
+  });
+
+  const rootIsPerson =
+    rootEntity?.type === "person" ||
+    graphPayload?.nodes.some((n) => n.id === id && n.type === "person");
+
+  // Deferred SPARQL filmography (occupation-filtered) — does not block first paint
+  const { data: creativeHits, isFetching: creativeFetching } = useQuery({
+    queryKey: ["graph-creative", id],
+    queryFn: () => fetchCreativeRolesForPerson(id!),
+    enabled: Boolean(id && rootIsPerson && graphPayload),
+    staleTime: 1000 * 60 * 15,
+  });
+
+  // Sync claims graph → canvas (resets on id / hop change)
+  useEffect(() => {
+    if (!id || !graphPayload) return;
+    const pruned = pruneConnectedToRoot(graphPayload.nodes, graphPayload.edges, id);
+    setNodes(pruned.nodes);
+    setEdges(pruned.edges);
+    setLoadedIds(new Set(pruned.nodes.map((n) => n.id)));
+    const root = pruned.nodes.find((n) => n.id === id);
+    const hidden =
+      root?.type === "person"
+        ? presentLifeFamilyPids(pruned.edges, id)
+        : new Set<string>();
+    setHiddenRelations(hidden);
+    setLifeFamilyOpen(false);
+    setShownByHub(
+      depth > 1 ? expandVisibleHubPages(pruned.edges, id, hidden) : {},
+    );
+    setSelectedNode(root ?? null);
+  }, [id, depth, graphPayload]);
+
+  // Soft-merge filmography when SPARQL finishes (re-apply after hop reload)
+  useEffect(() => {
+    if (!id || !creativeHits?.length || !graphPayload) return;
+    const creative = creativeHitsToGraphData(id, creativeHits);
+    setNodes((prev) => {
+      const map = new Map(prev.map((n) => [n.id, n]));
+      for (const n of creative.nodes) {
+        if (!map.has(n.id)) map.set(n.id, n);
+      }
+      return [...map.values()];
+    });
+    setEdges((prev) => {
+      const map = new Map(prev.map((e) => [e.id, e]));
+      for (const e of creative.edges) {
+        if (!map.has(e.id)) map.set(e.id, e);
+      }
+      return [...map.values()];
+    });
+    setLoadedIds((prev) => new Set([...prev, ...creative.nodes.map((n) => n.id)]));
+  }, [id, creativeHits, graphPayload]);
+
+  useEffect(() => {
+    if (graphError) toast.error("Failed to load graph data");
+  }, [graphError]);
+
+  const graphLoading = graphQueryLoading && nodes.length === 0;
+  const depthRefreshing = Boolean(graphQueryFetching && !graphQueryLoading && nodes.length > 0);
+  const fetchingDepth = depthRefreshing ? depth : null;
+
+  // Reset expand chrome when navigating to another entity
+  useEffect(() => {
+    setRelationsOpen(false);
+    setExpandingIds(new Set());
     setNodes([]);
     setEdges([]);
     setLoadedIds(new Set());
-    setHiddenRelations(new Set());
-    setRelationsOpen(false);
     setShownByHub({});
-
-    fetchGraphData(id, depth, new Set())
-      .then((data) => {
-        const pruned = pruneConnectedToRoot(data.nodes, data.edges, id);
-        setNodes(pruned.nodes);
-        setEdges(pruned.edges);
-        setLoadedIds(new Set(pruned.nodes.map((n) => n.id)));
-        const root = pruned.nodes.find((n) => n.id === id);
-        const hidden =
-          root?.type === "person"
-            ? presentLifeFamilyPids(pruned.edges, id)
-            : new Set<string>();
-        setHiddenRelations(hidden);
-        setLifeFamilyOpen(false);
-        setShownByHub(
-          depth > 1 ? expandVisibleHubPages(pruned.edges, id, hidden) : {},
-        );
-      })
-      .catch(() => toast.error("Failed to load graph data"))
-      .finally(() => setGraphLoading(false));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    setSelectedNode(null);
   }, [id]);
 
   // Close relations dropdown on outside click
@@ -212,7 +274,7 @@ export default function GraphPage() {
           [hubId]: (prev[hubId] ?? defaultHubPageSize(node.hubPropertyId!)) + data.nodes.length,
         }));
       } else {
-        data = await fetchGraphData(node.id, 1, loadedIds);
+        data = await fetchGraphData(node.id, 1, loadedIds, { includeCreativeRoles: false });
         if (data.nodes.length === 0 && data.edges.length === 0) {
           toast("No new connections found for this node");
           return;
@@ -349,50 +411,10 @@ export default function GraphPage() {
     );
   }, [nodes, edges, hiddenRelations, id, shownByHub, depth]);
 
-  // ── Depth reload (reload entire graph at new depth) ────────────────────────
-  const reloadWithDepth = useCallback(async (newDepth: number) => {
-    if (!id) return;
-    const keepExisting = nodes.length > 0;
-    setSelectedNode(null);
-    setFetchingDepth(newDepth);
-    if (keepExisting) {
-      setDepthRefreshing(true);
-    } else {
-      setGraphLoading(true);
-      setShownByHub({});
-    }
-    try {
-      const data = await fetchGraphData(id, newDepth, new Set());
-      const pruned = pruneConnectedToRoot(data.nodes, data.edges, id);
-      setNodes(pruned.nodes);
-      setEdges(pruned.edges);
-      setLoadedIds(new Set(pruned.nodes.map((n) => n.id)));
-      const root = pruned.nodes.find((n) => n.id === id);
-      const hidden =
-        root?.type === "person"
-          ? presentLifeFamilyPids(pruned.edges, id)
-          : new Set<string>();
-      setHiddenRelations(hidden);
-      setLifeFamilyOpen(false);
-      // Hops > 1: immediately expand hop-1 relation hubs (visible ones only)
-      setShownByHub(
-        newDepth > 1
-          ? expandVisibleHubPages(pruned.edges, id, hidden)
-          : {},
-      );
-    } catch {
-      toast.error("Failed to reload graph");
-    } finally {
-      setDepthRefreshing(false);
-      setFetchingDepth(null);
-      setGraphLoading(false);
-    }
-  }, [id, nodes.length]);
-
+  // ── Depth change (React Query refetches via ["graph", id, depth]) ──────────
   const handleDepthChange = (newDepth: number) => {
     const clamped = Math.max(1, Math.min(3, newDepth));
     setDepth(clamped);
-    void reloadWithDepth(clamped);
   };
 
   const busy = graphLoading || depthRefreshing;
@@ -455,6 +477,27 @@ export default function GraphPage() {
     return [];
   }, [selectedNode, viewEdges, viewNodes, edges, nodes, id]);
 
+  const selectedRelationCounts = useMemo(() => {
+    if (!selectedNode || !id) return [];
+    const ownerId = isKnowledgeHub(selectedNode)
+      ? (selectedNode.hubOf ?? id)
+      : selectedNode.id;
+    return viewNodes
+      .filter(
+        (n) =>
+          isKnowledgeHub(n) &&
+          !isHubMoreNode(n) &&
+          n.hubOf === ownerId &&
+          (n.hubTotal ?? 0) > 0,
+      )
+      .map((n) => ({
+        label: n.hubRelation ?? n.label,
+        count: n.hubTotal ?? 0,
+        propertyId: n.hubPropertyId,
+      }))
+      .slice(0, 10);
+  }, [selectedNode, viewNodes, id]);
+
   const handleReset = () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (window as any).__graphResetZoom?.();
@@ -469,17 +512,17 @@ export default function GraphPage() {
 
   return (
     <div className="flex flex-col h-screen bg-[#f4f7fb] overflow-hidden">
-      <header className="shrink-0 border-b border-slate-800/80 bg-[#0b1220]/96 backdrop-blur-md z-30">
+      <header className="shrink-0 border-b border-slate-200/90 bg-white/95 backdrop-blur-md z-30 shadow-sm shadow-slate-900/5">
         <div className="mx-auto flex max-w-[1600px] items-center gap-2 px-4 py-2 sm:gap-3 md:px-5 md:py-2.5">
           <button
             type="button"
             onClick={() => navigate("/")}
             className="flex shrink-0 items-center gap-2 cursor-pointer"
           >
-            <div className="flex size-8 items-center justify-center rounded-lg bg-cyan-500/20 border border-cyan-400/30">
-              <Network className="size-4 text-cyan-300" />
+            <div className="flex size-8 items-center justify-center rounded-lg bg-sky-50 border border-sky-200">
+              <Network className="size-4 text-sky-600" />
             </div>
-            <span className="hidden sm:inline font-serif font-semibold text-white tracking-tight">
+            <span className="hidden sm:inline font-serif font-semibold text-slate-900 tracking-tight">
               Wikigraph
             </span>
           </button>
@@ -487,7 +530,7 @@ export default function GraphPage() {
           <button
             type="button"
             onClick={() => navigate(entityPath(id!, rootEntity?.label))}
-            className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer"
+            className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-800 transition-colors cursor-pointer"
             title="Back to overview"
           >
             <ArrowLeft className="size-4" />
@@ -505,11 +548,11 @@ export default function GraphPage() {
           {id && rootEntity && (
             <div className="ml-auto flex shrink-0 items-center gap-0.5 sm:gap-1">
               <div
-                className="inline-flex items-center rounded-lg border border-cyan-400/40 bg-cyan-500/15 p-0.5"
+                className="inline-flex items-center rounded-lg border border-sky-200 bg-sky-50 p-0.5"
                 title="Knowledge graph"
               >
-                <span className="inline-flex items-center gap-1.5 pl-2 pr-2.5 py-1 text-[11px] sm:text-[12px] font-semibold text-white bg-white/15 rounded-md select-none">
-                  <Network className="size-3.5 text-teal-300 shrink-0" />
+                <span className="inline-flex items-center gap-1.5 pl-2 pr-2.5 py-1 text-[11px] sm:text-[12px] font-semibold text-sky-800 bg-white rounded-md select-none shadow-sm">
+                  <Network className="size-3.5 text-sky-600 shrink-0" />
                   Graph
                 </span>
               </div>
@@ -517,11 +560,11 @@ export default function GraphPage() {
               {rootEntity.type === "person" && (
                 <button
                   type="button"
-                  onClick={() => navigate(`/family-tree/${id}`)}
-                  className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 sm:px-2.5 py-1.5 text-[11px] sm:text-[12px] font-medium text-slate-300 hover:bg-white/[0.08] hover:text-white transition-colors cursor-pointer"
+                  onClick={() => navigate(familyTreePath(id!, rootEntity?.label))}
+                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 sm:px-2.5 py-1.5 text-[11px] sm:text-[12px] font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-colors cursor-pointer"
                   title="Family tree"
                 >
-                  <GitBranch className="size-3.5 text-teal-300 shrink-0" />
+                  <GitBranch className="size-3.5 text-sky-600 shrink-0" />
                   <span className="hidden lg:inline">Family</span>
                 </button>
               )}
@@ -529,21 +572,21 @@ export default function GraphPage() {
               <button
                 type="button"
                 onClick={() => navigate(`/compare/${id}`)}
-                className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 sm:px-2.5 py-1.5 text-[11px] sm:text-[12px] font-medium text-slate-300 hover:bg-white/[0.08] hover:text-white transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 sm:px-2.5 py-1.5 text-[11px] sm:text-[12px] font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900 transition-colors cursor-pointer"
                 title="Compare"
               >
-                <GitCompareArrows className="size-3.5 text-teal-300 shrink-0" />
+                <GitCompareArrows className="size-3.5 text-sky-600 shrink-0" />
                 <span className="hidden lg:inline">Compare</span>
               </button>
 
-              <span className="hidden sm:block w-px self-stretch my-1.5 mx-0.5 bg-white/15" />
+              <span className="hidden sm:block w-px self-stretch my-1.5 mx-0.5 bg-slate-200" />
 
               {depth === 1 && collapsedHop1HubCount > 0 && (
                 <button
                   type="button"
                   onClick={expandAllHop1Relations}
                   disabled={busy}
-                  className="inline-flex items-center gap-1 rounded-lg border border-cyan-400/30 bg-cyan-500/10 px-2 py-1.5 text-[11px] font-semibold text-cyan-100 hover:bg-cyan-500/20 transition-colors cursor-pointer disabled:opacity-40"
+                  className="inline-flex items-center gap-1 rounded-lg border border-sky-200 bg-sky-50 px-2 py-1.5 text-[11px] font-semibold text-sky-800 hover:bg-sky-100 transition-colors cursor-pointer disabled:opacity-40"
                   title="Expand all hop-1 relation hubs"
                 >
                   <Expand className="size-3.5" />
@@ -559,8 +602,8 @@ export default function GraphPage() {
                   disabled={busy || relationOptions.length === 0}
                   className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] font-semibold transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
                     relationsOpen || hiddenRelations.size > 0
-                      ? "border-cyan-400/40 bg-cyan-500/15 text-cyan-100"
-                      : "border-white/10 bg-white/[0.04] text-slate-300 hover:text-white hover:bg-white/[0.08]"
+                      ? "border-sky-300 bg-sky-50 text-sky-800"
+                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900"
                   }`}
                   title="Show or hide relation types"
                 >
@@ -574,7 +617,7 @@ export default function GraphPage() {
                 </button>
 
                 {relationsOpen && (
-                  <div className="absolute right-0 top-full z-30 mt-1.5 w-64 max-h-72 overflow-y-auto rounded-xl border border-slate-700 bg-[#0f172a] shadow-xl p-2">
+                  <div className="absolute right-0 top-full z-30 mt-1.5 w-64 max-h-72 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-xl p-2">
                     <div className="flex items-center justify-between px-2 py-1 mb-1">
                       <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
                         Relation types
@@ -582,21 +625,21 @@ export default function GraphPage() {
                       <div className="flex gap-2">
                         <button
                           type="button"
-                          className="text-[10px] text-cyan-300 hover:underline cursor-pointer"
+                          className="text-[10px] text-sky-600 hover:underline cursor-pointer"
                           onClick={() => setHiddenRelations(new Set())}
                         >
                           All
                         </button>
                         <button
                           type="button"
-                          className="text-[10px] text-cyan-300 hover:underline cursor-pointer"
+                          className="text-[10px] text-sky-600 hover:underline cursor-pointer"
                           onClick={() => setHiddenRelations(defaultHiddenRelations(edges, id!))}
                         >
                           Important
                         </button>
                         <button
                           type="button"
-                          className="text-[10px] text-slate-400 hover:text-white hover:underline cursor-pointer"
+                          className="text-[10px] text-slate-400 hover:text-slate-700 hover:underline cursor-pointer"
                           onClick={() =>
                             setHiddenRelations(new Set(relationOptions.map((r) => r.propertyId)))
                           }
@@ -611,17 +654,17 @@ export default function GraphPage() {
                         const important = isImportantRelation(rel.propertyId);
                         return (
                           <li key={rel.propertyId}>
-                            <label className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs cursor-pointer hover:bg-white/5">
+                            <label className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs cursor-pointer hover:bg-slate-50">
                               <input
                                 type="checkbox"
                                 checked={checked}
                                 onChange={() => toggleRelation(rel.propertyId)}
-                                className="size-3.5 accent-cyan-400 cursor-pointer"
+                                className="size-3.5 accent-sky-600 cursor-pointer"
                               />
-                              <span className={`flex-1 truncate ${important ? "text-slate-100 font-medium" : "text-slate-400"}`}>
+                              <span className={`flex-1 truncate ${important ? "text-slate-800 font-medium" : "text-slate-500"}`}>
                                 {rel.label}
                               </span>
-                              <span className="font-mono text-[10px] text-slate-500">{rel.count}</span>
+                              <span className="font-mono text-[10px] text-slate-400">{rel.count}</span>
                             </label>
                           </li>
                         );
@@ -636,8 +679,8 @@ export default function GraphPage() {
                 onClick={() => setShowLegend((v) => !v)}
                 className={`flex size-8 items-center justify-center rounded-lg border transition-colors cursor-pointer ${
                   showLegend
-                    ? "border-cyan-400/40 bg-cyan-500/15 text-cyan-200"
-                    : "border-white/10 text-slate-400 hover:text-white"
+                    ? "border-sky-300 bg-sky-50 text-sky-700"
+                    : "border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-800"
                 }`}
                 title="Legend"
               >
@@ -655,14 +698,14 @@ export default function GraphPage() {
                 toast.success("Link copied!");
               });
             }}
-            className={`flex size-8 shrink-0 items-center justify-center rounded-lg border border-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer ${!(id && rootEntity) ? "ml-auto" : ""}`}
+            className={`flex size-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-800 transition-colors cursor-pointer ${!(id && rootEntity) ? "ml-auto" : ""}`}
             title="Copy link"
           >
-            {copied ? <Check className="size-4 text-emerald-400" /> : <Share2 className="size-4" />}
+            {copied ? <Check className="size-4 text-emerald-500" /> : <Share2 className="size-4" />}
           </button>
         </div>
 
-        <div className="md:hidden border-t border-white/10 px-4 py-2">
+        <div className="md:hidden border-t border-slate-100 px-4 py-2">
           <div className="flex min-w-0 items-center gap-1.5">
             <div className="min-w-0 flex-1">
               <SearchBox size="md" />
@@ -678,7 +721,7 @@ export default function GraphPage() {
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            className="border-t border-white/10 px-5 py-2.5 bg-[#0b1220]"
+            className="border-t border-slate-100 px-5 py-2.5 bg-slate-50/80"
           >
             <GraphLegend />
           </motion.div>
@@ -740,6 +783,18 @@ export default function GraphPage() {
           </div>
         )}
 
+        {/* Filmography SPARQL — non-blocking enrich */}
+        {!depthRefreshing && creativeFetching && nodes.length > 0 && (
+          <div className="absolute top-3 left-1/2 z-30 -translate-x-1/2 pointer-events-none">
+            <div className="flex items-center gap-2.5 rounded-full border border-teal-500/25 bg-card/95 px-4 py-2 shadow-lg shadow-black/10 backdrop-blur-md">
+              <div className="size-4 rounded-full border-2 border-teal-500 border-t-transparent animate-spin" />
+              <span className="text-xs font-medium text-foreground whitespace-nowrap">
+                Loading filmography…
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* Empty state */}
         {!graphLoading && !depthRefreshing && nodes.length === 0 && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center px-4">
@@ -761,6 +816,8 @@ export default function GraphPage() {
               expandingIds={expandingIds}
               arrangeMode={arrangeMode}
               arrangeNonce={arrangeNonce}
+              rootThumbnail={rootEntity?.thumbnail}
+              rootSubtitle={rootEntity?.description}
             />
           </div>
         )}
@@ -774,6 +831,7 @@ export default function GraphPage() {
           rootId={id}
           rootLabel={rootEntity?.label}
           linkedLabels={selectedHubLinkedLabels}
+          relationCounts={selectedRelationCounts}
         />
 
         {nodes.length > 0 && (
@@ -801,10 +859,12 @@ export default function GraphPage() {
                 <Plus className="size-3.5" />
               </button>
             </div>
-            <div className="rounded-xl border border-slate-200/80 bg-white/90 px-3 py-1.5 text-[10px] text-slate-500 shadow-sm">
-              <span className="font-mono text-slate-800">{nodes.length}</span> nodes
+            <div className="rounded-xl border border-slate-200/80 bg-white/95 px-3 py-1.5 text-[10px] text-slate-500 shadow-sm backdrop-blur-sm">
+              <span className="font-mono text-slate-800">{viewNodes.length}</span> nodes
               <span className="mx-1.5 text-slate-300">·</span>
-              <span className="font-mono text-slate-800">{edges.length}</span> edges
+              <span className="font-mono text-slate-800">{viewEdges.length}</span> edges
+              <span className="mx-1.5 text-slate-300">·</span>
+              <span className="font-mono text-slate-800">{depth}</span> hop{depth === 1 ? "" : "s"}
             </div>
           </div>
         )}
@@ -813,7 +873,10 @@ export default function GraphPage() {
           <div className="absolute bottom-4 right-4 z-10 flex flex-col gap-1.5 rounded-xl border border-slate-200/80 bg-white/95 p-1.5 shadow-sm backdrop-blur-sm">
             <button
               type="button"
-              onClick={() => (window as unknown as Record<string, unknown>).__graphZoomBy?.(1.25)}
+              onClick={() => {
+                const fn = (window as unknown as { __graphZoomBy?: (f: number) => void }).__graphZoomBy;
+                fn?.(1.25);
+              }}
               className="flex size-9 items-center justify-center rounded-lg border border-slate-200/80 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900 shadow-sm transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
               title="Zoom in"
             >
@@ -821,7 +884,10 @@ export default function GraphPage() {
             </button>
             <button
               type="button"
-              onClick={() => (window as unknown as Record<string, unknown>).__graphZoomBy?.(0.8)}
+              onClick={() => {
+                const fn = (window as unknown as { __graphZoomBy?: (f: number) => void }).__graphZoomBy;
+                fn?.(0.8);
+              }}
               className="flex size-9 items-center justify-center rounded-lg border border-slate-200/80 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900 shadow-sm transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
               title="Zoom out"
             >
@@ -849,17 +915,17 @@ export default function GraphPage() {
 
         {/* Person only: optional filter for family / life hubs (collapsed by default) */}
         {nodes.length > 0 && isPersonRoot && lifeFamilyGroups.length > 0 && (
-          <div className="absolute top-4 left-4 z-10 w-[min(16.5rem,calc(100vw-2rem))] rounded-xl border border-border/70 bg-card/95 backdrop-blur-md shadow-lg overflow-hidden">
+          <div className="absolute top-4 left-4 z-10 w-[min(16.5rem,calc(100vw-2rem))] rounded-xl border border-slate-200/90 bg-white/95 backdrop-blur-md shadow-lg overflow-hidden">
             <button
               type="button"
               onClick={() => setLifeFamilyOpen((o) => !o)}
-              className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left hover:bg-muted/40 cursor-pointer"
+              className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left hover:bg-slate-50 cursor-pointer"
             >
               <span>
-                <span className="block text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                <span className="block text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-400">
                   Family & life
                 </span>
-                <span className="mt-0.5 block text-[11px] text-muted-foreground/80 leading-snug">
+                <span className="mt-0.5 block text-[11px] text-slate-500 leading-snug">
                   {lifeFamilyOpen
                     ? "Check a group to show it on the graph"
                     : "Unselected by default · open to enable"}
@@ -867,13 +933,13 @@ export default function GraphPage() {
               </span>
               <ChevronDown
                 className={cn(
-                  "size-4 shrink-0 text-muted-foreground transition-transform",
+                  "size-4 shrink-0 text-slate-400 transition-transform",
                   lifeFamilyOpen && "rotate-180",
                 )}
               />
             </button>
             {lifeFamilyOpen && (
-              <ul className="space-y-1 border-t border-border/50 px-3 pb-3 pt-2">
+              <ul className="space-y-1 border-t border-slate-100 px-3 pb-3 pt-2">
                 {lifeFamilyGroups.map((g) => {
                   const enabled = g.propertyIds.every((pid) => !hiddenRelations.has(pid));
                   const partial =
@@ -881,7 +947,7 @@ export default function GraphPage() {
                     g.propertyIds.some((pid) => !hiddenRelations.has(pid));
                   return (
                     <li key={g.id}>
-                      <label className="flex items-start gap-2 rounded-lg px-1.5 py-1.5 text-xs cursor-pointer hover:bg-muted/50">
+                      <label className="flex items-start gap-2 rounded-lg px-1.5 py-1.5 text-xs cursor-pointer hover:bg-slate-50">
                         <input
                           type="checkbox"
                           checked={enabled}
@@ -889,13 +955,13 @@ export default function GraphPage() {
                             if (el) el.indeterminate = partial;
                           }}
                           onChange={() => toggleLifeFamilyGroup(g.propertyIds, !enabled)}
-                          className="mt-0.5 size-3.5 accent-primary cursor-pointer shrink-0"
+                          className="mt-0.5 size-3.5 accent-sky-600 cursor-pointer shrink-0"
                         />
                         <span className="min-w-0">
-                          <span className="block font-medium text-foreground leading-tight">
+                          <span className="block font-medium text-slate-800 leading-tight">
                             {g.label}
                           </span>
-                          <span className="block text-[10px] text-muted-foreground leading-tight">
+                          <span className="block text-[10px] text-slate-400 leading-tight">
                             {g.hint}
                           </span>
                         </span>
@@ -908,9 +974,8 @@ export default function GraphPage() {
           </div>
         )}
 
-        {/* Desktop hint */}
-        <div className="absolute bottom-4 right-4 rounded-lg border border-border/40 bg-card/70 backdrop-blur-sm px-3 py-1.5 text-[10px] text-muted-foreground/60 hidden sm:block pointer-events-none max-w-[14rem] text-right">
-          Hover Expand · Click for details · Double-click to expand
+        <div className="absolute bottom-16 left-4 z-10 hidden sm:block pointer-events-none max-w-[16rem] rounded-lg border border-slate-200/70 bg-white/80 px-3 py-1.5 text-[10px] text-slate-500 shadow-sm backdrop-blur-sm">
+          Click a node for details · Double-click or Expand to grow the graph
         </div>
       </div>
     </div>

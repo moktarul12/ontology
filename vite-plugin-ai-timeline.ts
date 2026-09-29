@@ -14,7 +14,7 @@ import { loadEnv } from "vite";
 import { cacheGet, cacheSet, cacheStats, hashKey } from "./src/server/responseCache";
 
 /** Bump when prompts / response shape change to invalidate cached AI JSON. */
-const CACHE_PROMPT_VERSION = "ai-v9-cinematic-hero";
+const CACHE_PROMPT_VERSION = "ai-v14-org-retail";
 
 type ProviderId = "groq" | "gemini" | "openai";
 
@@ -150,8 +150,9 @@ Rules:
 - highlights: concrete items from sectionDigest titles/excerpts (song/film/award names when present).
 - No markdown. Prefer complete valid JSON.`;
 
-const COMPARE_SYSTEM_PROMPT = `You write a vivid, fair side-by-side comparison of two Wikidata entities for a knowledge explorer.
-Use ONLY the provided digests (labels, descriptions, leads, structured facts). Do NOT invent dates, awards, works, relatives, or places.
+const COMPARE_SYSTEM_PROMPT = `You write a vivid, magazine-style side-by-side comparison of two Wikidata entities for a knowledge explorer.
+Use the digests (labels, descriptions, leads, craftFocus, era, awardCount, career stats, org vitals, structured facts) and the local contrasts as a starting point.
+Do NOT invent dates, award titles, works, relatives, collab counts, revenue, headcount, or places absent from the sources. You MAY rephrase and choose creative attribute labels.
 
 Return ONLY JSON:
 {
@@ -159,18 +160,37 @@ Return ONLY JSON:
   "verdict": string,
   "overlap": string[],
   "contrasts": [{ "label": string, "left": string, "right": string, "note"?: string }],
+  "differences"?: string[],
+  "leadership"?: string[],
+  "leftMotto"?: string,
+  "rightMotto"?: string,
   "leftAngle": string,
   "rightAngle": string,
   "shareBlurb": string
 }
 
 Rules:
-- headline: punchy 6–14 word title for the matchup.
-- verdict: 3–5 sentences — who they are relative to each other, eras, significance; balanced, not a "winner".
-- overlap: 3–6 short shared traits (occupation, era, region, style) grounded in facts.
-- contrasts: 4–8 rows; label like Born / Era / Craft / Legacy; left/right short values; optional one-line note.
-- leftAngle / rightAngle: 1–2 sentences each on what makes that person/entity distinctive.
-- shareBlurb: 1–2 casual sentences suitable for WhatsApp/Facebook (no hashtags spam; may include both names).
+- headline: punchy 6–14 word title (e.g. "Two playback eras, one golden mic" or "Two retail giants, different aisles").
+- verdict: 3–5 sentences — relative eras, craft or industry, career/scale depth, cultural/market footprint; balanced, never crown a "winner".
+- overlap: 4–7 short shared traits grounded in facts (craft, region, language, honours, industry, listing, collabs).
+- contrasts: 8–12 rows with CREATIVE labels tailored to the pair.
+  Persons (especially singers): prefer when career data exists —
+  Craft focus · Era · First singing · Last singing · Career span · Recorded works · With Lata · Top music director · Screen credits · House / base · Assets · Earnings · Born · Roots · Signature works · Honours
+  Keep House/Assets/Earnings only when a side has real values; otherwise omit those rows.
+  Skip empty Spouse/Education unless both sides have real data.
+  Organizations / companies: prefer Founded · Headquarters · Retail category / Industry · Business model · Total stores · Employees · Annual revenue · Key products · Technology focus · Area served · Chief executive · Stock exchange · Website.
+  Prefer digest.org vitals (stores/employees/revenue from Wikipedia infobox + Wikidata) — do not invent store counts or FY figures.
+  For two retailers: lean into aisle focus, store networks, omnichannel, and product mix.
+  Also return optional differences[] (3 short ↔ contrasts) and leadership[] (2–4 grounded bullets).
+  Optional leftMotto / rightMotto only when digest.org.motto or facts have a real slogan.
+  For two film actors / actresses: prefer Craft focus · Era · Stage vibe · Screen credits · Signature works · Honours · Born · Roots · Languages.
+  Lead with roles, eras, and Filmfare/honours — not spouse or education unless both sides have distinctive family-film lineage worth one row.
+  Never invent Filmfare win counts; if unsure, omit the numeric Filmfare row and keep Honours qualitative.
+  Do not add singing / Lata / music-director rows unless both are singers.
+  left/right: short punchy values (not walls of text); optional witty one-line note.
+- leftAngle / rightAngle: 1–2 sentences on what makes each distinctive.
+- shareBlurb: 1–2 casual shareable sentences (no hashtag spam).
+- For two Indian playback singers: lean into first/last songs, music directors, Lata collabs, and legacy — not marital status.
 - No markdown. Prefer complete valid JSON.`;
 
 const OPENAI_SCHEMA = {
@@ -1172,9 +1192,13 @@ function compactEntitySide(side: Record<string, unknown> | undefined) {
     description: side.description,
     type: side.type,
     lifespan: side.lifespan ?? null,
-    wikipediaLead: String(side.wikipediaLead ?? "").slice(0, 700),
+    craftFocus: side.craftFocus ?? null,
+    era: side.era ?? null,
+    bornYear: side.bornYear ?? null,
+    awardCount: side.awardCount ?? null,
+    wikipediaLead: String(side.wikipediaLead ?? "").slice(0, 900),
     wikiRevisedAt: side.wikiRevisedAt ?? null,
-    facts: Array.isArray(side.facts) ? side.facts.slice(0, 14) : [],
+    facts: Array.isArray(side.facts) ? side.facts.slice(0, 16) : [],
   };
 }
 

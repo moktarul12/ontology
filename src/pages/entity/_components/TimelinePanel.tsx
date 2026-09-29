@@ -14,7 +14,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@/lib/utils.ts";
-import { entityPath } from "@/lib/entityPath.ts";
+import { entityPath, graphPath, familyTreePath } from "@/lib/entityPath.ts";
 import {
   buildLocalNarrative,
   expandMomentDetail,
@@ -369,7 +369,7 @@ function MomentDepthFlyout({
           )}
           <button
             type="button"
-            onClick={() => onNavigate(`/graph/${entity.id}`)}
+            onClick={() => onNavigate(graphPath(entity.id, entity.label))}
             className="inline-flex items-center gap-1 rounded-lg border border-white/15 px-3 py-2 text-[12px] text-slate-200 hover:bg-white/5 cursor-pointer"
           >
             Knowledge graph
@@ -377,7 +377,7 @@ function MomentDepthFlyout({
           {entity.type === "person" && (
             <button
               type="button"
-              onClick={() => onNavigate(`/family-tree/${entity.id}`)}
+              onClick={() => onNavigate(familyTreePath(entity.id, entity.label))}
               className="inline-flex items-center gap-1 rounded-lg border border-white/15 px-3 py-2 text-[12px] text-slate-200 hover:bg-white/5 cursor-pointer"
             >
               Family tree
@@ -453,12 +453,12 @@ export default function TimelinePanel({
     if (entity.type === "person") {
       chips.push({
         label: `${entity.label}'s family tree`,
-        action: () => onNavigate(`/family-tree/${entity.id}`),
+        action: () => onNavigate(familyTreePath(entity.id, entity.label)),
       });
     }
     chips.push({
       label: `Knowledge graph for ${entity.label}`,
-      action: () => onNavigate(`/graph/${entity.id}`),
+      action: () => onNavigate(graphPath(entity.id, entity.label)),
     });
     chips.push({
       label: `Compare ${entity.label}`,

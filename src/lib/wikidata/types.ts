@@ -21,6 +21,8 @@ export type FactValue = {
   label: string;
   id?: string;
   url?: string;
+  /** Calendar year when known (e.g. award P585 / start time). */
+  year?: number;
   qualifiers?: Array<{ property: string; propertyId: string; label: string; id?: string }>;
 };
 
@@ -155,6 +157,8 @@ export type WikipediaArticle = {
   infobox?: WikiInfoboxRow[];
   /** Hierarchical TOC for left Contents / scroll navigation */
   toc?: WikiTocItem[];
+  /** Hatnote / main-article targets — fetched lazily on Overview */
+  mainArticleHints?: Array<{ parentSection: string; parentSectionId: string; title: string }>;
   /** Fetched "Main article" pages (Discography, Filmography, Awards, …) */
   mainArticles?: WikiMainArticle[];
 };

@@ -2,6 +2,7 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { DefaultProviders } from "./components/providers/default.tsx";
 import Index from "./pages/Index.tsx";
 import EntityPage from "./pages/entity/page.tsx";
+import NewEntityPage from "./pages/new-entity/page.tsx";
 import GraphPage from "./pages/graph/page.tsx";
 import FamilyTreePage from "./pages/family-tree/page.tsx";
 import ComparePage from "./pages/compare/page.tsx";
@@ -14,6 +15,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Index />} />
           <Route path="/entity/:id" element={<EntityPage />} />
+          <Route path="/new/entity/:id" element={<NewEntityPage />} />
           <Route path="/graph/:id" element={<GraphPage />} />
           <Route path="/family-tree/:id" element={<FamilyTreePage />} />
           <Route path="/compare/:id" element={<ComparePage />} />

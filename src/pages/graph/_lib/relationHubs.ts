@@ -290,6 +290,45 @@ export function hubIdFor(ownerId: string, propertyId: string): string {
   return `khub:${ownerId}:${propertyId}`;
 }
 
+/** Acting / performance occupations — folded into the Actor filmography hub. */
+export const ACTING_OCCUPATION_QIDS = new Set([
+  "Q33999", "Q10800557", "Q2259451", "Q2405480", "Q10798782", "Q4610556",
+  "Q211236", "Q713200", "Q11481802",
+]);
+
+/**
+ * When filmography (P161) exists, drop redundant "actor"/"actress" occupation
+ * leaves so Occupation and Actor are not two competing arms.
+ */
+export function foldActingOccupationEdges(
+  edges: GraphEdge[],
+  nodes: GraphNode[],
+  rootId: string,
+): GraphEdge[] {
+  const hasActorWorks = edges.some((e) => {
+    if (e.propertyId !== "P161" && e.propertyId !== "CR_FILM") return false;
+    const s = idOf(e.source);
+    const t = idOf(e.target);
+    return s === rootId || t === rootId;
+  });
+  if (!hasActorWorks) return edges;
+
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  return edges.filter((e) => {
+    if (e.propertyId !== "P106") return true;
+    const s = idOf(e.source);
+    const t = idOf(e.target);
+    const other = s === rootId ? t : t === rootId ? s : null;
+    if (!other) return true;
+    if (ACTING_OCCUPATION_QIDS.has(other)) return false;
+    const label = byId.get(other)?.label ?? "";
+    if (/\b(actor|actress)\b/i.test(label) && !/\b(voice|child|radio)\b/i.test(label)) {
+      return false;
+    }
+    return true;
+  });
+}
+
 export function compareHubProperties(a: string, b: string): number {
   const ra = HUB_SORT_RANK[a] ?? 900;
   const rb = HUB_SORT_RANK[b] ?? 900;
@@ -334,10 +373,12 @@ export function toKnowledgeHubs(
     return pruneConnectedToRoot(outNodes, outEdges, rootId ?? "");
   }
 
+  const foldedEdges = foldActingOccupationEdges(edges, entityNodes, rootId);
+
   // propertyId → edges touching root (other endpoint is the leaf)
   const byProp = new Map<string, Array<{ edge: GraphEdge; otherId: string }>>();
 
-  for (const e of edges) {
+  for (const e of foldedEdges) {
     if (HIDDEN_GRAPH_PROPERTIES.has(e.propertyId)) {
       consumed.add(e.id);
       continue;

@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "motion/react";
@@ -47,6 +47,12 @@ export type HeroExploreItem = {
   icon: ComponentType<{ className?: string }>;
   action: () => void;
   selected?: boolean;
+  /** Rich thumbnail card (graph / family) so the destination is obvious */
+  preview?: {
+    visual: "graph" | "family";
+    image?: string;
+    subtitle?: string;
+  };
 };
 
 type Props = {
@@ -242,6 +248,13 @@ export function EntityHero({
   );
 
   const localAbout = useMemo(() => buildLocalSectionBrief("overview", entity), [entity]);
+  const [aiReady, setAiReady] = useState(false);
+  useEffect(() => {
+    // Local copy first — defer AI POSTs so Timeline / Wikidata win the network.
+    const t = window.setTimeout(() => setAiReady(true), 1200);
+    return () => window.clearTimeout(t);
+  }, [entity.id]);
+
   const { data: aboutBrief } = useQuery({
     queryKey: [
       "section-enrich",
@@ -252,6 +265,7 @@ export function EntityHero({
     ],
     queryFn: () => fetchSectionEnrichment("overview", entity),
     placeholderData: localAbout,
+    enabled: aiReady,
     staleTime: 1000 * 60 * 60,
     retry: 0,
   });
@@ -297,6 +311,7 @@ export function EntityHero({
     ],
     queryFn: () => fetchGlanceSnapshot(entity),
     placeholderData: localGlance,
+    enabled: aiReady,
     staleTime: 1000 * 60 * 60,
     retry: 0,
   });
@@ -618,16 +633,64 @@ export function EntityHero({
               "0 -12px 28px rgb(0 0 0 / 0.38), 0 12px 28px rgb(0 0 0 / 0.32), inset 0 1px 0 rgb(255 255 255 / 0.08), inset 0 -1px 0 rgb(0 0 0 / 0.35)",
           }}
         >
-          <div className="mx-auto flex max-w-[1600px] gap-2 overflow-x-auto px-4 py-2.5 sm:px-5 md:px-7">
+          <div className="mx-auto flex max-w-[1600px] flex-wrap items-stretch gap-2 px-4 py-2.5 sm:px-5 md:gap-3 md:px-7">
             {explore.map((item) => {
               const ItemIcon = item.icon;
+              if (item.preview) {
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={item.action}
+                    className="group relative flex min-w-[10.5rem] max-w-[14rem] flex-1 cursor-pointer overflow-hidden rounded-xl border border-white/12 bg-white/[0.05] text-left transition-colors hover:border-teal-400/35 hover:bg-white/[0.08] sm:min-w-[12rem]"
+                  >
+                    <div className="relative h-[4.25rem] w-[4.25rem] shrink-0 overflow-hidden bg-slate-800/80 sm:h-[4.75rem] sm:w-[4.75rem]">
+                      {item.preview.image ? (
+                        <img
+                          src={item.preview.image}
+                          alt=""
+                          className="h-full w-full object-cover object-top opacity-90 transition-transform duration-500 group-hover:scale-105"
+                        />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center">
+                          <ItemIcon className="size-6 text-teal-300/80" />
+                        </div>
+                      )}
+                      <div
+                        className="pointer-events-none absolute inset-0 opacity-70"
+                        style={{
+                          background:
+                            item.preview.visual === "family"
+                              ? "radial-gradient(circle at 30% 40%, transparent 28%, rgb(15 118 110 / 0.45) 29%, transparent 32%), radial-gradient(circle at 70% 55%, transparent 22%, rgb(45 212 191 / 0.35) 23%, transparent 26%)"
+                              : "linear-gradient(135deg, transparent 40%, rgb(45 212 191 / 0.25)), repeating-linear-gradient(90deg, transparent, transparent 6px, rgb(255 255 255 / 0.06) 6px, rgb(255 255 255 / 0.06) 7px)",
+                        }}
+                        aria-hidden
+                      />
+                    </div>
+                    <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5 px-3 py-2">
+                      <span className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-white">
+                        <ItemIcon className="size-3.5 shrink-0 text-teal-300" />
+                        {item.label}
+                      </span>
+                      {item.preview.subtitle && (
+                        <span className="text-[11px] leading-snug text-slate-400">
+                          {item.preview.subtitle}
+                        </span>
+                      )}
+                      <span className="mt-0.5 text-[10px] font-medium uppercase tracking-wider text-teal-400/90 opacity-0 transition-opacity group-hover:opacity-100">
+                        Open →
+                      </span>
+                    </div>
+                  </button>
+                );
+              }
               return (
                 <button
                   key={item.id}
                   type="button"
                   onClick={item.action}
                   className={cn(
-                    "inline-flex shrink-0 items-center gap-1.5 rounded-full px-4 py-2 text-[13px] font-semibold cursor-pointer transition-colors",
+                    "inline-flex shrink-0 items-center gap-1.5 self-center rounded-full px-4 py-2 text-[13px] font-semibold cursor-pointer transition-colors",
                     item.selected
                       ? "bg-white text-slate-900 shadow-md shadow-black/20"
                       : "bg-white/[0.06] text-white/85 hover:bg-white/10",

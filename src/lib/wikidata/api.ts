@@ -273,28 +273,52 @@ function guessTypeFromDescription(desc = ""): EntityType {
 async function fetchThumbnails(
   ids: string[],
   signal?: AbortSignal,
+  width = 120,
 ): Promise<Record<string, string>> {
+  const unique = [...new Set(ids.filter((id) => /^Q\d+$/.test(id)))];
+  if (!unique.length) return {};
+  const out: Record<string, string> = {};
   try {
-    const params = new URLSearchParams({
-      action: "wbgetentities",
-      ids: ids.slice(0, 50).join("|"),
-      props: "claims",
-      format: "json",
-      origin: "*",
-    });
-    const res = await fetch(`${WIKIDATA_API}?${params}`, { signal });
-    if (!res.ok) return {};
-    const data = await res.json() as { entities: Record<string, WikidataEntity> };
-    const out: Record<string, string> = {};
-    for (const [id, ent] of Object.entries(data.entities)) {
-      const claims = ent.claims?.["P18"] as ClaimSnakValue[] | undefined;
-      const filename = claims?.[0]?.mainsnak?.datavalue?.value;
-      if (typeof filename === "string") out[id] = getCommonsThumbUrl(filename, 120);
+    for (let i = 0; i < unique.length; i += 50) {
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      const chunk = unique.slice(i, i + 50);
+      const params = new URLSearchParams({
+        action: "wbgetentities",
+        ids: chunk.join("|"),
+        props: "claims",
+        format: "json",
+        origin: "*",
+      });
+      const res = await fetch(`${WIKIDATA_API}?${params}`, { signal });
+      if (!res.ok) continue;
+      const data = await res.json() as { entities: Record<string, WikidataEntity> };
+      for (const [id, ent] of Object.entries(data.entities)) {
+        const claims = ent.claims?.["P18"] as ClaimSnakValue[] | undefined;
+        const filename = claims?.[0]?.mainsnak?.datavalue?.value;
+        if (typeof filename === "string") out[id] = getCommonsThumbUrl(filename, width);
+      }
     }
     return out;
-  } catch {
-    return {};
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") throw err;
+    return out;
   }
+}
+
+/** Public batch portrait/poster URLs — Commons P18 first, then Wikipedia. */
+export async function fetchEntityThumbnails(
+  ids: string[],
+  opts?: { width?: number; signal?: AbortSignal },
+): Promise<Record<string, string>> {
+  const out = await fetchThumbnails(ids, opts?.signal, opts?.width ?? 160);
+  const missing = ids.filter((id) => /^Q\d+$/.test(id) && !out[id]);
+  if (missing.length) {
+    const wiki = await fetchWikipediaThumbsForEntities(missing);
+    for (const [id, url] of Object.entries(wiki)) {
+      if (!out[id]) out[id] = url;
+    }
+  }
+  return out;
 }
 
 type SearchEntityMeta = { type: EntityType; p31: string[] };
@@ -345,7 +369,17 @@ async function fetchEntityTypes(
 
 // ─── Full entity summary (360°) ──────────────────────────────────────────────
 
-export async function fetchEntitySummary(id: string): Promise<EntitySummary> {
+export type FetchEntityOptions = {
+  /** Full related Wikipedia pages (Discography, …). Default false — load on Overview. */
+  includeMainArticles?: boolean;
+  /** Other-language extracts. Default false — load when Languages tab opens. */
+  includeOtherLanguages?: boolean;
+};
+
+export async function fetchEntitySummary(
+  id: string,
+  opts: FetchEntityOptions = {},
+): Promise<EntitySummary> {
   const params = new URLSearchParams({
     action: "wbgetentities",
     ids: id,
@@ -380,7 +414,12 @@ export async function fetchEntitySummary(id: string): Promise<EntitySummary> {
   const [propertyLabels, qidMeta, wikipedia] = await Promise.all([
     resolvePropertyLabels(propertyIds),
     resolveEntityMeta([...qidsToResolve]),
-    sitelink ? fetchWikipediaArticle(sitelink.title) : Promise.resolve(undefined),
+    sitelink
+      ? fetchWikipediaArticle(sitelink.title, {
+          includeMainArticles: opts.includeMainArticles === true,
+          includeOtherLanguages: opts.includeOtherLanguages === true,
+        })
+      : Promise.resolve(undefined),
   ]);
 
   // Instance of
@@ -491,6 +530,8 @@ export async function fetchEntitySummary(id: string): Promise<EntitySummary> {
         }
       }
       if (qualifiers.length) parsed.qualifiers = qualifiers;
+      const year = yearFromClaimQualifiers(claim, qualifiers);
+      if (year != null) parsed.year = year;
       values.push(parsed);
 
       if (parsed.id && !relatedSeen.has(parsed.id) && related.length < 48) {
@@ -563,6 +604,148 @@ export async function fetchEntitySummary(id: string): Promise<EntitySummary> {
   };
 }
 
+/** Props shown in graph/family node cards — keep this list short. */
+const LITE_FACT_PROPS = [
+  "P31", "P106", "P569", "P570", "P19", "P20", "P27", "P39", "P166", "P69", "P108",
+];
+
+/**
+ * Fast entity card for graph / family chrome + node modal.
+ * Skips full Wikipedia HTML parse and resolving every claim QID.
+ */
+export async function fetchEntityLite(id: string): Promise<EntitySummary> {
+  const params = new URLSearchParams({
+    action: "wbgetentities",
+    ids: id,
+    languages: "en",
+    languagefallback: "1",
+    format: "json",
+    origin: "*",
+    props: "labels|descriptions|claims|sitelinks",
+  });
+
+  const res = await fetch(`${WIKIDATA_API}?${params}`);
+  if (!res.ok) throw new Error(`Failed to fetch entity ${id}`);
+  const data = await res.json() as { entities: Record<string, WikidataEntity> };
+  const entity = data.entities[id];
+  if (!entity) throw new Error(`Entity ${id} not found`);
+
+  const label = pickLabel(entity.labels) ?? id;
+  const description = pickLabel(entity.descriptions) ?? undefined;
+  const claims = entity.claims ?? {};
+  const sitelink = entity.sitelinks?.enwiki;
+  const wikipediaUrl = sitelink
+    ? `https://en.wikipedia.org/wiki/${encodeURIComponent(sitelink.title)}`
+    : undefined;
+
+  const p31 = (claims["P31"] as ClaimSnakValue[] | undefined) ?? [];
+  const instanceOfIds = p31
+    .map((c) => {
+      const val = c.mainsnak?.datavalue?.value;
+      return typeof val === "object" && val && "id" in val ? (val as { id: string }).id : undefined;
+    })
+    .filter((x): x is string => Boolean(x));
+
+  const qidsToResolve = new Set<string>(instanceOfIds);
+  for (const pid of LITE_FACT_PROPS) {
+    const list = claims[pid] as ClaimSnakValue[] | undefined;
+    if (!list) continue;
+    for (const claim of list.slice(0, 6)) addIdFromSnak(claim.mainsnak, qidsToResolve);
+  }
+
+  const [qidMeta, propertyLabels, wikiLead] = await Promise.all([
+    resolveEntityMeta([...qidsToResolve]),
+    resolvePropertyLabels(LITE_FACT_PROPS.filter((p) => claims[p])),
+    sitelink ? fetchWikipediaFullSummary(sitelink.title) : Promise.resolve(undefined),
+  ]);
+
+  const mappedType = detectTypeFromInstanceOf(instanceOfIds);
+  const type =
+    mappedType !== "unknown"
+      ? mappedType
+      : guessTypeFromDescription(`${description ?? ""}`);
+
+  const instanceOf = instanceOfIds.map((qid) => ({
+    id: qid,
+    label: qidMeta[qid]?.label ?? qid,
+  }));
+
+  let thumbnail: string | undefined;
+  for (const pid of ["P18", "P154"] as const) {
+    for (const claim of (claims[pid] as ClaimSnakValue[] | undefined) ?? []) {
+      const filename = claim.mainsnak?.datavalue?.value;
+      if (typeof filename !== "string") continue;
+      if (!isUsableMediaFilename(filename, { allowSvg: pid === "P154" })) continue;
+      thumbnail = getCommonsThumbUrl(filename, 640);
+      break;
+    }
+    if (thumbnail) break;
+  }
+
+  const facts: EntityFact[] = [];
+  for (const pid of LITE_FACT_PROPS) {
+    const claimList = claims[pid] as ClaimSnakValue[] | undefined;
+    if (!claimList?.length) continue;
+    const values: FactValue[] = [];
+    for (const claim of claimList.slice(0, pid === "P166" ? 16 : 6)) {
+      const parsed = parseSnak(claim.mainsnak, qidMeta, propertyLabels);
+      if (!parsed) continue;
+      const qualifiers: FactValue["qualifiers"] = [];
+      for (const [qPid, qList] of Object.entries(claim.qualifiers ?? {})) {
+        for (const q of qList as ClaimSnakValue[]) {
+          const qParsed = parseSnak(q, qidMeta, propertyLabels);
+          if (qParsed) {
+            qualifiers.push({
+              property: propertyLabels[qPid] ?? GRAPH_PROP_LABELS[qPid] ?? qPid,
+              propertyId: qPid,
+              label: qParsed.label,
+              id: qParsed.id,
+            });
+          }
+        }
+      }
+      if (qualifiers.length) parsed.qualifiers = qualifiers;
+      const year = yearFromClaimQualifiers(claim, qualifiers);
+      if (year != null) parsed.year = year;
+      values.push(parsed);
+    }
+    if (!values.length) continue;
+    facts.push({
+      property: propertyLabels[pid] ?? GRAPH_PROP_LABELS[pid] ?? pid,
+      propertyId: pid,
+      values,
+      datatype: claimList[0]?.mainsnak?.datatype,
+    });
+  }
+
+  return {
+    id,
+    label,
+    description,
+    thumbnail,
+    type,
+    instanceOf,
+    wikidataUrl: `https://www.wikidata.org/wiki/${id}`,
+    wikipediaUrl,
+    facts,
+    aliases: [],
+    wikipediaSummary: wikiLead,
+    wikipedia: wikiLead && sitelink
+      ? {
+          title: sitelink.title,
+          url: wikipediaUrl!,
+          lead: wikiLead,
+          sections: [],
+        }
+      : undefined,
+    images: [],
+    links: [{ kind: "wikidata", label: "Wikidata", url: `https://www.wikidata.org/wiki/${id}` }],
+    timeline: [],
+    related: [],
+    lifespan: formatLifespan(facts),
+  };
+}
+
 function collectReferencedIds(claims: Record<string, unknown[]>, out: Set<string>) {
   for (const claimList of Object.values(claims)) {
     for (const raw of claimList) {
@@ -579,6 +762,46 @@ function collectReferencedIds(claims: Record<string, unknown[]>, out: Set<string
       }
     }
   }
+}
+
+function yearFromTimeString(time?: string): number | undefined {
+  if (!time) return undefined;
+  const m = time.match(/([+-]?)(\d{1,7})-/);
+  if (!m) return undefined;
+  const sign = m[1] === "-" ? -1 : 1;
+  const y = Number(m[2]) * sign;
+  return Number.isFinite(y) ? y : undefined;
+}
+
+function yearFromLabel(label?: string): number | undefined {
+  if (!label) return undefined;
+  const m = label.match(/\b(1[5-9]\d{2}|20\d{2})\b/);
+  return m ? Number(m[1]) : undefined;
+}
+
+/** Prefer P585 (point in time), then start/publication time. */
+function yearFromClaimQualifiers(
+  claim: ClaimSnakValue,
+  parsedQualifiers?: FactValue["qualifiers"],
+): number | undefined {
+  const TIME_PIDS = ["P585", "P580", "P577"] as const;
+  const qs = claim.qualifiers ?? {};
+  for (const pid of TIME_PIDS) {
+    for (const q of (qs[pid] ?? []) as Array<{
+      datavalue?: { type?: string; value?: { time?: string } };
+    }>) {
+      if (q.datavalue?.type === "time") {
+        const y = yearFromTimeString(q.datavalue.value?.time);
+        if (y != null) return y;
+      }
+    }
+  }
+  for (const pid of TIME_PIDS) {
+    const hit = parsedQualifiers?.find((q) => q.propertyId === pid);
+    const y = yearFromLabel(hit?.label);
+    if (y != null) return y;
+  }
+  return undefined;
 }
 
 function addIdFromSnak(snak: ClaimSnakValue["mainsnak"] | ClaimSnakValue | undefined, out: Set<string>) {
@@ -865,6 +1088,8 @@ export function creativeRoleLabel(propertyId: string): string | undefined {
 const SPARQL_ENDPOINT = "https://query.wikidata.org/sparql";
 const MUSICBRAINZ_API = "https://musicbrainz.org/ws/2";
 const MB_USER_AGENT = "OntaraKnowledgeExplorer/1.0 (educational; contact@ontara.local)";
+/** Hard cap so one cold WDQS query cannot stall the whole graph. */
+const SPARQL_TIMEOUT_MS = 8_000;
 
 function rolePattern(role: CreativeRoleQuery, personId: string): string {
   if (role.pattern) return role.pattern.replaceAll("PERSON_ID", personId);
@@ -873,6 +1098,7 @@ function rolePattern(role: CreativeRoleQuery, personId: string): string {
 
 async function runSparql(
   sparql: string,
+  timeoutMs = SPARQL_TIMEOUT_MS,
 ): Promise<Array<Record<string, { value?: string }>>> {
   const url = `${SPARQL_ENDPOINT}?${new URLSearchParams({ format: "json", query: sparql })}`;
   const headers = {
@@ -880,8 +1106,10 @@ async function runSparql(
     "User-Agent": MB_USER_AGENT,
   };
   for (let attempt = 0; attempt < 2; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-      const res = await fetch(url, { headers });
+      const res = await fetch(url, { headers, signal: ctrl.signal });
       if (res.status === 429 || res.status === 503) {
         await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
         continue;
@@ -892,10 +1120,69 @@ async function runSparql(
       };
       return data.results?.bindings ?? [];
     } catch {
-      if (attempt === 0) await new Promise((r) => setTimeout(r, 300));
+      if (attempt === 0) await new Promise((r) => setTimeout(r, 200));
+    } finally {
+      clearTimeout(timer);
     }
   }
   return [];
+}
+
+/** Occupation QIDs (P106) → which reverse-work SPARQL roles are worth running. */
+const OCC_ACTOR = new Set([
+  "Q33999", "Q10800557", "Q2259451", "Q2405480", "Q10798782", "Q4610556",
+  "Q211236", "Q713200", "Q11481802",
+]);
+const OCC_DIRECTOR = new Set(["Q2526255", "Q3455803", "Q222344"]);
+const OCC_PRODUCER = new Set(["Q3282637", "Q10535780", "Q47541952"]);
+const OCC_WRITER = new Set(["Q28389", "Q18844224", "Q5762300"]);
+const OCC_COMPOSER = new Set(["Q36834", "Q21680731", "Q55960555"]);
+const OCC_SINGER = new Set([
+  "Q177220", "Q488205", "Q55960555", "Q753110", "Q855091", "Q2865819",
+]);
+
+export function occupationIdsFromClaims(
+  claims?: Record<string, ClaimSnakValue[] | undefined> | Record<string, unknown[] | undefined>,
+): string[] {
+  const list = claims?.["P106"] as ClaimSnakValue[] | undefined;
+  if (!list?.length) return [];
+  const out: string[] = [];
+  for (const claim of list) {
+    const val = claim.mainsnak?.datavalue?.value;
+    if (typeof val === "object" && val && "id" in val && typeof val.id === "string") {
+      out.push(val.id);
+    }
+  }
+  return out;
+}
+
+/** Pick SPARQL role queries from occupations — skip song/album for non-singers. */
+export function creativeRolesForOccupations(occupationIds: string[]): CreativeRoleQuery[] {
+  const byPid = (pid: string) => CREATIVE_ROLE_QUERIES.find((r) => r.pid === pid)!;
+  const occ = new Set(occupationIds);
+  const hit = (set: Set<string>) => occupationIds.some((id) => set.has(id));
+
+  const selected: CreativeRoleQuery[] = [];
+  if (hit(OCC_ACTOR) || occ.size === 0) selected.push(byPid("P161"));
+  if (hit(OCC_DIRECTOR)) selected.push(byPid("P57"));
+  if (hit(OCC_PRODUCER)) selected.push(byPid("P162"));
+  if (hit(OCC_WRITER)) selected.push(byPid("P58"));
+  if (hit(OCC_COMPOSER)) selected.push(byPid("P86"));
+  if (hit(OCC_SINGER)) {
+    selected.push(byPid("CR_SONG"), byPid("CR_ALBUM"), byPid("CR_FILM"));
+  } else if (hit(OCC_ACTOR) && !selected.some((r) => r.pid === "CR_FILM")) {
+    // Actors: cast list is enough; skip heavy performer→film UNION unless singer
+  }
+
+  // Unknown occupations: cheap defaults only (never cold-start Song/Album)
+  if (!selected.length) {
+    return [byPid("P161"), byPid("P57"), byPid("P162")].map((r) => ({
+      ...r,
+      limit: Math.min(r.limit, 12),
+    }));
+  }
+
+  return selected.map((r) => ({ ...r, limit: Math.min(r.limit, 20) }));
 }
 
 export type CreativeRoleHit = {
@@ -910,31 +1197,30 @@ export type CreativeRoleHit = {
 /**
  * Reverse-lookup works where `personId` appears as cast / director / producer / singer / etc.
  * Wikidata stores those claims on the work, so outbound expand alone misses filmography.
- * Call this lazily (Creative tab) — not on Overview — to avoid many SPARQL round-trips.
+ * Call this lazily (Creative tab / deferred graph merge) — not on first paint.
  */
 export async function fetchCreativeRoles(
   personId: string,
-  opts?: { propertyId?: string; existingIds?: Set<string>; limitPerRole?: number },
+  opts?: {
+    propertyId?: string;
+    existingIds?: Set<string>;
+    limitPerRole?: number;
+    /** P106 QIDs — filters which SPARQL roles run */
+    occupationIds?: string[];
+  },
 ): Promise<CreativeRoleHit[]> {
   const roles = opts?.propertyId
     ? CREATIVE_ROLE_QUERIES.filter((r) => r.pid === opts.propertyId)
-    : CREATIVE_ROLE_QUERIES;
+    : creativeRolesForOccupations(opts?.occupationIds ?? []);
   if (!roles.length) return [];
 
   const existing = opts?.existingIds ?? new Set<string>();
-  // Run in small waves so WDQS rate limits don't wipe song/album queries
-  const batches: Array<Array<{
-    qid: string | undefined;
-    workLabel: string | undefined;
-    pid: string;
-    label: string;
-  }>> = [];
-  for (let i = 0; i < roles.length; i += 3) {
-    const wave = roles.slice(i, i + 3);
-    const waveHits = await Promise.all(
-      wave.map(async (r) => {
-        const limit = opts?.limitPerRole ?? r.limit;
-        const sparql = `
+
+  // All selected roles in parallel (occupation filter keeps this small: usually 1–3)
+  const waveHits = await Promise.all(
+    roles.map(async (r) => {
+      const limit = opts?.limitPerRole ?? r.limit;
+      const sparql = `
           SELECT ?work ?workLabel WHERE {
             {
               SELECT ?work WHERE {
@@ -944,21 +1230,19 @@ export async function fetchCreativeRoles(
             SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
           }
         `;
-        const rows = await runSparql(sparql);
-        return rows.map((row) => ({
-          qid: row.work?.value?.split("/").pop(),
-          workLabel: row.workLabel?.value,
-          pid: r.pid,
-          label: r.label,
-        }));
-      }),
-    );
-    batches.push(...waveHits);
-  }
+      const rows = await runSparql(sparql);
+      return rows.map((row) => ({
+        qid: row.work?.value?.split("/").pop(),
+        workLabel: row.workLabel?.value,
+        pid: r.pid,
+        label: r.label,
+      }));
+    }),
+  );
 
   const out: CreativeRoleHit[] = [];
   const seen = new Set<string>();
-  for (const row of batches.flat()) {
+  for (const row of waveHits.flat()) {
     const qid = row.qid;
     if (!qid || existing.has(qid)) continue;
     const key = `${row.pid}:${qid}`;
@@ -976,24 +1260,1492 @@ export async function fetchCreativeRoles(
 }
 
 /**
- * Lazy filmography / discography for Creative tab (SPARQL + optional MusicBrainz).
- * Kept out of Overview `fetchEntitySummary` to cut SPARQL fan-out.
+ * Lazy filmography / discography for Creative tab / deferred graph enrich.
+ * Kept out of Overview + initial graph paint to cut SPARQL fan-out.
  */
 export async function fetchCreativeRolesForPerson(
   personId: string,
   claims?: Record<string, unknown[] | undefined>,
 ): Promise<CreativeRoleHit[]> {
-  const roles = await fetchCreativeRoles(personId);
-  const mbid = claims
-    ? musicBrainzArtistIdFromClaims(claims as Record<string, ClaimSnakValue[] | undefined>)
+  let resolvedClaims = claims;
+  if (!resolvedClaims) {
+    const ents = await fetchWikidataEntitiesBatch([personId]);
+    resolvedClaims = ents[personId]?.claims as Record<string, unknown[] | undefined> | undefined;
+  }
+  const occupationIds = occupationIdsFromClaims(resolvedClaims);
+  const roles = await fetchCreativeRoles(personId, { occupationIds });
+  const mbid = resolvedClaims
+    ? musicBrainzArtistIdFromClaims(resolvedClaims as Record<string, ClaimSnakValue[] | undefined>)
     : undefined;
-  const mbAlbums = mbid
+  // Only hit MusicBrainz when the person is a singer / has MB id
+  const wantMb =
+    Boolean(mbid) &&
+    (occupationIds.length === 0 ||
+      occupationIds.some((id) => OCC_SINGER.has(id) || OCC_COMPOSER.has(id)));
+  const mbAlbums = wantMb && mbid
     ? await fetchMusicBrainzAlbums(mbid, {
         existingIds: new Set(roles.map((r) => r.qid)),
-        limit: 40,
+        limit: 24,
       })
     : [];
   return [...roles, ...mbAlbums];
+}
+
+/** Film / work credit with year + character when Wikidata has them. */
+export type FilmographyEntry = {
+  qid: string;
+  title: string;
+  year?: number;
+  character?: string;
+  role: string;
+  thumbnail?: string;
+};
+
+function commonsFilePathToThumb(url?: string, width = 320): string | undefined {
+  if (!url) return undefined;
+  try {
+    const decoded = decodeURIComponent(url);
+    // Direct upload CDN — usable as-is
+    if (/upload\.wikimedia\.org/.test(url)) return url;
+
+    const markers = ["/wiki/Special:FilePath/", "/wiki/File:", "/wiki/file:"];
+    let filename: string | undefined;
+    for (const marker of markers) {
+      const idx = decoded.indexOf(marker);
+      if (idx >= 0) {
+        filename = decoded.slice(idx + marker.length).split(/[?#]/)[0]?.replace(/_/g, " ");
+        break;
+      }
+    }
+    // SPARQL sometimes returns a bare Commons filename
+    if (!filename && /^[^/]+\.(jpe?g|png|gif|webp)$/i.test(decoded.trim())) {
+      filename = decoded.trim().replace(/_/g, " ");
+    }
+    if (!filename) return undefined;
+    return getCommonsThumbUrl(filename, width);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Actor filmography with publication year (P577) and character (P453 on cast claim).
+ * Used by the /new/entity Movies tab — richer than reverse-role labels alone.
+ */
+export async function fetchPersonFilmography(
+  personId: string,
+  limit = 80,
+): Promise<FilmographyEntry[]> {
+  const sparql = `
+    SELECT ?work ?workLabel ?year ?characterLabel ?image WHERE {
+      {
+        ?work wdt:P161 wd:${personId} .
+      } UNION {
+        wd:${personId} wdt:P800 ?work .
+        ?work wdt:P31/wdt:P279* wd:Q11424 .
+      }
+      OPTIONAL {
+        ?work wdt:P577 ?date .
+        BIND(YEAR(?date) AS ?year)
+      }
+      OPTIONAL {
+        ?work p:P161 ?stmt .
+        ?stmt ps:P161 wd:${personId} .
+        OPTIONAL { ?stmt pq:P453 ?character . }
+      }
+      OPTIONAL { ?work wdt:P18 ?image . }
+      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+    }
+    ORDER BY DESC(?year)
+    LIMIT ${Math.min(Math.max(limit, 10), 120)}
+  `;
+  const rows = await runSparql(sparql);
+  const seen = new Set<string>();
+  const out: FilmographyEntry[] = [];
+  for (const row of rows) {
+    const qid = row.work?.value?.split("/").pop();
+    if (!qid || seen.has(qid)) continue;
+    seen.add(qid);
+    const yearRaw = row.year?.value;
+    const year = yearRaw ? Number(yearRaw) : undefined;
+    out.push({
+      qid,
+      title: row.workLabel?.value ?? qid,
+      year: year && Number.isFinite(year) ? year : undefined,
+      character: row.characterLabel?.value,
+      role: "Cast",
+      thumbnail: commonsFilePathToThumb(row.image?.value, 360),
+    });
+  }
+  // Commons P18 batch for gaps
+  const needCommons = out.filter((f) => !f.thumbnail).map((f) => f.qid);
+  if (needCommons.length) {
+    const thumbs = await fetchThumbnails(needCommons, undefined, 360);
+    for (const f of out) {
+      if (!f.thumbnail && thumbs[f.qid]) f.thumbnail = thumbs[f.qid];
+    }
+  }
+  // Wikipedia posters (fair-use) — most Bollywood films have no Commons P18
+  const needWiki = out.filter((f) => !f.thumbnail).map((f) => f.qid);
+  if (needWiki.length) {
+    const wiki = await fetchWikipediaThumbsForEntities(needWiki);
+    for (const f of out) {
+      if (!f.thumbnail && wiki[f.qid]) f.thumbnail = wiki[f.qid];
+    }
+  }
+  // Last resort: REST by Wikidata label for a few stubborn titles
+  const still = out.filter((f) => !f.thumbnail).slice(0, 16);
+  if (still.length) {
+    await Promise.all(
+      still.map(async (f) => {
+        const rest = await fetchWikipediaRestThumb(f.title);
+        if (rest) f.thumbnail = rest;
+      }),
+    );
+  }
+  return out;
+}
+
+/**
+ * Highlight films for compare cards — prefer notable works with Wikipedia posters.
+ */
+export async function fetchCompareHighlightFilms(
+  personId: string,
+  limit = 4,
+): Promise<FilmographyEntry[]> {
+  const sparql = `
+    SELECT ?work ?workLabel ?year ?image ?notable WHERE {
+      {
+        wd:${personId} wdt:P800 ?work .
+        BIND(2 AS ?notable)
+      } UNION {
+        ?work wdt:P161 wd:${personId} .
+        BIND(0 AS ?notable)
+      }
+      OPTIONAL {
+        ?work wdt:P577 ?date .
+        BIND(YEAR(?date) AS ?year)
+      }
+      OPTIONAL { ?work wdt:P18 ?image . }
+      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+    }
+    LIMIT 100
+  `;
+  const rows = await runSparql(sparql);
+  const seen = new Set<string>();
+  type Row = FilmographyEntry & { notable: number; hasImage: boolean };
+  const scored: Row[] = [];
+  for (const row of rows) {
+    const qid = row.work?.value?.split("/").pop();
+    if (!qid || seen.has(qid)) continue;
+    seen.add(qid);
+    const yearRaw = row.year?.value;
+    const year = yearRaw ? Number(yearRaw) : undefined;
+    const thumb = commonsFilePathToThumb(row.image?.value, 360);
+    scored.push({
+      qid,
+      title: row.workLabel?.value ?? qid,
+      year: year && Number.isFinite(year) ? year : undefined,
+      role: Number(row.notable?.value) >= 2 ? "Notable" : "Cast",
+      thumbnail: thumb,
+      notable: Number(row.notable?.value) || 0,
+      hasImage: Boolean(thumb),
+    });
+  }
+
+  // Rank before enriching so we fetch posters for the best candidates
+  scored.sort((a, b) => {
+    const score = (f: Row) =>
+      f.notable * 25 +
+      (f.hasImage ? 20 : 0) +
+      (f.year && f.year >= 1990 && f.year <= 2015 ? 18 : 0) +
+      (f.year && f.year >= 1980 && f.year < 1990 ? 10 : 0) +
+      (f.year && f.year >= 2016 && f.year <= 2022 ? 6 : 0);
+    return score(b) - score(a);
+  });
+
+  const top = scored.slice(0, Math.max(limit * 6, 24));
+  const topIds = top.map((f) => f.qid);
+
+  // Commons P18 batch
+  const needCommons = top.filter((f) => !f.thumbnail).map((f) => f.qid);
+  if (needCommons.length) {
+    const thumbs = await fetchThumbnails(needCommons, undefined, 360);
+    for (const f of top) {
+      if (!f.thumbnail && thumbs[f.qid]) {
+        f.thumbnail = thumbs[f.qid];
+        f.hasImage = true;
+      }
+    }
+  }
+
+  // Wikipedia pageimages — best source for film posters; prefer over Commons when present
+  const wikiThumbs = await fetchWikipediaThumbsForEntities(topIds);
+  for (const f of top) {
+    const wiki = wikiThumbs[f.qid];
+    if (wiki) {
+      f.thumbnail = wiki;
+      f.hasImage = true;
+    }
+  }
+
+  // REST summary fallback for any still missing among first picks
+  const still = top.filter((f) => !f.thumbnail).slice(0, 8);
+  if (still.length) {
+    await Promise.all(
+      still.map(async (f) => {
+        const rest = await fetchWikipediaRestThumb(f.title);
+        if (rest) {
+          f.thumbnail = rest;
+          f.hasImage = true;
+        }
+      }),
+    );
+  }
+
+  // Prefer items with posters (re-rank after enrich)
+  top.sort((a, b) => {
+    const score = (f: Row) =>
+      (f.hasImage ? 100 : 0) +
+      f.notable * 25 +
+      (f.year && f.year >= 1990 && f.year <= 2015 ? 18 : 0) +
+      (f.year && f.year >= 1980 && f.year < 1990 ? 10 : 0) +
+      (f.year && f.year >= 2016 && f.year <= 2022 ? 6 : 0);
+    return score(b) - score(a);
+  });
+  const withPoster = top.filter((f) => f.thumbnail);
+  const pool = withPoster.length >= limit ? withPoster : [...withPoster, ...top.filter((f) => !f.thumbnail)];
+  return pool.slice(0, limit).map((f) => ({
+    qid: f.qid,
+    title: f.title,
+    year: f.year,
+    role: f.role,
+    thumbnail: f.thumbnail,
+  }));
+}
+
+/** Dynamic career signals for compare (playback span, collabs, top music directors). */
+export type CompareCareerStats = {
+  personId: string;
+  recordedWorks?: number;
+  firstSinging?: { year: number; title: string };
+  lastSinging?: { year: number; title: string };
+  careerSpanYears?: number;
+  topMusicDirectors?: Array<{ id: string; label: string; count: number }>;
+  /** Duets / shared credits with Lata Mangeshkar (Q156347) on Wikidata */
+  lataCollaborations?: number;
+  filmCredits?: number;
+  residence?: string[];
+  assets?: string[];
+  netWorth?: string[];
+  workLocation?: string[];
+};
+
+const LATA_MANGESHKAR_QID = "Q156347";
+const CAREER_SPARQL_TIMEOUT_MS = 14_000;
+
+function sparqlLiteralList(
+  rows: Array<Record<string, { value?: string }>>,
+  key: string,
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const v = row[key]?.value?.trim();
+    if (!v || seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  return out;
+}
+
+/**
+ * SPARQL career depth for a person — first/last credited works, top composers,
+ * Lata collabs, screen credits, and asset/residence claims when present.
+ */
+export async function fetchCompareCareerStats(
+  personId: string,
+): Promise<CompareCareerStats> {
+  if (!/^Q\d+$/i.test(personId)) return { personId };
+
+  const empty: CompareCareerStats = { personId };
+  const timeout = CAREER_SPARQL_TIMEOUT_MS;
+
+  const spanQ = `
+    SELECT ?works ?firstYear ?lastYear ?films ?lataN WHERE {
+      {
+        SELECT (COUNT(DISTINCT ?work) AS ?works)
+               (MIN(?year) AS ?firstYear) (MAX(?year) AS ?lastYear)
+        WHERE {
+          ?work wdt:P175 wd:${personId} .
+          OPTIONAL { ?work wdt:P577 ?d . BIND(YEAR(?d) AS ?year) }
+        }
+      }
+      {
+        SELECT (COUNT(DISTINCT ?film) AS ?films) WHERE {
+          ?film wdt:P161 wd:${personId} .
+        }
+      }
+      {
+        SELECT (COUNT(DISTINCT ?duet) AS ?lataN) WHERE {
+          ?duet wdt:P175 wd:${personId}, wd:${LATA_MANGESHKAR_QID} .
+        }
+      }
+    }
+  `;
+
+  const endsQ = `
+    SELECT ?which ?year ?workLabel WHERE {
+      {
+        SELECT ("first" AS ?which) ?year ?work ?workLabel WHERE {
+          ?work wdt:P175 wd:${personId} ; wdt:P577 ?d .
+          BIND(YEAR(?d) AS ?year)
+          SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+        }
+        ORDER BY ASC(?year)
+        LIMIT 1
+      }
+      UNION
+      {
+        SELECT ("last" AS ?which) ?year ?work ?workLabel WHERE {
+          ?work wdt:P175 wd:${personId} ; wdt:P577 ?d .
+          BIND(YEAR(?d) AS ?year)
+          SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+        }
+        ORDER BY DESC(?year)
+        LIMIT 1
+      }
+    }
+  `;
+
+  const composersQ = `
+    SELECT ?c ?cLabel (COUNT(DISTINCT ?work) AS ?n) WHERE {
+      ?work wdt:P175 wd:${personId} .
+      ?work wdt:P86 ?c .
+      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+    }
+    GROUP BY ?c ?cLabel
+    ORDER BY DESC(?n)
+    LIMIT 3
+  `;
+
+  const personalQ = `
+    SELECT ?resLabel ?assetLabel ?worth ?locLabel WHERE {
+      OPTIONAL { wd:${personId} wdt:P551 ?res . }
+      OPTIONAL { wd:${personId} wdt:P1830 ?asset . }
+      OPTIONAL { wd:${personId} wdt:P2218 ?worth . }
+      OPTIONAL { wd:${personId} wdt:P937 ?loc . }
+      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+    }
+    LIMIT 20
+  `;
+
+  const [spanRows, endsRows, composerRows, personalRows] = await Promise.all([
+    runSparql(spanQ, timeout),
+    runSparql(endsQ, timeout),
+    runSparql(composersQ, timeout),
+    runSparql(personalQ, timeout),
+  ]);
+
+  const span = spanRows[0];
+  const works = span?.works?.value ? Number(span.works.value) : undefined;
+  const firstYear = span?.firstYear?.value ? Number(span.firstYear.value) : undefined;
+  const lastYear = span?.lastYear?.value ? Number(span.lastYear.value) : undefined;
+  const films = span?.films?.value ? Number(span.films.value) : undefined;
+  const lataN = span?.lataN?.value ? Number(span.lataN.value) : undefined;
+
+  const firstRow = endsRows.find((r) => r.which?.value === "first") ?? endsRows[0];
+  const lastRow = endsRows.find((r) => r.which?.value === "last") ?? endsRows[1];
+  const fy = firstRow?.year?.value ? Number(firstRow.year.value) : firstYear;
+  const ly = lastRow?.year?.value ? Number(lastRow.year.value) : lastYear;
+
+  const topMusicDirectors = composerRows
+    .map((row) => {
+      const id = row.c?.value?.split("/").pop();
+      const label = row.cLabel?.value;
+      const count = row.n?.value ? Number(row.n.value) : 0;
+      if (!id || !label || !count) return null;
+      return { id, label, count };
+    })
+    .filter((x): x is { id: string; label: string; count: number } => Boolean(x));
+
+  const residence = sparqlLiteralList(personalRows, "resLabel");
+  const assets = sparqlLiteralList(personalRows, "assetLabel");
+  const workLocation = sparqlLiteralList(personalRows, "locLabel");
+  const netWorth = personalRows
+    .map((r) => r.worth?.value)
+    .filter((v): v is string => Boolean(v))
+    .filter((v, i, a) => a.indexOf(v) === i);
+
+  const out: CompareCareerStats = { ...empty };
+  if (works != null && Number.isFinite(works) && works > 0) out.recordedWorks = works;
+  if (fy != null && Number.isFinite(fy)) {
+    out.firstSinging = {
+      year: fy,
+      title: firstRow?.workLabel?.value?.trim() || `First credited work (${fy})`,
+    };
+  }
+  if (ly != null && Number.isFinite(ly)) {
+    out.lastSinging = {
+      year: ly,
+      title: lastRow?.workLabel?.value?.trim() || `Last credited work (${ly})`,
+    };
+  }
+  if (
+    out.firstSinging &&
+    out.lastSinging &&
+    out.lastSinging.year >= out.firstSinging.year
+  ) {
+    out.careerSpanYears = out.lastSinging.year - out.firstSinging.year + 1;
+  }
+  if (topMusicDirectors.length) out.topMusicDirectors = topMusicDirectors;
+  if (lataN != null && Number.isFinite(lataN)) out.lataCollaborations = lataN;
+  if (films != null && Number.isFinite(films) && films > 0) out.filmCredits = films;
+  if (residence.length) out.residence = residence;
+  if (assets.length) out.assets = assets;
+  if (netWorth.length) out.netWorth = netWorth;
+  if (workLocation.length) out.workLocation = workLocation;
+  return out;
+}
+
+export type FilmfareWin = {
+  year: number;
+  /** Film title (actors) or film for a winning song (singers). */
+  film: string;
+  /** Song title when this is a playback win. */
+  song?: string;
+  /** e.g. Best Actress, Best Male Playback Singer */
+  category?: string;
+};
+
+export type FilmHighlight = {
+  year?: number;
+  film: string;
+  song?: string;
+  note?: string;
+  thumbnail?: string;
+};
+
+export type CompareAwardHighlights = {
+  personId: string;
+  label: string;
+  /** Filmfare wins parsed from Wikipedia awards lists. */
+  filmfareWins: FilmfareWin[];
+  /** Dominant category label for the Filmfare block header. */
+  filmfareCategory?: string;
+  /** Other recognition bullets (BFJA, state awards, legacy). */
+  otherRecognition: string[];
+  /** Poster-ready film cards derived from award wins (+ Wikidata cast fallback). */
+  filmHighlights: FilmHighlight[];
+  source?: string;
+};
+
+function stripWikiTags(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, " ")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&#91;.*?&#93;/g, "")
+    .replace(/\[[^\]]*\]/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function cleanSongTitle(raw: string): string {
+  return raw.replace(/^["“']+|["”']+$/g, "").trim();
+}
+
+async function wikiParseSections(
+  title: string,
+): Promise<Array<{ index: string; line: string }>> {
+  try {
+    const params = new URLSearchParams({
+      action: "parse",
+      page: title,
+      prop: "sections",
+      format: "json",
+      origin: "*",
+      redirects: "1",
+    });
+    const res = await fetch(`${WIKIPEDIA_API}?${params}`);
+    if (!res.ok) return [];
+    const data = await res.json() as {
+      error?: unknown;
+      parse?: { sections?: Array<{ index: string; line: string }> };
+    };
+    if (data.error) return [];
+    return data.parse?.sections ?? [];
+  } catch {
+    return [];
+  }
+}
+
+async function wikiParseSectionHtml(
+  title: string,
+  section: string,
+): Promise<string> {
+  try {
+    const params = new URLSearchParams({
+      action: "parse",
+      page: title,
+      prop: "text",
+      section,
+      disableeditsection: "1",
+      format: "json",
+      origin: "*",
+      redirects: "1",
+    });
+    const res = await fetch(`${WIKIPEDIA_API}?${params}`);
+    if (!res.ok) return "";
+    const data = await res.json() as {
+      error?: unknown;
+      parse?: { text?: { "*": string } };
+    };
+    if (data.error) return "";
+    return data.parse?.text?.["*"] ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function parseWikiTableRows(tableHtml: string): string[][] {
+  const rowHtmls = tableHtml.match(/<tr[\s\S]*?<\/tr>/gi) ?? [];
+  const raw: Array<Array<{ text: string; rowspan: number }>> = [];
+
+  for (const row of rowHtmls) {
+    const cells = row.match(/<t[dh][^>]*>[\s\S]*?<\/t[dh]>/gi) ?? [];
+    const parsed: Array<{ text: string; rowspan: number }> = [];
+    for (const cell of cells) {
+      const rs = cell.match(/rowspan\s*=\s*["']?(\d+)/i);
+      parsed.push({
+        text: stripWikiTags(cell),
+        rowspan: rs ? Number(rs[1]) : 1,
+      });
+    }
+    if (parsed.some((c) => c.text.length > 0)) raw.push(parsed);
+  }
+
+  // Expand rowspans into a dense grid
+  const grid: string[][] = [];
+  const carry: Array<{ text: string; left: number } | null> = [];
+
+  for (const row of raw) {
+    const out: string[] = [];
+    let ci = 0;
+    let col = 0;
+    while (ci < row.length || carry.some((c) => c && c.left > 0)) {
+      if (carry[col] && carry[col]!.left > 0) {
+        out.push(carry[col]!.text);
+        carry[col]!.left -= 1;
+        if (carry[col]!.left <= 0) carry[col] = null;
+        col++;
+        continue;
+      }
+      if (ci >= row.length) break;
+      const cell = row[ci]!;
+      out.push(cell.text);
+      if (cell.rowspan > 1) {
+        carry[col] = { text: cell.text, left: cell.rowspan - 1 };
+      }
+      ci++;
+      col++;
+    }
+    grid.push(out);
+  }
+  return grid;
+}
+
+/** Extract Filmfare wins — singer, actor, and unified Award/Year tables. */
+function parseFilmfareWinsFromHtml(html: string): FilmfareWin[] {
+  if (!html) return [];
+  const tables = html.match(/<table[\s\S]*?<\/table>/gi) ?? [];
+  const wins: FilmfareWin[] = [];
+
+  for (const table of tables) {
+    const rows = parseWikiTableRows(table);
+    if (rows.length < 2) continue;
+
+    const headerIdx = rows.findIndex(
+      (r) =>
+        r.some((c) => /^year$/i.test(c.trim())) &&
+        r.some((c) => /film|song|nominated work|^work$/i.test(c)),
+    );
+    if (headerIdx < 0) continue;
+    const header = rows[headerIdx]!.map((h) => h.toLowerCase());
+    const yearIdx = header.findIndex((h) => /year/.test(h));
+    const songIdx = header.findIndex((h) => /song/.test(h));
+    const filmIdx = header.findIndex(
+      (h) => /^film$|film\b|nominated work|^work$/.test(h) && !/filmfare/.test(h),
+    );
+    const categoryIdx = header.findIndex((h) => /category/.test(h));
+    const awardIdx = header.findIndex((h) => /^award$/.test(h.trim()));
+    const resultIdx = header.findIndex((h) => /result/.test(h));
+    if (yearIdx < 0) continue;
+
+    const isUnifiedAwardTable = awardIdx >= 0;
+    let currentCategory = "";
+    let carriedYear: number | undefined;
+    let carriedAward = "";
+    let added = 0;
+
+    for (const row of rows.slice(headerIdx + 1)) {
+      if (
+        !isUnifiedAwardTable &&
+        (row.length === 1 ||
+          (row.length <= 2 && !/\b(19|20)\d{2}\b/.test(row.join(" "))))
+      ) {
+        const banner = row.find((c) =>
+          /best |award|critics|villain|playback|supporting/i.test(c),
+        );
+        if (banner && !/^(won|nominated)$/i.test(banner)) {
+          currentCategory = banner.replace(/\[\d+\]/g, "").trim();
+          continue;
+        }
+      }
+
+      const cells = row.map((c) => c.trim()).filter(Boolean);
+
+      if (isUnifiedAwardTable) {
+        const awardCell =
+          (awardIdx < row.length ? row[awardIdx] : undefined)?.trim() || carriedAward;
+        if (awardCell) carriedAward = awardCell;
+        if (!/filmfare/i.test(carriedAward)) continue;
+
+        const yearCell = yearIdx < row.length ? row[yearIdx] ?? "" : "";
+        const ym = yearCell.match(/\b(19\d{2}|20\d{2})\b/);
+        let year = ym ? Number(ym[1]) : carriedYear;
+        if (ym) carriedYear = year;
+        if (year == null) continue;
+
+        const resCell = resultIdx >= 0 && resultIdx < row.length ? row[resultIdx] ?? "" : "";
+        if (resCell && !/won/i.test(resCell)) continue;
+        if (!resCell && !cells.some((c) => /^won$/i.test(c))) continue;
+
+        const work =
+          filmIdx >= 0 && filmIdx < row.length
+            ? (row[filmIdx] ?? "").trim()
+            : "";
+        const category =
+          (categoryIdx >= 0 && categoryIdx < row.length
+            ? row[categoryIdx]
+            : undefined)?.trim() || undefined;
+        if (!work || /^nominated work$/i.test(work)) continue;
+
+        wins.push({ year, film: work, category });
+        added++;
+        continue;
+      }
+
+      let year: number | undefined;
+      let result = "";
+      for (const c of cells) {
+        const ym = c.match(/^(19\d{2}|20\d{2})$/);
+        if (ym) {
+          year = Number(ym[1]);
+          continue;
+        }
+        if (/^(won|nominated)$/i.test(c)) {
+          result = c;
+        }
+      }
+      if (year != null) carriedYear = year;
+      else year = carriedYear;
+      if (year == null) continue;
+      if (resultIdx >= 0 || cells.some((c) => /^(won|nominated)$/i.test(c))) {
+        if (!/won/i.test(result)) continue;
+      }
+
+      let song = "";
+      let film = "";
+      let category = currentCategory;
+      if (songIdx >= 0 && filmIdx >= 0 && row.length > Math.max(songIdx, filmIdx)) {
+        song = cleanSongTitle(row[songIdx] ?? "");
+        film = (row[filmIdx] ?? "").trim();
+      } else {
+        const skip = new Set(
+          cells.filter(
+            (c) =>
+              /^(19\d{2}|20\d{2})$/.test(c) ||
+              /^(won|nominated)$/i.test(c) ||
+              /^\[\d+\]$/.test(c),
+          ),
+        );
+        const rest = cells.filter((c) => !skip.has(c));
+        if (!rest.length) continue;
+        if (rest.length === 1) film = rest[0]!;
+        else {
+          const catHit = rest.find((c) =>
+            /best |critics|villain|playback|supporting/i.test(c),
+          );
+          if (catHit) {
+            category = catHit;
+            film = rest.find((c) => c !== catHit) ?? "";
+          } else film = rest[rest.length - 1]!;
+        }
+      }
+      if (!film || /^film$/i.test(film) || /^(won|nominated)$/i.test(film)) continue;
+      if (/^best |critics|villain|playback/i.test(film) && !song) {
+        category = film;
+        continue;
+      }
+      wins.push({
+        year,
+        film,
+        song: song || undefined,
+        category: category || undefined,
+      });
+      added++;
+    }
+
+    if (resultIdx < 0 && songIdx >= 0 && added > 0 && !isUnifiedAwardTable) break;
+  }
+
+  const seen = new Set<string>();
+  return wins.filter((w) => {
+    const k = `${w.year}|${w.song ?? ""}|${w.film}|${w.category ?? ""}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+function dominantFilmfareCategory(wins: FilmfareWin[]): string | undefined {
+  if (!wins.length) return undefined;
+  const counts = new Map<string, number>();
+  for (const w of wins) {
+    const c = w.category?.trim();
+    if (!c) continue;
+    counts.set(c, (counts.get(c) ?? 0) + 1);
+  }
+  if (counts.size) {
+    return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]![0];
+  }
+  if (wins.some((w) => w.song)) return "Best Male Playback Singer";
+  return "Filmfare Awards";
+}
+
+function parseOtherRecognitionFromHtml(html: string, sectionTitle: string): string[] {
+  if (!html) return [];
+  const out: string[] = [];
+  const lis = html.match(/<li[\s\S]*?<\/li>/gi) ?? [];
+  for (const li of lis) {
+    const t = stripWikiTags(li);
+    if (!isCleanRecognitionLine(t)) continue;
+    out.push(t);
+  }
+  if (!out.length) {
+    const text = stripWikiTags(html);
+    const sentences = text.split(/(?<=[.!?])\s+/).filter((s) => s.length > 28 && s.length < 220);
+    for (const s of sentences.slice(0, 4)) {
+      if (/award|honou|institut|recogn/i.test(s) && isCleanRecognitionLine(s)) {
+        out.push(s.replace(/\s+/g, " ").trim());
+      }
+    }
+  }
+  return out.slice(0, 8).map((t) =>
+    /bfja|bengal film/i.test(sectionTitle) && !/bfja|bengal/i.test(t)
+      ? `BFJA — ${t}`
+      : t,
+  );
+}
+
+function isCleanRecognitionLine(t: string): boolean {
+  if (!t || t.length < 12 || t.length > 160) return false;
+  if (/^[\^†*#]|^\./.test(t)) return false;
+  if (/^https?:|^Retrieved|^Archived|^ISBN|^Jump to|^cite |bfjaawards\.com|wikipedia\.org/i.test(t)) {
+    return false;
+  }
+  if (/cite\.citation|mw-parser-output|tooltip-dotted/i.test(t)) return false;
+  if (/archived from the original/i.test(t)) return false;
+  // Table chrome / header leftovers from awards-list pages
+  if (/^(year|category|film|result|ref\.?s?)\b/i.test(t)) return false;
+  if (/\bYear\s+Category\s+Film\s+Result\b/i.test(t)) return false;
+  if (/^\s*Ref\.?\s*$/i.test(t)) return false;
+  return true;
+}
+
+async function resolveAwardsListPage(personLabel: string): Promise<string | undefined> {
+  const candidates = [
+    `List of awards and nominations received by ${personLabel}`,
+    `${personLabel} awards and nominations`,
+  ];
+  for (const title of candidates) {
+    const sections = await wikiParseSections(title);
+    if (sections.some((s) => /filmfare|award|honou/i.test(s.line))) return title;
+  }
+  // Search fallback
+  try {
+    const params = new URLSearchParams({
+      action: "query",
+      list: "search",
+      srsearch: `List of awards and nominations received by ${personLabel}`,
+      srlimit: "5",
+      format: "json",
+      origin: "*",
+    });
+    const res = await fetch(`${WIKIPEDIA_API}?${params}`);
+    if (!res.ok) return undefined;
+    const data = await res.json() as {
+      query?: { search?: Array<{ title: string }> };
+    };
+    const hit = (data.query?.search ?? []).find((s) =>
+      /list of awards/i.test(s.title) &&
+      new RegExp(personLabel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i").test(s.title),
+    );
+    return hit?.title;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Rich awards + film highlights for compare — Wikipedia awards-list pages
+ * (Filmfare year/song/film or year/film) when Wikidata P166 is sparse.
+ */
+export async function fetchCompareAwardHighlights(
+  personId: string,
+  personLabel: string,
+  opts?: { castFilms?: FilmographyEntry[] },
+): Promise<CompareAwardHighlights> {
+  const empty: CompareAwardHighlights = {
+    personId,
+    label: personLabel,
+    filmfareWins: [],
+    otherRecognition: [],
+    filmHighlights: [],
+  };
+  if (!personLabel?.trim()) return empty;
+
+  const page = await resolveAwardsListPage(personLabel.trim());
+  let filmfareWins: FilmfareWin[] = [];
+  const otherRecognition: string[] = [];
+  let source: string | undefined;
+
+  if (page) {
+    source = page;
+    const sections = await wikiParseSections(page);
+    const filmfareSec = sections.find((s) => /filmfare/i.test(s.line));
+    if (filmfareSec) {
+      const html = await wikiParseSectionHtml(page, filmfareSec.index);
+      filmfareWins = parseFilmfareWinsFromHtml(html);
+    } else {
+      // Kajol-style: Filmfare rows inside a unified awards table on the page
+      for (const sec of sections) {
+        if (/reference|external|see also|note|early|personal/i.test(sec.line)) continue;
+        if (!/award|nomination|honou/i.test(sec.line)) continue;
+        const html = await wikiParseSectionHtml(page, sec.index);
+        filmfareWins = parseFilmfareWinsFromHtml(html);
+        if (filmfareWins.length) break;
+      }
+      if (!filmfareWins.length) {
+        // Last resort: full page parse
+        try {
+          const params = new URLSearchParams({
+            action: "parse",
+            page,
+            prop: "text",
+            disableeditsection: "1",
+            format: "json",
+            origin: "*",
+            redirects: "1",
+          });
+          const res = await fetch(`${WIKIPEDIA_API}?${params}`);
+          if (res.ok) {
+            const data = await res.json() as {
+              parse?: { text?: { "*": string } };
+            };
+            const full = data.parse?.text?.["*"] ?? "";
+            if (full) filmfareWins = parseFilmfareWinsFromHtml(full);
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    for (const sec of sections) {
+      if (!/honou|bfja|bengal film|national film|state|legacy/i.test(sec.line)) continue;
+      if (/reference|external|see also|note/i.test(sec.line)) continue;
+      const html = await wikiParseSectionHtml(page, sec.index);
+      otherRecognition.push(...parseOtherRecognitionFromHtml(html, sec.line));
+    }
+  }
+
+  const filmfareCategory = dominantFilmfareCategory(filmfareWins);
+
+  // Unique film cards from Filmfare wins
+  const filmHighlights: FilmHighlight[] = [];
+  const seenFilms = new Set<string>();
+  for (const w of filmfareWins) {
+    const key = w.film.toLowerCase();
+    if (seenFilms.has(key)) continue;
+    seenFilms.add(key);
+    filmHighlights.push({
+      year: w.year,
+      film: w.film,
+      song: w.song,
+      note: w.category ? `Filmfare · ${w.category}` : "Filmfare Winner",
+    });
+  }
+
+  // Always merge cast/notable highlights for actors (Kajol etc.)
+  if (opts?.castFilms?.length) {
+    for (const f of opts.castFilms) {
+      const key = f.title.toLowerCase();
+      if (seenFilms.has(key)) continue;
+      seenFilms.add(key);
+      filmHighlights.push({
+        year: f.year,
+        film: f.title,
+        note: f.role === "Notable" ? "Notable work" : "Screen credit",
+        thumbnail: f.thumbnail,
+      });
+      if (filmHighlights.length >= 8) break;
+    }
+  }
+
+  const needThumbs = filmHighlights.filter((f) => !f.thumbnail).slice(0, 10);
+  await Promise.all(
+    needThumbs.map(async (f) => {
+      const thumb = await fetchWikipediaRestThumb(f.film);
+      if (thumb) f.thumbnail = thumb;
+    }),
+  );
+
+  return {
+    personId,
+    label: personLabel,
+    filmfareWins,
+    filmfareCategory,
+    otherRecognition: [...new Set(otherRecognition)].filter(isCleanRecognitionLine).slice(0, 8),
+    filmHighlights: filmHighlights.slice(0, 8),
+    source,
+  };
+}
+
+async function fetchWikipediaRestThumb(title: string): Promise<string | undefined> {
+  if (!title?.trim()) return undefined;
+  try {
+    const res = await fetch(
+      `${WIKIPEDIA_REST}/page/summary/${encodeURIComponent(title.replace(/ /g, "_"))}`,
+    );
+    if (!res.ok) return undefined;
+    const data = await res.json() as {
+      thumbnail?: { source?: string };
+      originalimage?: { source?: string };
+    };
+    return data.originalimage?.source || data.thumbnail?.source;
+  } catch {
+    return undefined;
+  }
+}
+
+export type ComparePeerBundle = {
+  peers: SearchResult[];
+  /** Human label for the rail, e.g. "Indian film actors" */
+  categoryLabel: string;
+  kind: "actor" | "singer" | "musician" | "company" | "place" | "work" | "person" | "generic";
+};
+
+type SubjectPeerMeta = {
+  type: EntityType;
+  occupationIds: string[];
+  citizenshipIds: string[];
+  industryIds: string[];
+  instanceIds: string[];
+  countryIds: string[];
+  genreIds: string[];
+  description?: string;
+  label?: string;
+};
+
+async function loadSubjectPeerMeta(entityId: string): Promise<SubjectPeerMeta> {
+  const empty: SubjectPeerMeta = {
+    type: "unknown",
+    occupationIds: [],
+    citizenshipIds: [],
+    industryIds: [],
+    instanceIds: [],
+    countryIds: [],
+    genreIds: [],
+  };
+  try {
+    const params = new URLSearchParams({
+      action: "wbgetentities",
+      ids: entityId,
+      props: "claims|descriptions|labels",
+      languages: "en",
+      format: "json",
+      origin: "*",
+    });
+    const res = await fetch(`${WIKIDATA_API}?${params}`);
+    if (!res.ok) return empty;
+    const data = await res.json() as {
+      entities?: Record<
+        string,
+        {
+          claims?: Record<string, ClaimSnakValue[] | undefined>;
+          descriptions?: { en?: { value?: string } };
+          labels?: { en?: { value?: string } };
+        }
+      >;
+    };
+    const ent = data.entities?.[entityId];
+    if (!ent) return empty;
+    const claims = ent.claims ?? {};
+    const idsOf = (pid: string) => {
+      const out: string[] = [];
+      for (const c of claims[pid] ?? []) {
+        const v = c.mainsnak?.datavalue?.value;
+        if (typeof v === "object" && v && "id" in v && typeof (v as { id: string }).id === "string") {
+          out.push((v as { id: string }).id);
+        }
+      }
+      return out;
+    };
+    const instanceIds = idsOf("P31");
+    const type = guessTypeFromP31(instanceIds) ?? guessTypeFromDescription(ent.descriptions?.en?.value);
+    return {
+      type,
+      occupationIds: idsOf("P106"),
+      citizenshipIds: idsOf("P27"),
+      industryIds: idsOf("P452"),
+      instanceIds,
+      countryIds: idsOf("P17"),
+      genreIds: idsOf("P136"),
+      description: ent.descriptions?.en?.value,
+      label: ent.labels?.en?.value,
+    };
+  } catch {
+    return empty;
+  }
+}
+
+function guessTypeFromP31(p31: string[]): EntityType | undefined {
+  for (const id of p31) {
+    if (TYPE_QID_MAP[id]) return TYPE_QID_MAP[id];
+  }
+  // Common org / company classes
+  if (p31.some((id) => ["Q4830453", "Q783794", "Q6881511", "Q891723", "Q43229"].includes(id))) {
+    return "organization";
+  }
+  return undefined;
+}
+
+function detectCompareKind(meta: SubjectPeerMeta): ComparePeerBundle["kind"] {
+  const occ = new Set(meta.occupationIds);
+  const hit = (set: Set<string>) => meta.occupationIds.some((id) => set.has(id));
+  if (meta.type === "organization") return "company";
+  if (meta.type === "place") return "place";
+  if (meta.type === "work") return "work";
+  if (hit(OCC_SINGER)) return "singer";
+  if (hit(OCC_COMPOSER) || occ.has("Q855091") || occ.has("Q639669")) return "musician";
+  if (hit(OCC_ACTOR)) return "actor";
+  if (meta.type === "person") return "person";
+  return "generic";
+}
+
+function categoryLabelFor(kind: ComparePeerBundle["kind"], meta: SubjectPeerMeta): string {
+  const citHint = /india|indian|bollywood|hindi/i.test(meta.description ?? "")
+    ? "Indian "
+    : "";
+  switch (kind) {
+    case "actor":
+      return `${citHint}film actors & actresses`.replace(/^./, (c) => c.toUpperCase());
+    case "singer":
+      return `${citHint}singers & playback artists`.replace(/^./, (c) => c.toUpperCase());
+    case "musician":
+      return `${citHint}musicians & composers`.replace(/^./, (c) => c.toUpperCase());
+    case "company":
+      return "Similar companies & organizations";
+    case "place":
+      return "Related places";
+    case "work":
+      return "Similar works";
+    case "person":
+      return "People in the same field";
+    default:
+      return "Same category";
+  }
+}
+
+function primaryOccupationIds(meta: SubjectPeerMeta, kind: ComparePeerBundle["kind"]): string[] {
+  const occ = meta.occupationIds;
+  if (kind === "actor") {
+    const preferred = occ.filter((id) => OCC_ACTOR.has(id));
+    return preferred.length ? preferred.slice(0, 4) : ["Q33999", "Q10800557", "Q211236"];
+  }
+  if (kind === "singer") {
+    const preferred = occ.filter((id) => OCC_SINGER.has(id));
+    return preferred.length ? preferred.slice(0, 4) : ["Q177220", "Q488205", "Q855091"];
+  }
+  if (kind === "musician") {
+    const preferred = occ.filter((id) => OCC_COMPOSER.has(id) || OCC_SINGER.has(id));
+    return preferred.length ? preferred.slice(0, 4) : ["Q36834", "Q639669"];
+  }
+  return occ.slice(0, 4);
+}
+
+function searchQueriesForKind(kind: ComparePeerBundle["kind"], meta: SubjectPeerMeta): string[] {
+  const desc = (meta.description ?? "").toLowerCase();
+  const queries: string[] = [];
+  if (kind === "actor") {
+    if (/india|bollywood|hindi|bengali|tamil|telugu/.test(desc)) {
+      queries.push(
+        "Kajol",
+        "Aishwarya Rai",
+        "Preity Zinta",
+        "Madhuri Dixit",
+        "Kareena Kapoor",
+        "Deepika Padukone",
+        "Priyanka Chopra",
+        "Vidya Balan",
+        "Bollywood actress",
+      );
+    } else if (/bangladesh|bengali|dhallywood|bangladeshi/.test(desc)) {
+      queries.push("Bangladeshi actress", "Bengali film actor", "Shabnur", "Purnima");
+    } else if (/hollywood|hollywoodwood|american film/.test(desc)) {
+      queries.push("Hollywood actress", "American film actress", "film actor");
+    } else {
+      queries.push("film actress", "film actor", meta.description?.split(",")[0] ?? "actor");
+    }
+  } else if (kind === "singer") {
+    if (/india|bollywood|playback|hindi|bengali/.test(desc)) {
+      queries.push(
+        "Indian playback singer",
+        "Alka Yagnik",
+        "Kavita Krishnamurthy",
+        "Sunidhi Chauhan",
+        "Shreya Ghoshal",
+        "Lata Mangeshkar",
+      );
+    } else {
+      queries.push("singer", "playback singer");
+    }
+  } else if (kind === "musician") {
+    queries.push(meta.description?.split(",")[0] ?? "composer", "music composer");
+  } else if (kind === "company") {
+    const industryHint = meta.description?.split(/[,(]/)[0]?.trim();
+    if (industryHint) queries.push(industryHint);
+    queries.push("company", "multinational corporation");
+  } else if (kind === "place") {
+    queries.push(meta.description?.split(/[,(]/)[0]?.trim() ?? "city");
+  } else if (kind === "work") {
+    queries.push(meta.description?.split(/[,(]/)[0]?.trim() ?? "film");
+  } else {
+    const seed = meta.description?.split(/[,(]/)[0]?.trim();
+    if (seed) queries.push(seed);
+  }
+  return [...new Set(queries.filter((q) => q && q.length >= 3))].slice(0, 8);
+}
+
+async function sparqlPersonPeers(
+  subjectId: string,
+  occupationIds: string[],
+  citizenshipIds: string[],
+  limit: number,
+): Promise<SearchResult[]> {
+  if (!occupationIds.length) return [];
+  const occValues = occupationIds.map((id) => `wd:${id}`).join(" ");
+  const citFilter =
+    citizenshipIds.length > 0
+      ? `
+      OPTIONAL {
+        ?person wdt:P27 ?cit .
+        VALUES ?wantCit { ${citizenshipIds.map((id) => `wd:${id}`).join(" ")} }
+        BIND(IF(?cit = ?wantCit, 1, 0) AS ?sameCit)
+      }`
+      : "BIND(0 AS ?sameCit)";
+
+  const sparql = `
+    SELECT DISTINCT ?person ?personLabel ?personDescription ?image ?sameCit ?hasAward WHERE {
+      VALUES ?occ { ${occValues} }
+      ?person wdt:P106 ?occ ;
+              wdt:P31 wd:Q5 ;
+              wdt:P18 ?image .
+      ?article schema:about ?person ;
+               schema:isPartOf <https://en.wikipedia.org/> .
+      FILTER(?person != wd:${subjectId})
+      ${citFilter}
+      OPTIONAL { ?person wdt:P166 ?aw . BIND(1 AS ?hasAward) }
+      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+    }
+    LIMIT ${Math.min(Math.max(limit * 3, 30), 80)}
+  `;
+  const rows = await runSparql(sparql);
+  const scored: Array<SearchResult & { score: number }> = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const id = row.person?.value?.split("/").pop();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const sameCit = row.sameCit?.value === "1" ? 1 : 0;
+    const hasAward = row.hasAward?.value === "1" ? 1 : 0;
+    const desc = row.personDescription?.value ?? "";
+    // Prefer notable-sounding descriptions (actress/actor/singer…)
+    const notableDesc = /actress|actor|singer|composer|director|musician/i.test(desc) ? 1 : 0;
+    scored.push({
+      id,
+      label: row.personLabel?.value ?? id,
+      description: desc || undefined,
+      thumbnail: commonsFilePathToThumb(row.image?.value, 120),
+      type: "person",
+      score: sameCit * 50 + hasAward * 20 + notableDesc * 15 + (row.image?.value ? 10 : 0),
+    });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, limit).map(({ score: _s, ...r }) => r);
+}
+
+async function sparqlOrgPeers(subjectId: string, meta: SubjectPeerMeta, limit: number): Promise<SearchResult[]> {
+  const industry = meta.industryIds.slice(0, 3);
+  const instances = meta.instanceIds.slice(0, 4);
+  const country = meta.countryIds.slice(0, 2);
+  if (!industry.length && !instances.length) return [];
+
+  const matchBlock = industry.length
+    ? `VALUES ?ind { ${industry.map((id) => `wd:${id}`).join(" ")} }
+       ?org wdt:P452 ?ind .`
+    : `VALUES ?cls { ${instances.map((id) => `wd:${id}`).join(" ")} }
+       ?org wdt:P31 ?cls .`;
+
+  const countryBlock = country.length
+    ? `OPTIONAL {
+         ?org wdt:P17 ?co .
+         VALUES ?wantCo { ${country.map((id) => `wd:${id}`).join(" ")} }
+         BIND(IF(?co = ?wantCo, 1, 0) AS ?sameCountry)
+       }`
+    : "BIND(0 AS ?sameCountry)";
+
+  const sparql = `
+    SELECT DISTINCT ?org ?orgLabel ?orgDescription ?image ?sameCountry WHERE {
+      ${matchBlock}
+      OPTIONAL { ?org wdt:P154|wdt:P18 ?image . }
+      ?article schema:about ?org ; schema:isPartOf <https://en.wikipedia.org/> .
+      FILTER(?org != wd:${subjectId})
+      ${countryBlock}
+      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+    }
+    LIMIT ${Math.min(limit * 3, 60)}
+  `;
+  try {
+    const rows = await runSparql(sparql);
+    const scored: Array<SearchResult & { score: number }> = [];
+    const seen = new Set<string>();
+    for (const row of rows) {
+      const id = row.org?.value?.split("/").pop();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      scored.push({
+        id,
+        label: row.orgLabel?.value ?? id,
+        description: row.orgDescription?.value,
+        thumbnail: commonsFilePathToThumb(row.image?.value, 120),
+        type: "organization",
+        score: (row.sameCountry?.value === "1" ? 40 : 0) + (row.image?.value ? 10 : 0),
+      });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, limit).map(({ score: _s, ...r }) => r);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Category-aware compare suggestions:
+ * actors → film peers (Kajol for Rani), singers → singers, companies → companies, etc.
+ */
+export async function fetchComparePeers(
+  entityId: string,
+  limit = 22,
+): Promise<ComparePeerBundle> {
+  const meta = await loadSubjectPeerMeta(entityId);
+  const kind = detectCompareKind(meta);
+  const categoryLabel = categoryLabelFor(kind, meta);
+
+  let peers: SearchResult[] = [];
+  try {
+    if (kind === "company") {
+      peers = await sparqlOrgPeers(entityId, meta, limit);
+    } else if (kind === "actor" || kind === "singer" || kind === "musician") {
+      const occIds = primaryOccupationIds(meta, kind);
+      peers = await sparqlPersonPeers(
+        entityId,
+        occIds,
+        meta.citizenshipIds,
+        limit,
+      );
+    } else if (kind === "person") {
+      peers = await sparqlPersonPeers(
+        entityId,
+        meta.occupationIds.slice(0, 5),
+        meta.citizenshipIds,
+        limit,
+      );
+    }
+  } catch {
+    peers = [];
+  }
+
+  // Search hits first — famous names (Kajol, etc.) beat obscure SPARQL peers
+  {
+    const queries = searchQueriesForKind(kind, meta);
+    const seen = new Set<string>([entityId]);
+    const fromSearch: SearchResult[] = [];
+    const searchHits = await Promise.all(
+      queries.map((q) => searchEntities(q, 12).catch(() => [] as SearchResult[])),
+    );
+    for (const hits of searchHits) {
+      for (const h of hits) {
+        if (seen.has(h.id)) continue;
+        if (kind === "company" && h.type !== "organization" && h.type !== "unknown") continue;
+        if (
+          (kind === "actor" || kind === "singer" || kind === "musician" || kind === "person") &&
+          h.type !== "person" &&
+          h.type !== "unknown"
+        ) {
+          continue;
+        }
+        seen.add(h.id);
+        fromSearch.push(h);
+      }
+    }
+    const fromSparql: SearchResult[] = [];
+    for (const p of peers) {
+      if (seen.has(p.id)) continue;
+      seen.add(p.id);
+      fromSparql.push(p);
+    }
+    peers = [...fromSearch, ...fromSparql];
+  }
+
+  // Backfill thumbs
+  const needThumbs = peers.filter((p) => !p.thumbnail).map((p) => p.id);
+  if (needThumbs.length) {
+    const thumbs = await fetchThumbnails(needThumbs.slice(0, 50), undefined, 120);
+    for (const p of peers) {
+      if (!p.thumbnail && thumbs[p.id]) p.thumbnail = thumbs[p.id];
+    }
+  }
+
+  return {
+    peers: peers.slice(0, limit),
+    categoryLabel,
+    kind,
+  };
+}
+
+/** @deprecated use fetchComparePeers */
+export async function fetchSameCategoryPeers(
+  personId: string,
+  limit = 20,
+): Promise<SearchResult[]> {
+  const bundle = await fetchComparePeers(personId, limit);
+  return bundle.peers;
+}
+
+/** Batch Wikipedia thumbs for Wikidata entities (enwiki sitelinks → pageimages / REST). */
+async function fetchWikipediaThumbsForEntities(
+  ids: string[],
+): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  const unique = [...new Set(ids.filter((id) => /^Q\d+$/.test(id)))];
+  if (!unique.length) return out;
+
+  const clean = (src?: string) => {
+    if (!src) return undefined;
+    try {
+      const u = new URL(src);
+      u.searchParams.delete("utm_source");
+      u.searchParams.delete("utm_campaign");
+      u.searchParams.delete("utm_content");
+      return u.toString();
+    } catch {
+      return src;
+    }
+  };
+
+  try {
+    for (let i = 0; i < unique.length; i += 40) {
+      const chunk = unique.slice(i, i + 40);
+      const params = new URLSearchParams({
+        action: "wbgetentities",
+        ids: chunk.join("|"),
+        props: "sitelinks",
+        sitefilter: "enwiki",
+        format: "json",
+        origin: "*",
+      });
+      const res = await fetch(`${WIKIDATA_API}?${params}`);
+      if (!res.ok) continue;
+      const data = await res.json() as {
+        entities?: Record<string, { sitelinks?: { enwiki?: { title?: string } } }>;
+      };
+      const titleToQid = new Map<string, string>();
+      const qidToTitle = new Map<string, string>();
+      const titles: string[] = [];
+      for (const [qid, ent] of Object.entries(data.entities ?? {})) {
+        const title = ent.sitelinks?.enwiki?.title;
+        if (!title) continue;
+        titles.push(title);
+        qidToTitle.set(qid, title);
+        titleToQid.set(title.replace(/ /g, "_"), qid);
+        titleToQid.set(title, qid);
+      }
+      if (!titles.length) continue;
+
+      // pageimages — often empty for fair-use film posters
+      for (let j = 0; j < titles.length; j += 20) {
+        const titleChunk = titles.slice(j, j + 20);
+        const wp = new URLSearchParams({
+          action: "query",
+          format: "json",
+          origin: "*",
+          prop: "pageimages",
+          piprop: "thumbnail",
+          pithumbsize: "360",
+          titles: titleChunk.join("|"),
+        });
+        const wr = await fetch(`${WIKIPEDIA_API}?${wp}`);
+        if (!wr.ok) continue;
+        const wdata = await wr.json() as {
+          query?: {
+            pages?: Record<
+              string,
+              { title?: string; thumbnail?: { source?: string } }
+            >;
+          };
+        };
+        for (const page of Object.values(wdata.query?.pages ?? {})) {
+          const src = clean(page.thumbnail?.source);
+          const title = page.title;
+          if (!src || !title) continue;
+          const qid = titleToQid.get(title) ?? titleToQid.get(title.replace(/ /g, "_"));
+          if (qid) out[qid] = src;
+        }
+      }
+
+      // REST summary — reliable for Bollywood / fair-use posters; use sitelink titles
+      const missing = [...qidToTitle.entries()].filter(([qid]) => !out[qid]);
+      for (let k = 0; k < missing.length; k += 12) {
+        const batch = missing.slice(k, k + 12);
+        await Promise.all(
+          batch.map(async ([qid, title]) => {
+            const src = clean(await fetchWikipediaRestThumb(title));
+            if (src) out[qid] = src;
+          }),
+        );
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return out;
 }
 
 function roleLabelForProp(pid: string): string | undefined {
@@ -1159,133 +2911,229 @@ export async function fetchCreativeRoleExpansion(
   return { nodes, edges };
 }
 
+export type FetchGraphOptions = {
+  /**
+   * Reverse filmography SPARQL + MusicBrainz. Default false — load in a
+   * deferred query so claim-based graph paints in ~1 Wikidata RTT.
+   */
+  includeCreativeRoles?: boolean;
+};
+
 export async function fetchGraphData(
   rootId: string,
   depth = 1,
-  existingIds: Set<string> = new Set()
+  existingIds: Set<string> = new Set(),
+  opts: FetchGraphOptions = {},
 ): Promise<GraphData> {
   const visited = new Set([...existingIds, rootId]);
   const nodes = new Map<string, import("./types.ts").GraphNode>();
   const edges: import("./types.ts").GraphEdge[] = [];
-  await expandNode(rootId, depth, visited, nodes, edges);
+  const includeCreative = opts.includeCreativeRoles === true;
+
+  // Level-by-level BFS (batched wbgetentities). Creative SPARQL is opt-in.
+  let frontier = [rootId];
+  for (let remaining = depth; frontier.length > 0 && remaining >= 0; remaining--) {
+    const qids = frontier.filter((id) => /^Q\d+$/i.test(id));
+    const entities = qids.length ? await fetchWikidataEntitiesBatch(qids) : {};
+    const nextFrontier: string[] = [];
+
+    for (const id of frontier) {
+      if (!/^Q\d+$/i.test(id)) continue;
+      const entity = entities[id];
+      if (!entity) continue;
+
+      const label = pickLabel(entity.labels) ?? id;
+      const desc = pickLabel(entity.descriptions) ?? undefined;
+      const type = typeFromEntityClaims(entity);
+      if (!nodes.has(id)) {
+        nodes.set(id, { id, label, description: desc, type, kind: "entity" });
+      } else {
+        const n = nodes.get(id)!;
+        n.label = label;
+        if (desc) n.description = desc;
+        if (type !== "unknown") n.type = type;
+      }
+
+      if (remaining === 0) continue;
+
+      const neighbors: GraphNeighbor[] = graphClaimNeighbors(entity);
+
+      if (includeCreative && id === rootId && type === "person") {
+        const already = new Set([...visited, ...nodes.keys()]);
+        const occupationIds = occupationIdsFromClaims(
+          entity.claims as Record<string, ClaimSnakValue[] | undefined>,
+        );
+        const roles = await fetchCreativeRoles(id, { existingIds: already, occupationIds });
+        const mbid = musicBrainzArtistIdFromClaims(
+          entity.claims as Record<string, ClaimSnakValue[] | undefined>,
+        );
+        const wantMb =
+          Boolean(mbid) &&
+          (occupationIds.length === 0 ||
+            occupationIds.some((oid) => OCC_SINGER.has(oid) || OCC_COMPOSER.has(oid)));
+        const mbAlbums =
+          wantMb && mbid
+            ? await fetchMusicBrainzAlbums(mbid, {
+                existingIds: new Set([...already, ...roles.map((r) => r.qid)]),
+                limit: 24,
+              })
+            : [];
+        for (const r of [...roles, ...mbAlbums]) {
+          neighbors.push({ qid: r.qid, pid: r.pid, edgeLabel: r.label });
+          if (!nodes.has(r.qid)) {
+            nodes.set(r.qid, {
+              id: r.qid,
+              label: r.workLabel,
+              type: r.type,
+              kind: "entity",
+              externalUrl: r.externalUrl,
+              description: r.externalUrl ? "MusicBrainz release group" : undefined,
+            });
+          }
+        }
+      }
+
+      // Resolve award + film labels in one batch (no extra BFS hop)
+      const awardMetaIds = [
+        ...new Set(
+          neighbors
+            .filter((n) => n.pid === "P166" && n.forWorkQid)
+            .flatMap((n) => [n.qid, n.forWorkQid!]),
+        ),
+      ];
+      const awardLabels = awardMetaIds.length ? await resolveLabels(awardMetaIds) : {};
+
+      for (const { qid, pid, edgeLabel, forWorkQid } of neighbors) {
+        if (pid === "P166" && forWorkQid) {
+          const leafId = `awd:${qid}:${forWorkQid}`;
+          const edgeId = `${id}-P166-${leafId}`;
+          const awardName = awardLabels[qid] ?? qid;
+          const workName = awardLabels[forWorkQid] ?? forWorkQid;
+          nodes.set(leafId, {
+            id: leafId,
+            label: awardName,
+            description: `for ${workName}`,
+            type: "concept",
+            kind: "entity",
+          });
+          if (!edges.some((e) => e.id === edgeId)) {
+            edges.push({
+              id: edgeId,
+              source: id,
+              target: leafId,
+              label: edgeLabel ?? GRAPH_PROP_LABELS.P166 ?? "Award received",
+              propertyId: "P166",
+            });
+          }
+          continue;
+        }
+
+        if (!nodes.has(qid)) {
+          nodes.set(qid, {
+            id: qid,
+            label: qid,
+            type: "unknown",
+            kind: "entity",
+          });
+        }
+        const edgeId = `${id}-${pid}-${qid}`;
+        if (!edges.some((e) => e.id === edgeId)) {
+          edges.push({
+            id: edgeId,
+            source: id,
+            target: qid,
+            label: edgeLabel ?? roleLabelForProp(pid) ?? GRAPH_PROP_LABELS[pid] ?? pid,
+            propertyId: pid,
+          });
+        }
+        if (/^Q\d+$/i.test(qid) && !visited.has(qid)) {
+          visited.add(qid);
+          nextFrontier.push(qid);
+        }
+      }
+    }
+
+    frontier = nextFrontier;
+  }
+
   return { nodes: [...nodes.values()], edges };
 }
 
-async function expandNode(
-  id: string,
-  depth: number,
-  visited: Set<string>,
-  nodes: Map<string, import("./types.ts").GraphNode>,
-  edges: import("./types.ts").GraphEdge[],
-): Promise<void> {
-  if (depth < 0) return;
-  // Synthetic / external nodes (e.g. MusicBrainz) are leaves
-  if (!/^Q\d+$/i.test(id)) return;
-
-  const params = new URLSearchParams({
-    action: "wbgetentities",
-    ids: id,
-    languages: "en",
-    languagefallback: "1",
-    format: "json",
-    origin: "*",
-    props: "labels|descriptions|claims",
-  });
-
-  const res = await fetch(`${WIKIDATA_API}?${params}`);
-  if (!res.ok) return;
-  const data = await res.json() as { entities: Record<string, WikidataEntity> };
-  const entity = data.entities[id];
-  if (!entity) return;
-
-  const label = pickLabel(entity.labels) ?? id;
-  const desc = pickLabel(entity.descriptions) ?? undefined;
-
-  const neighbors: { qid: string; pid: string; edgeLabel?: string }[] = [];
-  for (const pid of GRAPH_PROPS) {
-    const claimList = entity.claims?.[pid] as ClaimSnakValue[] | undefined;
-    if (!claimList) continue;
-    const cap = pid === "P800" ? 12 : 5;
-    for (const claim of claimList.slice(0, cap)) {
-      const val = claim.mainsnak?.datavalue?.value;
-      if (typeof val === "object" && val && "id" in val && typeof val.id === "string") {
-        neighbors.push({ qid: val.id, pid });
-      }
-    }
+/** Turn creative-role hits into graph nodes/edges under `personId`. */
+export function creativeHitsToGraphData(
+  personId: string,
+  hits: CreativeRoleHit[],
+): GraphData {
+  const nodes: import("./types.ts").GraphNode[] = [];
+  const edges: import("./types.ts").GraphEdge[] = [];
+  for (const r of hits) {
+    nodes.push({
+      id: r.qid,
+      label: r.workLabel,
+      type: r.type,
+      kind: "entity",
+      externalUrl: r.externalUrl,
+      description: r.externalUrl ? "MusicBrainz release group" : undefined,
+    });
+    edges.push({
+      id: `${personId}-${r.pid}-${r.qid}`,
+      source: personId,
+      target: r.qid,
+      label: r.label,
+      propertyId: r.pid,
+    });
   }
+  return { nodes, edges };
+}
 
+function typeFromEntityClaims(entity: WikidataEntity): import("./types.ts").EntityType {
   const p31 = (entity.claims?.["P31"] as ClaimSnakValue[] | undefined) ?? [];
   const instanceOfIds = p31
     .map((c) => {
       const val = c.mainsnak?.datavalue?.value;
-      return typeof val === "object" && val && "id" in val ? val.id : undefined;
+      return typeof val === "object" && val && "id" in val ? (val as { id: string }).id : undefined;
     })
     .filter((x): x is string => Boolean(x));
-  const type = detectTypeFromInstanceOf(instanceOfIds);
+  return detectTypeFromInstanceOf(instanceOfIds);
+}
 
-  if (!nodes.has(id)) nodes.set(id, { id, label, description: desc, type, kind: "entity" });
-  if (depth === 0) return;
+type GraphNeighbor = {
+  qid: string;
+  pid: string;
+  edgeLabel?: string;
+  /** Award “for work” (P1686) — builds a compound award leaf. */
+  forWorkQid?: string;
+};
 
-  // Person filmography / discography via reverse claims on works
-  if (type === "person") {
-    const already = new Set([...visited, ...nodes.keys()]);
-    const roles = await fetchCreativeRoles(id, { existingIds: already });
-    const mbid = musicBrainzArtistIdFromClaims(
-      entity.claims as Record<string, ClaimSnakValue[] | undefined>,
-    );
-    const mbAlbums = mbid
-      ? await fetchMusicBrainzAlbums(mbid, {
-          existingIds: new Set([...already, ...roles.map((r) => r.qid)]),
-          limit: 40,
-        })
-      : [];
-    for (const r of [...roles, ...mbAlbums]) {
-      neighbors.push({ qid: r.qid, pid: r.pid, edgeLabel: r.label });
-      if (!nodes.has(r.qid)) {
-        nodes.set(r.qid, {
-          id: r.qid,
-          label: r.workLabel,
-          type: r.type,
-          kind: "entity",
-          externalUrl: r.externalUrl,
-          description: r.externalUrl ? "MusicBrainz release group" : undefined,
-        });
+function graphClaimNeighbors(entity: WikidataEntity): GraphNeighbor[] {
+  const neighbors: GraphNeighbor[] = [];
+  for (const pid of GRAPH_PROPS) {
+    const claimList = entity.claims?.[pid] as ClaimSnakValue[] | undefined;
+    if (!claimList) continue;
+    const cap = pid === "P800" ? 12 : pid === "P166" ? 16 : 5;
+    for (const claim of claimList.slice(0, cap)) {
+      const val = claim.mainsnak?.datavalue?.value;
+      if (typeof val !== "object" || !val || !("id" in val) || typeof val.id !== "string") {
+        continue;
       }
+      const qid = val.id;
+      if (pid === "P166") {
+        const workSnaks = (claim.qualifiers?.["P1686"] ?? []) as Array<{
+          datavalue?: { value?: unknown };
+          mainsnak?: { datavalue?: { value?: unknown } };
+        }>;
+        const raw = workSnaks[0]?.datavalue?.value ?? workSnaks[0]?.mainsnak?.datavalue?.value;
+        const forWorkQid =
+          typeof raw === "object" && raw && "id" in raw && typeof (raw as { id: string }).id === "string"
+            ? (raw as { id: string }).id
+            : undefined;
+        neighbors.push({ qid, pid, forWorkQid });
+        continue;
+      }
+      neighbors.push({ qid, pid });
     }
   }
-
-  if (neighbors.length === 0) return;
-
-  const newQids = neighbors
-    .map((n) => n.qid)
-    .filter((q) => /^Q\d+$/i.test(q) && !visited.has(q) && !nodes.has(q));
-  const batchLabels = newQids.length > 0 ? await resolveLabels(newQids) : {};
-  const batchTypes = newQids.length > 0 ? await fetchEntityTypes(newQids) : {};
-
-  for (const { qid, pid, edgeLabel } of neighbors) {
-    if (!nodes.has(qid)) {
-      nodes.set(qid, {
-        id: qid,
-        label: batchLabels[qid] ?? qid,
-        type: batchTypes[qid] ?? "unknown",
-        kind: "entity",
-      });
-    }
-    const edgeId = `${id}-${pid}-${qid}`;
-    if (!edges.find((e) => e.id === edgeId)) {
-      edges.push({
-        id: edgeId,
-        source: id,
-        target: qid,
-        label: edgeLabel ?? roleLabelForProp(pid) ?? GRAPH_PROP_LABELS[pid] ?? pid,
-        propertyId: pid,
-      });
-    }
-    if (depth > 1 && /^Q\d+$/i.test(qid) && !visited.has(qid)) {
-      visited.add(qid);
-      await expandNode(qid, depth - 1, visited, nodes, edges);
-    }
-  }
+  return neighbors;
 }
 
 // ─── Family tree ─────────────────────────────────────────────────────────────
@@ -1308,12 +3156,130 @@ export async function fetchFamilyData(
   const edges: import("./types.ts").GraphEdge[] = [];
   /** Claims seen while expanding — used to link co-parents at hop 1. */
   const claimsCache = new Map<string, Record<string, ClaimSnakValue[] | undefined>>();
-  await expandFamilyNode(rootId, depth, visited, nodes, edges, claimsCache);
+
+  // Level-by-level BFS: one batched wbgetentities round-trip per hop (not sequential DFS).
+  let frontier = [rootId];
+  for (let remaining = depth; frontier.length > 0 && remaining >= 0; remaining--) {
+    const entities = await fetchWikidataEntitiesBatch(frontier);
+    const nextFrontier: string[] = [];
+
+    for (const id of frontier) {
+      const entity = entities[id];
+      if (!entity) continue;
+
+      claimsCache.set(id, (entity.claims ?? {}) as Record<string, ClaimSnakValue[] | undefined>);
+      upsertFamilyNode(nodes, id, entity);
+
+      if (remaining === 0) continue;
+
+      for (const { qid, pid } of familyNeighbors(entity)) {
+        if (!nodes.has(qid)) {
+          nodes.set(qid, { id: qid, label: qid, type: "person" });
+        }
+        const edgeId = `${id}-${pid}-${qid}`;
+        if (!edges.some((e) => e.id === edgeId)) {
+          edges.push({
+            id: edgeId,
+            source: id,
+            target: qid,
+            label: FAMILY_PROPS[pid] ?? pid,
+            propertyId: pid,
+          });
+        }
+        if (!visited.has(qid)) {
+          visited.add(qid);
+          nextFrontier.push(qid);
+        }
+      }
+    }
+
+    frontier = nextFrontier;
+  }
+
   // Leaf nodes (depth 0) were not expanded for neighbors; still wire family
   // claims between people already on the graph (e.g. spouse → shared child).
   linkFamilyClaimsAmongKnown(claimsCache, nodes, edges);
   const normalized = normalizeChildEdgesToParent(edges, nodes);
   return { nodes: [...nodes.values()], edges: dedupeFamilyEdges(normalized) };
+}
+
+/** Batch wbgetentities (labels|descriptions|claims) — chunks of 50 in parallel. */
+async function fetchWikidataEntitiesBatch(
+  ids: string[],
+): Promise<Record<string, WikidataEntity>> {
+  const unique = [...new Set(ids.filter(Boolean))];
+  if (!unique.length) return {};
+  const out: Record<string, WikidataEntity> = {};
+  const chunks: string[][] = [];
+  for (let i = 0; i < unique.length; i += 50) chunks.push(unique.slice(i, i + 50));
+
+  await Promise.all(
+    chunks.map(async (chunk) => {
+      const params = new URLSearchParams({
+        action: "wbgetentities",
+        ids: chunk.join("|"),
+        languages: "en",
+        languagefallback: "1",
+        format: "json",
+        origin: "*",
+        props: "labels|descriptions|claims",
+      });
+      const res = await fetch(`${WIKIDATA_API}?${params}`);
+      if (!res.ok) return;
+      const data = await res.json() as { entities: Record<string, WikidataEntity> };
+      Object.assign(out, data.entities);
+    }),
+  );
+  return out;
+}
+
+function familyNeighbors(entity: WikidataEntity): { qid: string; pid: string }[] {
+  const neighbors: { qid: string; pid: string }[] = [];
+  for (const pid of Object.keys(FAMILY_PROPS)) {
+    const claimList = entity.claims?.[pid] as ClaimSnakValue[] | undefined;
+    if (!claimList) continue;
+    for (const claim of claimList.slice(0, 8)) {
+      const val = claim.mainsnak?.datavalue?.value;
+      if (typeof val === "object" && val && "id" in val && typeof val.id === "string") {
+        neighbors.push({ qid: val.id, pid });
+      }
+    }
+  }
+  return neighbors;
+}
+
+function upsertFamilyNode(
+  nodes: Map<string, import("./types.ts").GraphNode>,
+  id: string,
+  entity: WikidataEntity,
+): void {
+  const label = pickLabel(entity.labels) ?? id;
+  const desc = pickLabel(entity.descriptions) ?? undefined;
+  const birthClaim = entity.claims?.["P569"] as ClaimSnakValue[] | undefined;
+  const deathClaim = entity.claims?.["P570"] as ClaimSnakValue[] | undefined;
+  const birth = birthClaim?.[0]?.mainsnak?.datavalue?.value;
+  const death = deathClaim?.[0]?.mainsnak?.datavalue?.value;
+  const birthYear = typeof birth === "object" && birth && "time" in birth
+    ? extractYear(birth.time as string) : undefined;
+  const deathYear = typeof death === "object" && death && "time" in death
+    ? extractYear(death.time as string) : undefined;
+  const lifespan = birthYear ? `${birthYear}–${deathYear ?? ""}` : undefined;
+  const gender = sexFromClaims(entity.claims);
+
+  if (!nodes.has(id)) {
+    nodes.set(id, {
+      id,
+      label: lifespan ? `${label}\n${lifespan}` : label,
+      description: desc,
+      type: "person",
+      gender,
+    });
+  } else {
+    const existing = nodes.get(id)!;
+    existing.label = lifespan ? `${label}\n${lifespan}` : label;
+    if (desc) existing.description = desc;
+    if (gender) existing.gender = gender;
+  }
 }
 
 /**
@@ -1454,101 +3420,6 @@ export function dedupeFamilyEdges(edges: import("./types.ts").GraphEdge[]): impo
   return out;
 }
 
-async function expandFamilyNode(
-  id: string,
-  depth: number,
-  visited: Set<string>,
-  nodes: Map<string, import("./types.ts").GraphNode>,
-  edges: import("./types.ts").GraphEdge[],
-  claimsCache: Map<string, Record<string, ClaimSnakValue[] | undefined>>,
-): Promise<void> {
-  if (depth < 0) return;
-
-  const params = new URLSearchParams({
-    action: "wbgetentities",
-    ids: id,
-    languages: "en",
-    languagefallback: "1",
-    format: "json",
-    origin: "*",
-    props: "labels|descriptions|claims",
-  });
-
-  const res = await fetch(`${WIKIDATA_API}?${params}`);
-  if (!res.ok) return;
-  const data = await res.json() as { entities: Record<string, WikidataEntity> };
-  const entity = data.entities[id];
-  if (!entity) return;
-
-  claimsCache.set(id, (entity.claims ?? {}) as Record<string, ClaimSnakValue[] | undefined>);
-
-  const label = pickLabel(entity.labels) ?? id;
-  const desc = pickLabel(entity.descriptions) ?? undefined;
-  const birthClaim = entity.claims?.["P569"] as ClaimSnakValue[] | undefined;
-  const deathClaim = entity.claims?.["P570"] as ClaimSnakValue[] | undefined;
-  const birth = birthClaim?.[0]?.mainsnak?.datavalue?.value;
-  const death = deathClaim?.[0]?.mainsnak?.datavalue?.value;
-  const birthYear = typeof birth === "object" && birth && "time" in birth
-    ? extractYear(birth.time as string) : undefined;
-  const deathYear = typeof death === "object" && death && "time" in death
-    ? extractYear(death.time as string) : undefined;
-  const lifespan = birthYear ? `${birthYear}–${deathYear ?? ""}` : undefined;
-  const gender = sexFromClaims(entity.claims);
-
-  if (!nodes.has(id)) {
-    nodes.set(id, {
-      id,
-      label: lifespan ? `${label}\n${lifespan}` : label,
-      description: desc,
-      type: "person",
-      gender,
-    });
-  } else {
-    const existing = nodes.get(id)!;
-    if (gender && !existing.gender) existing.gender = gender;
-    if (lifespan && !existing.label.includes("\n")) {
-      existing.label = `${label}\n${lifespan}`;
-    }
-  }
-
-  if (depth === 0) return;
-
-  const neighbors: { qid: string; pid: string }[] = [];
-  for (const pid of Object.keys(FAMILY_PROPS)) {
-    const claimList = entity.claims?.[pid] as ClaimSnakValue[] | undefined;
-    if (!claimList) continue;
-    for (const claim of claimList.slice(0, 8)) {
-      const val = claim.mainsnak?.datavalue?.value;
-      if (typeof val === "object" && val && "id" in val && typeof val.id === "string") {
-        neighbors.push({ qid: val.id, pid });
-      }
-    }
-  }
-
-  const newQids = neighbors.map((n) => n.qid).filter((q) => !visited.has(q));
-  const batchLabels = newQids.length > 0 ? await resolveLabels(newQids) : {};
-
-  for (const { qid, pid } of neighbors) {
-    if (!nodes.has(qid)) {
-      nodes.set(qid, { id: qid, label: batchLabels[qid] ?? qid, type: "person" });
-    }
-    const edgeId = `${id}-${pid}-${qid}`;
-    if (!edges.find((e) => e.id === edgeId)) {
-      edges.push({
-        id: edgeId,
-        source: id,
-        target: qid,
-        label: FAMILY_PROPS[pid] ?? pid,
-        propertyId: pid,
-      });
-    }
-    if (!visited.has(qid)) {
-      visited.add(qid);
-      await expandFamilyNode(qid, depth - 1, visited, nodes, edges, claimsCache);
-    }
-  }
-}
-
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function sexFromClaims(claims?: Record<string, unknown[]>): "male" | "female" | undefined {
@@ -1577,58 +3448,66 @@ async function resolveLabels(ids: string[]): Promise<Record<string, string>> {
 async function resolveEntityMeta(ids: string[]): Promise<Record<string, { label: string; description?: string }>> {
   if (ids.length === 0) return {};
   const results: Record<string, { label: string; description?: string }> = {};
-  for (let i = 0; i < ids.length; i += 50) {
-    const chunk = ids.slice(i, i + 50);
-    const params = new URLSearchParams({
-      action: "wbgetentities",
-      ids: chunk.join("|"),
-      props: "labels|descriptions",
-      languages: "en",
-      languagefallback: "1",
-      format: "json",
-      origin: "*",
-    });
-    const res = await fetch(`${WIKIDATA_API}?${params}`);
-    if (!res.ok) continue;
-    const data = await res.json() as {
-      entities: Record<string, {
-        labels?: Record<string, { value: string }>;
-        descriptions?: Record<string, { value: string }>;
-      }>;
-    };
-    for (const [qid, ent] of Object.entries(data.entities)) {
-      results[qid] = {
-        label: pickLabel(ent.labels) ?? qid,
-        description: pickLabel(ent.descriptions) ?? undefined,
+  const chunks: string[][] = [];
+  for (let i = 0; i < ids.length; i += 50) chunks.push(ids.slice(i, i + 50));
+
+  await Promise.all(
+    chunks.map(async (chunk) => {
+      const params = new URLSearchParams({
+        action: "wbgetentities",
+        ids: chunk.join("|"),
+        props: "labels|descriptions",
+        languages: "en",
+        languagefallback: "1",
+        format: "json",
+        origin: "*",
+      });
+      const res = await fetch(`${WIKIDATA_API}?${params}`);
+      if (!res.ok) return;
+      const data = await res.json() as {
+        entities: Record<string, {
+          labels?: Record<string, { value: string }>;
+          descriptions?: Record<string, { value: string }>;
+        }>;
       };
-    }
-  }
+      for (const [qid, ent] of Object.entries(data.entities)) {
+        results[qid] = {
+          label: pickLabel(ent.labels) ?? qid,
+          description: pickLabel(ent.descriptions) ?? undefined,
+        };
+      }
+    }),
+  );
   return results;
 }
 
 async function resolvePropertyLabels(pids: string[]): Promise<Record<string, string>> {
   if (!pids.length) return {};
   const results: Record<string, string> = {};
-  for (let i = 0; i < pids.length; i += 50) {
-    const chunk = pids.slice(i, i + 50);
-    const params = new URLSearchParams({
-      action: "wbgetentities",
-      ids: chunk.join("|"),
-      props: "labels",
-      languages: "en",
-      languagefallback: "1",
-      format: "json",
-      origin: "*",
-    });
-    const res = await fetch(`${WIKIDATA_API}?${params}`);
-    if (!res.ok) continue;
-    const data = await res.json() as {
-      entities: Record<string, { labels?: Record<string, { value: string }> }>;
-    };
-    for (const [pid, ent] of Object.entries(data.entities)) {
-      results[pid] = pickLabel(ent.labels) ?? pid;
-    }
-  }
+  const chunks: string[][] = [];
+  for (let i = 0; i < pids.length; i += 50) chunks.push(pids.slice(i, i + 50));
+
+  await Promise.all(
+    chunks.map(async (chunk) => {
+      const params = new URLSearchParams({
+        action: "wbgetentities",
+        ids: chunk.join("|"),
+        props: "labels",
+        languages: "en",
+        languagefallback: "1",
+        format: "json",
+        origin: "*",
+      });
+      const res = await fetch(`${WIKIDATA_API}?${params}`);
+      if (!res.ok) return;
+      const data = await res.json() as {
+        entities: Record<string, { labels?: Record<string, { value: string }> }>;
+      };
+      for (const [pid, ent] of Object.entries(data.entities)) {
+        results[pid] = pickLabel(ent.labels) ?? pid;
+      }
+    }),
+  );
   return results;
 }
 
@@ -1643,13 +3522,18 @@ async function fetchWikipediaThumbnail(title: string): Promise<string | undefine
   }
 }
 
-/** Complete in-app Wikipedia dossier: full HTML + text sections + gallery + extra languages */
-async function fetchWikipediaArticle(title: string): Promise<WikipediaArticle | undefined> {
+/** Complete in-app Wikipedia dossier: full HTML + text sections + gallery (+ optional extras) */
+async function fetchWikipediaArticle(
+  title: string,
+  opts: { includeMainArticles?: boolean; includeOtherLanguages?: boolean } = {},
+): Promise<WikipediaArticle | undefined> {
   try {
     const [parsed, textArticle, otherLanguages, revisedAt] = await Promise.all([
       fetchWikipediaParsedHtml(title),
       fetchWikipediaPlainExtract(title),
-      fetchOtherLanguageExtracts(title),
+      opts.includeOtherLanguages
+        ? fetchOtherLanguageExtracts(title)
+        : Promise.resolve([] as Awaited<ReturnType<typeof fetchOtherLanguageExtracts>>),
       fetchWikipediaRevisedAt(title),
     ]);
 
@@ -1661,7 +3545,7 @@ async function fetchWikipediaArticle(title: string): Promise<WikipediaArticle | 
         url: wikiUrl(title),
         lead: short,
         sections: [],
-        otherLanguages,
+        otherLanguages: otherLanguages.length ? otherLanguages : undefined,
         revisedAt,
       };
     }
@@ -1690,9 +3574,10 @@ async function fetchWikipediaArticle(title: string): Promise<WikipediaArticle | 
 
     // Prefer hatnotes under Discography / Filmography / Awards (+ any main-article links found)
     const prioritized = prioritizeMainArticleHints(mainArticleHints, sections);
-    const mainArticles = prioritized.length
-      ? await fetchMainArticles(prioritized)
-      : undefined;
+    const mainArticles =
+      opts.includeMainArticles && prioritized.length
+        ? await fetchMainArticles(prioritized)
+        : undefined;
 
     // Attach mainArticleTitle onto matching TOC nodes
     if (toc && mainArticles?.length) {
@@ -1709,15 +3594,29 @@ async function fetchWikipediaArticle(title: string): Promise<WikipediaArticle | 
       html,
       thumbnail: portrait,
       gallery: parsed?.gallery ?? [],
-      otherLanguages,
+      otherLanguages: otherLanguages.length ? otherLanguages : undefined,
       revisedAt,
       infobox: parsed?.infobox,
       toc,
+      mainArticleHints: prioritized.length ? prioritized : undefined,
       mainArticles,
     };
   } catch {
     return undefined;
   }
+}
+
+/** Deferred: other-language Wikipedia extracts for the Languages tab. */
+export async function fetchEntityOtherLanguages(enTitle: string) {
+  return fetchOtherLanguageExtracts(enTitle);
+}
+
+/** Deferred: full "Main article" pages for Overview embeds. */
+export async function fetchEntityMainArticles(
+  hints: Array<{ parentSection: string; parentSectionId: string; title: string }>,
+) {
+  if (!hints.length) return [];
+  return fetchMainArticles(hints);
 }
 
 /** Cheap MediaWiki revision timestamp for cache invalidation. */
@@ -2406,9 +4305,10 @@ export async function resolveWikipediaTitleToQid(title: string): Promise<string 
 }
 
 function getCommonsThumbUrl(filename: string, width: number): string {
-  const encoded = encodeURIComponent(filename.replace(/ /g, "_"));
-  // Special:FilePath redirects to an allowed Wikimedia thumbnail size
-  return `https://commons.wikimedia.org/wiki/Special:FilePath/${encoded}?width=${width}`;
+  // thumb.php is more reliable as a direct <img> src than Special:FilePath redirects
+  // (which often fail with referrer / redirect quirks in the browser).
+  const file = filename.replace(/ /g, "_");
+  return `https://commons.wikimedia.org/w/thumb.php?f=${encodeURIComponent(file)}&width=${width}`;
 }
 
 /** Skip icons, audio, and decorative wiki chrome — keep real photos/illustrations */

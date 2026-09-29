@@ -28,12 +28,15 @@ export function WikiTocNav({
   readingMins,
   onNavigateSection,
   className,
+  variant = "light",
 }: {
   toc: WikiTocItem[];
   readingMins?: number;
   onNavigateSection?: (id: string) => void;
   className?: string;
+  variant?: "light" | "dark";
 }) {
+  const dark = variant === "dark";
   const allIds = useMemo(() => flattenIds(toc), [toc]);
   const expandable = useMemo(() => parentsWithChildren(toc), [toc]);
   const [activeId, setActiveId] = useState<string | null>(toc[0]?.id ?? null);
@@ -86,7 +89,12 @@ export function WikiTocNav({
   };
 
   const renderItems = (items: WikiTocItem[], depth = 0) => (
-    <ul className={cn(depth === 0 ? "p-2 space-y-0.5" : "mt-0.5 ml-2 space-y-0.5 border-l border-slate-100 pl-2")}>
+    <ul
+      className={cn(
+        depth === 0 ? "p-2 space-y-0.5" : "mt-0.5 ml-2 space-y-0.5 pl-2 border-l",
+        dark ? "border-white/10" : "border-slate-100",
+      )}
+    >
       {items.map((item) => {
         const hasKids = Boolean(item.children?.length);
         const isOpen = open.has(item.id);
@@ -99,7 +107,12 @@ export function WikiTocNav({
                   type="button"
                   aria-label={isOpen ? "Collapse" : "Expand"}
                   onClick={() => toggle(item.id)}
-                  className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-slate-50 hover:text-slate-700 cursor-pointer"
+                  className={cn(
+                    "mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md cursor-pointer",
+                    dark
+                      ? "text-slate-500 hover:bg-white/5 hover:text-slate-200"
+                      : "text-slate-400 hover:bg-slate-50 hover:text-slate-700",
+                  )}
                 >
                   <ChevronDown
                     className={cn("size-3.5 transition-transform", !isOpen && "-rotate-90")}
@@ -114,10 +127,16 @@ export function WikiTocNav({
                 className={cn(
                   "min-w-0 flex-1 rounded-lg px-2 py-1.5 text-left text-[13px] leading-snug cursor-pointer transition-colors",
                   selected
-                    ? "bg-slate-900 text-white font-semibold"
+                    ? dark
+                      ? "bg-sky-500/20 text-sky-100 font-semibold"
+                      : "bg-slate-900 text-white font-semibold"
                     : depth === 0
-                      ? "text-cyan-800 hover:bg-cyan-50/80 font-medium"
-                      : "text-cyan-700/90 hover:bg-slate-50",
+                      ? dark
+                        ? "text-sky-300 hover:bg-white/5 font-medium"
+                        : "text-cyan-800 hover:bg-cyan-50/80 font-medium"
+                      : dark
+                        ? "text-slate-400 hover:bg-white/5 hover:text-slate-200"
+                        : "text-cyan-700/90 hover:bg-slate-50",
                 )}
               >
                 <span className="line-clamp-2">{item.title}</span>
@@ -125,7 +144,13 @@ export function WikiTocNav({
                   <span
                     className={cn(
                       "mt-0.5 block text-[10px] font-normal truncate",
-                      selected ? "text-white/70" : "text-slate-400",
+                      selected
+                        ? dark
+                          ? "text-sky-100/70"
+                          : "text-white/70"
+                        : dark
+                          ? "text-slate-500"
+                          : "text-slate-400",
                     )}
                   >
                     → {item.mainArticleTitle}
@@ -141,14 +166,39 @@ export function WikiTocNav({
   );
 
   return (
-    <nav className={cn("rounded-2xl border border-stone-300/70 bg-[#faf9f6]/95 shadow-sm shadow-stone-400/15 overflow-hidden backdrop-blur-sm", className)}>
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-stone-200/80">
-        <List className="size-4 text-teal-700" />
-        <p className="text-xs font-semibold uppercase tracking-wider text-stone-500">Contents</p>
+    <nav
+      className={cn(
+        "overflow-hidden",
+        dark
+          ? "rounded-xl border border-white/8 bg-transparent"
+          : "rounded-2xl border border-stone-300/70 bg-[#faf9f6]/95 shadow-sm shadow-stone-400/15 backdrop-blur-sm",
+        className,
+      )}
+    >
+      <div
+        className={cn(
+          "flex items-center gap-2 px-4 py-3 border-b",
+          dark ? "border-white/8 px-2" : "border-stone-200/80",
+        )}
+      >
+        <List className={cn("size-4", dark ? "text-sky-400" : "text-teal-700")} />
+        <p
+          className={cn(
+            "text-xs font-semibold uppercase tracking-wider",
+            dark ? "text-slate-400" : "text-stone-500",
+          )}
+        >
+          Contents
+        </p>
       </div>
       <div className="max-h-[calc(100vh-12rem)] overflow-auto">{renderItems(toc)}</div>
       {readingMins != null && readingMins > 0 && (
-        <div className="border-t border-stone-200/80 px-4 py-3 text-xs text-stone-500">
+        <div
+          className={cn(
+            "border-t px-4 py-3 text-xs",
+            dark ? "border-white/8 text-slate-500" : "border-stone-200/80 text-stone-500",
+          )}
+        >
           {readingMins} min read
         </div>
       )}
