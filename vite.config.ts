@@ -3,6 +3,7 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react-swc";
 import { defineConfig } from "vite";
 import { aiTimelinePlugin } from "./vite-plugin-ai-timeline.ts";
+import { audioPlugin } from "./vite-plugin-audio.ts";
 
 export default defineConfig({
   server: {
@@ -18,7 +19,7 @@ export default defineConfig({
     port: 4173,
     allowedHosts: true,
   },
-  plugins: [react(), tailwindcss(), aiTimelinePlugin()],
+  plugins: [react(), tailwindcss(), aiTimelinePlugin(), audioPlugin()],
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "./src"),

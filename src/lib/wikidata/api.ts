@@ -1483,91 +1483,9 @@ export type SongEntry = {
   audioUrl?: string;
 };
 
-function normalizeSongTitle(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/[''`´]/g, "")
-    .replace(/[^a-z0-9\u0900-\u097f]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function titlesLooselyMatch(a: string, b: string): boolean {
-  const na = normalizeSongTitle(a);
-  const nb = normalizeSongTitle(b);
-  if (!na || !nb) return false;
-  if (na === nb) return true;
-  if (na.includes(nb) || nb.includes(na)) return true;
-  const wa = new Set(na.split(" ").filter((w) => w.length > 2));
-  const wb = nb.split(" ").filter((w) => w.length > 2);
-  if (!wa.size || !wb.length) return false;
-  const hit = wb.filter((w) => wa.has(w)).length;
-  return hit >= Math.min(2, wb.length) && hit / Math.max(wa.size, wb.length) >= 0.4;
-}
-
-async function fetchInternetArchiveMp3(identifier: string): Promise<string | undefined> {
-  try {
-    const res = await fetch(`https://archive.org/metadata/${encodeURIComponent(identifier)}`);
-    if (!res.ok) return undefined;
-    const data = await res.json() as {
-      files?: Array<{ name?: string; format?: string; source?: string }>;
-      metadata?: { identifier?: string };
-    };
-    const files = data.files ?? [];
-    const prefer = files.find(
-      (f) =>
-        f.name &&
-        /\.mp3$/i.test(f.name) &&
-        /vbr|mp3/i.test(f.format ?? "mp3") &&
-        f.source !== "metadata",
-    );
-    const anyMp3 = prefer ?? files.find((f) => f.name && /\.mp3$/i.test(f.name));
-    const ogg = files.find((f) => f.name && /\.ogg$/i.test(f.name));
-    const file = anyMp3 ?? ogg;
-    if (!file?.name) return undefined;
-    return `https://archive.org/download/${encodeURIComponent(identifier)}/${encodeURIComponent(file.name)}`;
-  } catch {
-    return undefined;
-  }
-}
-
-/** Search Internet Archive audio by artist; return id+title pairs for matching. */
-async function searchArchiveAudioByArtist(
-  artist: string,
-  rows = 60,
-): Promise<Array<{ id: string; title: string }>> {
-  if (!artist.trim()) return [];
-  try {
-    const q = `creator:("${artist.replace(/"/g, "")}") AND mediatype:audio`;
-    const params = new URLSearchParams({
-      q,
-      "fl[]": "identifier",
-      output: "json",
-      rows: String(rows),
-      page: "1",
-    });
-    // fl[] needs duplicate — append title separately
-    const url =
-      `https://archive.org/advancedsearch.php?${params}&fl[]=title&sort[]=downloads+desc`;
-    const res = await fetch(url);
-    if (!res.ok) return [];
-    const data = await res.json() as {
-      response?: { docs?: Array<{ identifier?: string; title?: string }> };
-    };
-    const out: Array<{ id: string; title: string }> = [];
-    for (const doc of data.response?.docs ?? []) {
-      if (!doc.identifier || !doc.title) continue;
-      out.push({ id: doc.identifier, title: doc.title });
-    }
-    return out;
-  } catch {
-    return [];
-  }
-}
-
 /**
- * Songs performed by a person (Wikidata P175), with film/year and playable
- * audio when Internet Archive or YouTube identifiers exist (or can be matched).
+ * Songs performed by a person (Wikidata P175), with film/year.
+ * Playable mp3 URLs are resolved on click via /api/audio (Archive.org).
  */
 export async function fetchPersonSongs(
   personId: string,
@@ -1615,72 +1533,14 @@ export async function fetchPersonSongs(
     });
   }
 
-  // Resolve direct mp3 from known Archive IDs
-  await Promise.all(
-    songs
-      .filter((s) => s.archiveId && !s.audioUrl)
-      .slice(0, 16)
-      .map(async (s) => {
-        const url = await fetchInternetArchiveMp3(s.archiveId!);
-        if (url) s.audioUrl = url;
-      }),
-  );
-
-  // Match remaining songs to Archive.org recordings by this artist
-  const needAudio = songs.filter((s) => !s.audioUrl && !s.youtubeId);
-  const archiveHits = opts?.personLabel
-    ? await searchArchiveAudioByArtist(opts.personLabel, 80)
-    : [];
-
-  if (needAudio.length && archiveHits.length) {
-    const matched: Array<{ song: SongEntry; id: string }> = [];
-    for (const song of needAudio) {
-      const hit = archiveHits.find((a) => titlesLooselyMatch(a.title, song.title));
-      if (!hit) continue;
-      song.archiveId = hit.id;
-      matched.push({ song, id: hit.id });
-      if (matched.length >= 20) break;
-    }
-    await Promise.all(
-      matched.slice(0, 16).map(async ({ song, id }) => {
-        const url = await fetchInternetArchiveMp3(id);
-        if (url) song.audioUrl = url;
-      }),
-    );
-  }
-
-  // If Wikidata credits are thin, surface Archive.org tracks by this singer
-  if (songs.length < 12 && archiveHits.length) {
-    const used = new Set(
-      songs.map((s) => s.archiveId).filter(Boolean) as string[],
-    );
-    const extras: SongEntry[] = [];
-    for (const hit of archiveHits) {
-      if (used.has(hit.id)) continue;
-      if (songs.some((s) => titlesLooselyMatch(s.title, hit.title))) continue;
-      extras.push({
-        qid: `ia:${hit.id}`,
-        title: hit.title.replace(/\s+/g, " ").trim(),
-        archiveId: hit.id,
-      });
-      used.add(hit.id);
-      if (songs.length + extras.length >= 36) break;
-    }
-    await Promise.all(
-      extras.slice(0, 18).map(async (s) => {
-        const url = await fetchInternetArchiveMp3(s.archiveId!);
-        if (url) s.audioUrl = url;
-      }),
-    );
-    songs.push(...extras.filter((s) => s.audioUrl));
-  }
-
+  // Audio URLs are resolved on demand via /api/audio (browser cannot
+  // call archive.org reliably due to 403/CORS). Keep Wikidata credits only.
   return songs;
 }
 
 /**
  * Lazy YouTube video id for a song query (Piped / Invidious public search).
- * Used when Wikidata has no P1651 / Archive mp3.
+ * Kept for callers that still want video; song player prefers Archive mp3.
  */
 export async function resolveSongYoutubeId(query: string): Promise<string | undefined> {
   const q = query.trim();
@@ -1715,6 +1575,47 @@ export async function resolveSongYoutubeId(query: string): Promise<string | unde
     }
   }
   return undefined;
+}
+
+/** On-demand playable mp3/audio via server (Archive.org, then YouTube audio). */
+export async function resolveSongAudioUrl(opts: {
+  title: string;
+  artist?: string;
+  archiveId?: string;
+  film?: string;
+  youtubeId?: string;
+}): Promise<{ audioUrl: string; archiveId?: string; track?: string; source?: string } | undefined> {
+  const title = opts.title.trim();
+  if (!title) return undefined;
+  try {
+    const res = await fetch("/api/audio/resolve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title,
+        artist: opts.artist?.trim() || undefined,
+        film: opts.film?.trim() || undefined,
+        archiveId: opts.archiveId?.trim() || undefined,
+        youtubeId: opts.youtubeId?.trim() || undefined,
+      }),
+    });
+    if (!res.ok) return undefined;
+    const data = (await res.json()) as {
+      audioUrl?: string;
+      archiveId?: string;
+      track?: string;
+      source?: string;
+    };
+    if (!data.audioUrl) return undefined;
+    return {
+      audioUrl: data.audioUrl,
+      archiveId: data.archiveId,
+      track: data.track,
+      source: data.source,
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 /**

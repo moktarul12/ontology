@@ -16,7 +16,7 @@ import {
   fetchHowPersonRelatesToWork,
   fetchPersonFilmography,
   fetchPersonSongs,
-  resolveSongYoutubeId,
+  resolveSongAudioUrl,
   type FilmographyEntry,
   type SongEntry,
 } from "@/lib/wikidata/api.ts";
@@ -534,7 +534,7 @@ function SongsPlaylist({
   const [resolvingId, setResolvingId] = useState<string | null>(null);
 
   const { data: songs = [], isLoading } = useQuery({
-    queryKey: ["person-songs-v1", personId, personLabel],
+    queryKey: ["person-songs-v3-server-audio", personId, personLabel],
     queryFn: () => fetchPersonSongs(personId, { personLabel, limit: 48 }),
     staleTime: 1000 * 60 * 30,
   });
@@ -554,7 +554,7 @@ function SongsPlaylist({
   }, [playlist, songFilter]);
 
   const current = playlist.find((s) => s.qid === currentId) ?? null;
-  const playableCount = playlist.filter((s) => s.audioUrl || s.youtubeId).length;
+  const playableCount = playlist.filter((s) => s.audioUrl).length;
 
   useEffect(() => {
     setCurrentId(null);
@@ -573,7 +573,8 @@ function SongsPlaylist({
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !current?.audioUrl) return;
-    if (audio.src !== current.audioUrl) {
+    const abs = new URL(current.audioUrl, window.location.origin).href;
+    if (audio.src !== abs) {
       audio.src = current.audioUrl;
       audio.load();
     }
@@ -589,44 +590,46 @@ function SongsPlaylist({
   };
 
   const playSong = async (song: SongEntry) => {
-    // Toggle pause on same track
-    if (currentId === song.qid && (song.audioUrl || song.youtubeId)) {
-      if (song.audioUrl) setPlaying((p) => !p);
+    // Toggle pause on same audio track
+    if (currentId === song.qid && song.audioUrl) {
+      setPlaying((p) => !p);
+      return;
+    }
+
+    // In-app audio only — never open YouTube
+    if (song.audioUrl) {
+      setCurrentId(song.qid);
+      setProgress(0);
+      setDuration(0);
+      setPlaying(true);
       return;
     }
 
     setCurrentId(song.qid);
     setProgress(0);
     setDuration(0);
-
-    if (song.audioUrl) {
-      setPlaying(true);
-      return;
-    }
-
-    if (song.youtubeId) {
-      setPlaying(false);
-      return;
-    }
-
-    // Resolve playable source on demand
-    setResolvingId(song.qid);
     setPlaying(false);
+    setResolvingId(song.qid);
     try {
-      const query = [song.title, personLabel, song.film].filter(Boolean).join(" ");
-      const yt = await resolveSongYoutubeId(`${query} song`);
-      if (yt) {
-        patchSong(song.qid, { youtubeId: yt });
+      const resolved = await resolveSongAudioUrl({
+        title: song.title,
+        artist: personLabel,
+        archiveId: song.archiveId,
+        film: song.film,
+        youtubeId: song.youtubeId,
+      });
+      if (resolved?.audioUrl) {
+        patchSong(song.qid, {
+          audioUrl: resolved.audioUrl,
+          archiveId: resolved.archiveId ?? song.archiveId,
+        });
         setCurrentId(song.qid);
-        toast.success(`Playing “${song.title}”`);
-      } else {
-        // Last resort: open YouTube search in a new tab
-        const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
-        window.open(url, "_blank", "noopener,noreferrer");
-        toast.message("Opened YouTube search for this song");
+        setPlaying(true);
+        return;
       }
+      toast.message(`No playable audio found for “${song.title}”`);
     } catch {
-      toast.error("Could not resolve audio for this song");
+      toast.error("Could not load audio for this song");
     } finally {
       setResolvingId(null);
     }
@@ -667,16 +670,7 @@ function SongsPlaylist({
         preload="metadata"
         onTimeUpdate={(e) => setProgress(e.currentTarget.currentTime)}
         onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
-        onEnded={() => {
-          const idx = playlist.findIndex((s) => s.qid === currentId);
-          const next = playlist.slice(idx + 1).find((s) => s.audioUrl);
-          if (next) {
-            setCurrentId(next.qid);
-            setPlaying(true);
-          } else {
-            setPlaying(false);
-          }
-        }}
+        onEnded={() => setPlaying(false)}
         onError={() => setPlaying(false)}
       />
 
@@ -711,7 +705,7 @@ function SongsPlaylist({
               Songs by {personLabel}
             </h2>
             <p style={{ margin: "2px 0 0", fontSize: 12, color: "#94a3b8" }}>
-              {playlist.length} titles · tap ▶ to play · {playableCount} ready
+              {playlist.length} titles · tap a song to play audio · {playableCount} ready
             </p>
             <p style={{ margin: "4px 0 0", fontSize: 10, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: "#78716c" }}>
               digidarpan.com
@@ -747,7 +741,7 @@ function SongsPlaylist({
         </div>
       </div>
 
-      {current && (
+      {current?.audioUrl && (
         <div
           style={{
             padding: "14px 16px",
@@ -793,7 +787,6 @@ function SongsPlaylist({
             <button
               type="button"
               onClick={() => void playSong(current)}
-              disabled={resolvingId === current.qid}
               style={{
                 width: 44,
                 height: 44,
@@ -805,10 +798,9 @@ function SongsPlaylist({
                 placeItems: "center",
                 cursor: "pointer",
                 flexShrink: 0,
-                opacity: resolvingId === current.qid ? 0.6 : 1,
               }}
             >
-              {current.audioUrl && playing ? (
+              {playing ? (
                 <Pause className="size-4" fill="currentColor" />
               ) : (
                 <Play className="size-4" fill="currentColor" />
@@ -816,44 +808,32 @@ function SongsPlaylist({
             </button>
           </div>
 
-          {current.audioUrl && (
-            <div style={{ display: "grid", gap: 6 }}>
-              <input
-                type="range"
-                min={0}
-                max={duration || 1}
-                step={0.1}
-                value={progress}
-                onChange={(e) => {
-                  const t = Number(e.target.value);
-                  setProgress(t);
-                  if (audioRef.current) audioRef.current.currentTime = t;
-                }}
-                style={{ width: "100%", accentColor: "#fbbf24" }}
-              />
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#64748b", fontFamily: "Space Mono, monospace" }}>
-                <span>{formatTime(progress)}</span>
-                <span>{formatTime(duration)}</span>
-              </div>
+          <div style={{ display: "grid", gap: 6 }}>
+            <input
+              type="range"
+              min={0}
+              max={duration || 1}
+              step={0.1}
+              value={progress}
+              onChange={(e) => {
+                const t = Number(e.target.value);
+                setProgress(t);
+                if (audioRef.current) audioRef.current.currentTime = t;
+              }}
+              style={{ width: "100%", accentColor: "#fbbf24" }}
+            />
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#64748b", fontFamily: "Space Mono, monospace" }}>
+              <span>{formatTime(progress)}</span>
+              <span>{formatTime(duration)}</span>
             </div>
-          )}
-
-          {!current.audioUrl && current.youtubeId && (
-            <div style={{ borderRadius: 12, overflow: "hidden", aspectRatio: "16/9", background: "#000" }}>
-              <iframe
-                title={current.title}
-                src={`https://www.youtube-nocookie.com/embed/${encodeURIComponent(current.youtubeId)}?autoplay=1&rel=0`}
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                allowFullScreen
-                style={{ width: "100%", height: "100%", border: 0 }}
-              />
-            </div>
-          )}
-
-          {resolvingId === current.qid && (
-            <p style={{ margin: 0, fontSize: 12, color: "#fcd34d" }}>Finding a playable version…</p>
-          )}
+          </div>
         </div>
+      )}
+
+      {resolvingId && (
+        <p style={{ margin: 0, padding: "10px 16px", fontSize: 12, color: "#fcd34d", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+          Finding a playable version…
+        </p>
       )}
 
       <ul
@@ -869,7 +849,7 @@ function SongsPlaylist({
           <li style={{ padding: "16px", fontSize: 13, color: "#64748b" }}>No songs match this filter.</li>
         ) : (
           filtered.map((song, i) => {
-            const active = song.qid === currentId;
+            const active = song.qid === currentId && Boolean(song.audioUrl);
             const busy = resolvingId === song.qid;
             return (
               <li
@@ -879,13 +859,22 @@ function SongsPlaylist({
                   background: active ? "rgba(251,191,36,0.08)" : "transparent",
                 }}
               >
-                <div
+                <button
+                  type="button"
+                  onClick={() => void playSong(song)}
+                  disabled={busy}
+                  title={song.audioUrl ? `Play ${song.title}` : `Find audio for ${song.title}`}
                   style={{
                     display: "flex",
                     width: "100%",
                     alignItems: "center",
                     gap: 10,
                     padding: "8px 12px 8px 16px",
+                    background: "transparent",
+                    border: 0,
+                    cursor: busy ? "wait" : "pointer",
+                    textAlign: "left",
+                    color: "inherit",
                   }}
                 >
                   <span
@@ -906,14 +895,10 @@ function SongsPlaylist({
                     </span>
                     <span style={{ display: "block", marginTop: 2, fontSize: 11, color: "#64748b" }}>
                       {[song.film, song.year].filter(Boolean).join(" · ") || "Recording"}
-                      {song.audioUrl ? " · MP3" : song.youtubeId ? " · YouTube" : " · tap play"}
+                      {song.audioUrl ? " · MP3" : " · find audio"}
                     </span>
                   </span>
-                  <button
-                    type="button"
-                    onClick={() => void playSong(song)}
-                    disabled={busy}
-                    title={`Play ${song.title}`}
+                  <span
                     style={{
                       width: 36,
                       height: 36,
@@ -923,19 +908,18 @@ function SongsPlaylist({
                       color: active ? "#fcd34d" : "#e2e8f0",
                       display: "grid",
                       placeItems: "center",
-                      cursor: busy ? "wait" : "pointer",
                       flexShrink: 0,
                     }}
                   >
                     {busy ? (
                       <span style={{ fontSize: 10, fontWeight: 700 }}>…</span>
-                    ) : active && song.audioUrl && playing ? (
+                    ) : active && playing ? (
                       <Pause className="size-3.5" />
                     ) : (
                       <Play className="size-3.5" />
                     )}
-                  </button>
-                </div>
+                  </span>
+                </button>
               </li>
             );
           })
